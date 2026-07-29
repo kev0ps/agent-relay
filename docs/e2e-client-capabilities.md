@@ -221,7 +221,7 @@ event as a consequence of the local UI mutation.
 - The harness records the ordered association between the run ID, MCP tool call,
   and expected fixture event without recording credentials. MCP/Relay request
   IDs may appear in sanitized diagnostics, but fixture events retain only the
-  four fields defined above.
+  three fields defined above.
 - A valid mutation has one matching event produced after its corresponding MCP
   call begins and before the bounded scenario deadline. Missing, duplicate,
   stale, pre-existing, out-of-order, wrong-run, wrong-source, wrong-event, or

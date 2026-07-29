@@ -334,15 +334,15 @@ def validate_computer_capture(
     result: Any,
     *,
     diagnostic_phase: list[str] | None = None,
-    expected_app: str = "relay-desktop-fixture",
-    expected_window_title: str = "Relay Desktop Fixture",
+    expected_app: str,
+    expected_window_title: str,
 ) -> tuple[str, str]:
     """Validate a ``relay_computer_capture`` ``CallToolResult``.
 
     Returns ``(field_element_id, button_element_id)``. The fixture must
     expose exactly one enabled textbox-like field and exactly one
     enabled ``Apply`` button. Decoys and out-of-fixture window/app
-    identities fail closed. Platform harnesses may provide their synthetic
+    identities fail closed. Platform harnesses must provide their synthetic
     fixture identity; equality remains exact.
 
     ``diagnostic_phase`` (optional) receives short string markers on

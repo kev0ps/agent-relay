@@ -173,3 +173,23 @@ def test_windows_browser_ci_job_is_headless_and_bounded() -> None:
     assert "id: validate-windows-browser-evidence" in job
     assert "Browser screenshot dimensions are invalid" in job
     assert "if: always()" in job
+
+
+def test_windows_browser_failure_evidence_does_not_require_success_payloads() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    job = workflow.split("  e2e-windows-browser:", 1)[1]
+
+    success_branch = job.index(
+        'if ($output -eq "Windows Browser smoke scenario passed.")'
+    )
+    required_event = job.index(
+        'if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf))'
+    )
+    required_screenshot = job.index(
+        'if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf))'
+    )
+
+    assert success_branch < required_event
+    assert success_branch < required_screenshot
+    assert 'if (Test-Path -LiteralPath $eventPath -PathType Leaf)' in job
+    assert 'if (Test-Path -LiteralPath $screenshotPath -PathType Leaf)' in job

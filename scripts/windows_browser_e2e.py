@@ -4,9 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import base64
-import binascii
 import importlib.util
 import json
 import os
@@ -38,12 +35,16 @@ def _load_module(name: str, path: Path) -> Any:
 
 windows = _load_module("windows_e2e", Path(__file__).with_name("windows_e2e.py"))
 try:
+    from tests.e2e import browser_cdp as portable_browser_cdp
     from tests.e2e import mcp_client as portable_mcp
     from tests.e2e import oracles as portable_oracles
     from tests.e2e import scenarios as portable_scenarios
 except ModuleNotFoundError as error:
     if error.name not in {"tests", "tests.e2e"}:
         raise
+    portable_browser_cdp = _load_module(
+        "browser_cdp", ROOT / "tests" / "e2e" / "browser_cdp.py"
+    )
     portable_mcp = _load_module("mcp_client", ROOT / "tests" / "e2e" / "mcp_client.py")
     portable_oracles = _load_module("oracles", ROOT / "tests" / "e2e" / "oracles.py")
     portable_scenarios = _load_module("scenarios", ROOT / "tests" / "e2e" / "scenarios.py")
@@ -174,82 +175,37 @@ def _cdp_ready(cdp_url: str) -> bool:
 
 def _fixture_page_socket(cdp_url: str, fixture_url: str) -> str:
     try:
-        payload = _url_json(f"{cdp_url}/json/list")
-    except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError) as error:
-        raise WindowsBrowserE2EError("Chromium page listing failed") from error
-    if not isinstance(payload, list) or not 1 <= len(payload) <= 8:
-        raise WindowsBrowserE2EError("Chromium page listing is invalid")
-    matches = [
-        item
-        for item in payload
-        if isinstance(item, dict)
-        and item.get("type") == "page"
-        and item.get("url") == fixture_url
-        and isinstance(item.get("webSocketDebuggerUrl"), str)
-    ]
-    if len(matches) != 1:
-        raise WindowsBrowserE2EError("Chromium fixture page identity is invalid")
-    return matches[0]["webSocketDebuggerUrl"]
+        return portable_browser_cdp.fixture_page_socket(
+            cdp_url,
+            fixture_url,
+            fetch_json=_url_json,
+        )
+    except portable_browser_cdp.BrowserCDPError as error:
+        raise WindowsBrowserE2EError(str(error)) from error
 
 
 async def _capture_png(ws_url: str) -> bytes:
     try:
-        import websockets
-    except ImportError as error:
-        raise WindowsBrowserE2EError("WebSocket client is unavailable") from error
-
-    async with websockets.connect(
-        ws_url,
-        open_timeout=2,
-        close_timeout=2,
-        max_size=MAX_CDP_FRAME_BYTES,
-    ) as socket:
-        await socket.send(
-            json.dumps(
-                {
-                    "id": 1,
-                    "method": "Page.captureScreenshot",
-                    "params": {"format": "png"},
-                },
-                separators=(",", ":"),
-            )
+        return await portable_browser_cdp.capture_png(
+            ws_url,
+            max_cdp_frame_bytes=MAX_CDP_FRAME_BYTES,
+            max_screenshot_bytes=MAX_SCREENSHOT_BYTES,
+            max_screenshot_dimension=MAX_SCREENSHOT_DIMENSION,
         )
-        while True:
-            raw = await asyncio.wait_for(socket.recv(), timeout=5)
-            if not isinstance(raw, str):
-                raise WindowsBrowserE2EError("Chromium CDP returned binary framing")
-            message = json.loads(raw)
-            if not isinstance(message, dict) or message.get("id") != 1:
-                continue
-            if set(message) - {"id", "result", "error"}:
-                raise WindowsBrowserE2EError("Chromium CDP returned extra fields")
-            if "error" in message:
-                raise WindowsBrowserE2EError("Chromium screenshot request failed")
-            result = message.get("result")
-            if not isinstance(result, dict) or set(result) != {"data"}:
-                raise WindowsBrowserE2EError("Chromium screenshot result is invalid")
-            data = result["data"]
-            if not isinstance(data, str) or len(data) > MAX_SCREENSHOT_BYTES * 2:
-                raise WindowsBrowserE2EError("Chromium screenshot is oversized")
-            try:
-                image = base64.b64decode(data, validate=True)
-            except (binascii.Error, ValueError) as error:
-                raise WindowsBrowserE2EError("Chromium screenshot encoding is invalid") from error
-            validate_screenshot_png(image)
-            return image
+    except portable_browser_cdp.BrowserCDPError as error:
+        raise WindowsBrowserE2EError(str(error)) from error
 
 
 def validate_screenshot_png(payload: bytes) -> tuple[int, int]:
     """Validate a bounded PNG signature, IHDR, and non-zero dimensions."""
-    if not isinstance(payload, bytes) or not 24 <= len(payload) <= MAX_SCREENSHOT_BYTES:
-        raise WindowsBrowserE2EError("Chromium screenshot is not a bounded PNG")
-    if payload[:8] != b"\x89PNG\r\n\x1a\n" or payload[12:16] != b"IHDR":
-        raise WindowsBrowserE2EError("Chromium screenshot is not a bounded PNG")
-    width = int.from_bytes(payload[16:20], "big")
-    height = int.from_bytes(payload[20:24], "big")
-    if not 1 <= width <= MAX_SCREENSHOT_DIMENSION or not 1 <= height <= MAX_SCREENSHOT_DIMENSION:
-        raise WindowsBrowserE2EError("Chromium screenshot dimensions are invalid")
-    return width, height
+    try:
+        return portable_browser_cdp.validate_screenshot_png(
+            payload,
+            max_screenshot_bytes=MAX_SCREENSHOT_BYTES,
+            max_screenshot_dimension=MAX_SCREENSHOT_DIMENSION,
+        )
+    except portable_browser_cdp.BrowserCDPError as error:
+        raise WindowsBrowserE2EError(str(error)) from error
 
 
 def write_screenshot(evidence_dir: Path, payload: bytes) -> None:
@@ -271,16 +227,16 @@ def write_screenshot(evidence_dir: Path, payload: bytes) -> None:
 
 def capture_screenshot(cdp_url: str, fixture_url: str, evidence_dir: Path | None) -> None:
     """Capture the exact fixture target through raw CDP and validate its PNG."""
-    ws_url = _fixture_page_socket(cdp_url, fixture_url)
     try:
-        image = asyncio.run(
-            asyncio.wait_for(
-                _capture_png(ws_url),
-                timeout=CDP_SCREENSHOT_TIMEOUT_SECONDS,
-            )
+        image = portable_browser_cdp.capture_fixture_png(
+            cdp_url,
+            fixture_url,
+            fixture_page_socket=_fixture_page_socket,
+            capture_png=_capture_png,
+            timeout_seconds=CDP_SCREENSHOT_TIMEOUT_SECONDS,
         )
-    except TimeoutError:
-        raise WindowsBrowserE2EError("Chromium screenshot timed out") from None
+    except portable_browser_cdp.BrowserCDPError as error:
+        raise WindowsBrowserE2EError(str(error)) from error
     if evidence_dir is not None:
         write_screenshot(evidence_dir, image)
 

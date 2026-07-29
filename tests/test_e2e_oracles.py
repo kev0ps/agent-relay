@@ -515,6 +515,9 @@ def test_validate_action_rejects_url_outside_origin_allowlist() -> None:
 
 # --- Computer capture oracle ------------------------------------------------
 
+_LINUX_COMPUTER_APP = "relay-desktop-fixture"
+_LINUX_COMPUTER_WINDOW_TITLE = "Relay Desktop Fixture"
+
 
 def test_oracles_module_exposes_validate_computer_capture() -> None:
     oracles = _oracles()
@@ -523,8 +526,8 @@ def test_oracles_module_exposes_validate_computer_capture() -> None:
 
 def _good_computer_capture_payload() -> dict[str, Any]:
     return {
-        "app": "relay-desktop-fixture",
-        "window_title": "Relay Desktop Fixture",
+        "app": _LINUX_COMPUTER_APP,
+        "window_title": _LINUX_COMPUTER_WINDOW_TITLE,
         "generation": "gen-001",
         "elements": [
             {
@@ -545,10 +548,32 @@ def _good_computer_capture_payload() -> dict[str, Any]:
     }
 
 
+def _validate_computer_capture(
+    oracles: ModuleType,
+    result: Any,
+    *,
+    diagnostic_phase: list[str] | None = None,
+) -> tuple[str, str]:
+    return oracles.validate_computer_capture(
+        result,
+        diagnostic_phase=diagnostic_phase,
+        expected_app=_LINUX_COMPUTER_APP,
+        expected_window_title=_LINUX_COMPUTER_WINDOW_TITLE,
+    )
+
+
+def test_validate_computer_capture_requires_harness_identity() -> None:
+    oracles = _oracles()
+    result = _make_call_tool_result(_good_computer_capture_payload())
+
+    with pytest.raises(TypeError):
+        oracles.validate_computer_capture(result)
+
+
 def test_validate_computer_capture_returns_field_and_button_ids() -> None:
     oracles = _oracles()
     result = _make_call_tool_result(_good_computer_capture_payload())
-    field_id, button_id = oracles.validate_computer_capture(result)
+    field_id, button_id = _validate_computer_capture(oracles, result)
     assert field_id == "field-1"
     assert button_id == "btn-1"
 
@@ -577,7 +602,7 @@ def test_validate_computer_capture_rejects_wrong_app_name() -> None:
     payload["app"] = "some-other-app"
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_rejects_wrong_window_title() -> None:
@@ -586,7 +611,7 @@ def test_validate_computer_capture_rejects_wrong_window_title() -> None:
     payload["window_title"] = "Personal Chrome"
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_rejects_duplicate_element_ids() -> None:
@@ -595,7 +620,7 @@ def test_validate_computer_capture_rejects_duplicate_element_ids() -> None:
     payload["elements"].append(dict(payload["elements"][0]))
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_rejects_decoy_control() -> None:
@@ -617,7 +642,7 @@ def test_validate_computer_capture_rejects_decoy_control() -> None:
     )
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_rejects_missing_field_control() -> None:
@@ -627,7 +652,7 @@ def test_validate_computer_capture_rejects_missing_field_control() -> None:
     payload["elements"] = [payload["elements"][1]]
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_rejects_missing_button_control() -> None:
@@ -636,7 +661,7 @@ def test_validate_computer_capture_rejects_missing_button_control() -> None:
     payload["elements"] = [payload["elements"][0]]
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_rejects_oversized_generation() -> None:
@@ -645,7 +670,7 @@ def test_validate_computer_capture_rejects_oversized_generation() -> None:
     payload["generation"] = "g" * 200
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(result)
+        _validate_computer_capture(oracles, result)
 
 
 def test_validate_computer_capture_accepts_diagnostic_phase() -> None:
@@ -653,7 +678,7 @@ def test_validate_computer_capture_accepts_diagnostic_phase() -> None:
     oracles = _oracles()
     result = _make_call_tool_result(_good_computer_capture_payload())
     phase: list[str] = []
-    oracles.validate_computer_capture(result, diagnostic_phase=phase)
+    _validate_computer_capture(oracles, result, diagnostic_phase=phase)
     # On success, phase may be empty or end with a success marker.
     # The contract is that the harness receives any markers that
     # happened; we only assert that the call did not raise.
@@ -664,7 +689,7 @@ def test_validate_computer_capture_marks_failure_in_diagnostic_phase() -> None:
     bad_result = _make_call_tool_result({"rogue": True})
     phase: list[str] = []
     with pytest.raises(ValueError):
-        oracles.validate_computer_capture(bad_result, diagnostic_phase=phase)
+        _validate_computer_capture(oracles, bad_result, diagnostic_phase=phase)
     assert phase, "diagnostic_phase must be populated on failure"
 
 

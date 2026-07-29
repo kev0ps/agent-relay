@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -19,6 +20,11 @@ from types import ModuleType
 import pytest
 
 E2E_DIR = Path(__file__).resolve().parent / "e2e"
+_LINUX_COMPUTER_IDENTITY = ("relay-desktop-fixture", "Relay Desktop Fixture")
+_WINDOWS_COMPUTER_IDENTITY = (
+    "powershell",
+    "Agent Relay Computer Use Windows Fixture",
+)
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -50,6 +56,110 @@ def _load_e2e(rel_filename: str) -> ModuleType:
 
 def _scenarios() -> ModuleType:
     return _load_e2e("scenarios.py")
+
+
+class _ComputerScenarioResult:
+    def __init__(
+        self,
+        *,
+        generation: str | None = None,
+        is_error: bool = False,
+    ) -> None:
+        self.structuredContent = (
+            {"generation": generation} if generation is not None else {}
+        )
+        self.isError = is_error
+
+    def __str__(self) -> str:
+        return "rejected"
+
+
+class _ComputerScenarioSession:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.capture_count = 0
+
+    async def __aenter__(self) -> "_ComputerScenarioSession":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def list_tools(self) -> tuple[str, ...]:
+        return _scenarios().EXPECTED_MCP_TOOLS
+
+    async def call(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+    ) -> _ComputerScenarioResult:
+        if tool_name == "relay_computer_capture":
+            self.capture_count += 1
+            return _ComputerScenarioResult(
+                generation=f"generation-{self.capture_count}"
+            )
+        if (
+            tool_name == "relay_computer_click"
+            and arguments.get("element_id") == "button-1"
+        ):
+            return _ComputerScenarioResult(is_error=True)
+        return _ComputerScenarioResult()
+
+
+def _computer_runtime(
+    scenarios: ModuleType,
+    tmp_path: Path,
+    *,
+    device_id: str,
+    run_id: str,
+) -> object:
+    return scenarios.RuntimeConfig(
+        mcp_url="http://127.0.0.1:8000/mcp",
+        control_token="control-token",
+        device_id=device_id,
+        run_id=run_id,
+        fixture_url="http://127.0.0.1:1/",
+        fixtures_root=str(tmp_path),
+    )
+
+
+def _install_computer_scenario_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    scenarios: ModuleType,
+    *,
+    session_type: type[_ComputerScenarioSession] = _ComputerScenarioSession,
+) -> list[tuple[object, object]]:
+    observed: list[tuple[object, object]] = []
+
+    def validate_capture(_result: object, **kwargs: object) -> tuple[str, str]:
+        observed.append(
+            (kwargs.get("expected_app"), kwargs.get("expected_window_title"))
+        )
+        capture_number = len(observed)
+        return f"field-{capture_number}", f"button-{capture_number}"
+
+    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", session_type)
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_computer_capture",
+        validate_capture,
+    )
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_computer_action",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_computer_event",
+        lambda *_args, **_kwargs: b"stable-event",
+    )
+    monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
+    return observed
 
 
 # --- Module-level portability guard -----------------------------------------
@@ -170,6 +280,30 @@ def test_portable_kernel_exposes_shared_core_browser_and_computer_scenarios() ->
         )
 
 
+@pytest.mark.parametrize(
+    "script_name",
+    ["linux_browser_e2e.py", "windows_browser_e2e.py"],
+)
+def test_browser_adapters_share_the_portable_cdp_protocol(script_name: str) -> None:
+    source = (E2E_DIR.parents[1] / "scripts" / script_name).read_text(encoding="utf-8")
+
+    assert "portable_browser_cdp.fixture_page_socket" in source
+    assert "portable_browser_cdp.capture_png" in source
+    assert "portable_browser_cdp.validate_screenshot_png" in source
+    assert "websockets.connect(" not in source
+
+
+def test_computer_scenario_requires_harness_fixture_identity() -> None:
+    """The portable CUA scenario must not imply one platform's fixture."""
+    parameters = inspect.signature(_scenarios().run_computer_scenario).parameters
+
+    assert parameters["expected_computer_app"].default is inspect.Parameter.empty
+    assert (
+        parameters["expected_computer_window_title"].default
+        is inspect.Parameter.empty
+    )
+
+
 def test_core_scenario_accepts_harness_workspace_pwd(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,19 +371,6 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
     scenarios = _scenarios()
     observed: list[tuple[str, ...] | None] = []
 
-    class FakeSession:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        async def __aenter__(self) -> "FakeSession":
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-        async def call(self, _tool_name: str, _arguments: dict[str, object]) -> object:
-            return object()
-
     def validate_status(_result: object, **kwargs: object) -> None:
         value = kwargs.get("expected_capabilities")
         observed.append(value if isinstance(value, tuple) else None)
@@ -257,17 +378,15 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
     def reject_capture(_result: object, **_kwargs: object) -> tuple[str, str]:
         raise ValueError("stop after status assertion")
 
-    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", FakeSession)
+    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", _ComputerScenarioSession)
     monkeypatch.setattr(scenarios._oracles, "validate_status", validate_status)
     monkeypatch.setattr(scenarios._oracles, "validate_computer_capture", reject_capture)
 
-    runtime = scenarios.RuntimeConfig(
-        mcp_url="http://127.0.0.1:8000/mcp",
-        control_token="control-token",
+    runtime = _computer_runtime(
+        scenarios,
+        tmp_path,
         device_id="linux-cua-e2e-agent",
         run_id="linux-cua-test",
-        fixture_url="http://127.0.0.1:8898/",
-        fixtures_root=str(tmp_path),
     )
     expected = (
         "computer.capture",
@@ -282,101 +401,123 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
             runtime,
             "relay-value",
             expected_capabilities=expected,
+            expected_computer_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_computer_window_title=_LINUX_COMPUTER_IDENTITY[1],
         )
 
     assert observed == [expected]
 
 
-def test_computer_scenario_passes_expected_identity_to_both_capture_oracles(
+@pytest.mark.parametrize(
+    ("expected_app", "expected_window_title"),
+    [
+        pytest.param(*_LINUX_COMPUTER_IDENTITY, id="linux"),
+        pytest.param(*_WINDOWS_COMPUTER_IDENTITY, id="windows"),
+    ],
+)
+def test_computer_scenario_passes_platform_identity_to_both_capture_oracles(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    expected_app: str,
+    expected_window_title: str,
 ) -> None:
     scenarios = _scenarios()
-    observed: list[tuple[object, object]] = []
-
-    class FakeResult:
-        def __init__(
-            self,
-            *,
-            generation: str | None = None,
-            is_error: bool = False,
-        ) -> None:
-            self.structuredContent = (
-                {"generation": generation} if generation is not None else {}
-            )
-            self.isError = is_error
-
-        def __str__(self) -> str:
-            return "rejected"
-
-    class FakeSession:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.capture_count = 0
-
-        async def __aenter__(self) -> "FakeSession":
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-        async def call(
-            self,
-            tool_name: str,
-            arguments: dict[str, object],
-        ) -> FakeResult:
-            if tool_name == "relay_computer_capture":
-                self.capture_count += 1
-                return FakeResult(generation=f"generation-{self.capture_count}")
-            if (
-                tool_name == "relay_computer_click"
-                and arguments.get("element_id") == "button-1"
-            ):
-                return FakeResult(is_error=True)
-            return FakeResult()
-
-    def validate_capture(_result: object, **kwargs: object) -> tuple[str, str]:
-        observed.append(
-            (kwargs.get("expected_app"), kwargs.get("expected_window_title"))
-        )
-        capture_number = len(observed)
-        return f"field-{capture_number}", f"button-{capture_number}"
-
-    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", FakeSession)
-    monkeypatch.setattr(scenarios._oracles, "validate_status", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_computer_capture",
-        validate_capture,
-    )
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_computer_action",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_computer_event",
-        lambda *_args, **_kwargs: b"stable-event",
-    )
-    monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
-
-    runtime = scenarios.RuntimeConfig(
-        mcp_url="http://127.0.0.1:8000/mcp",
-        control_token="control-token",
-        device_id="windows-cua-e2e-agent",
-        run_id="windows-cua-test",
-        fixture_url="http://127.0.0.1:1/",
-        fixtures_root=str(tmp_path),
+    observed = _install_computer_scenario_fakes(monkeypatch, scenarios)
+    runtime = _computer_runtime(
+        scenarios,
+        tmp_path,
+        device_id="portable-cua-e2e-agent",
+        run_id="portable-cua-test",
     )
 
     scenarios.run_computer_scenario(
         runtime,
         "relay-value",
-        expected_computer_app="powershell",
-        expected_computer_window_title="Agent Relay Computer Use Windows Fixture",
+        expected_computer_app=expected_app,
+        expected_computer_window_title=expected_window_title,
     )
 
-    assert observed == [
-        ("powershell", "Agent Relay Computer Use Windows Fixture"),
-        ("powershell", "Agent Relay Computer Use Windows Fixture"),
-    ]
+    expected_identity = (expected_app, expected_window_title)
+    assert observed == [expected_identity, expected_identity]
+
+
+def test_computer_scenario_checks_tools_before_device_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scenarios = _scenarios()
+    operations: list[str] = []
+
+    class InventorySession(_ComputerScenarioSession):
+        async def list_tools(self) -> tuple[str, ...]:
+            operations.append("tools-list")
+            return scenarios.EXPECTED_MCP_TOOLS
+
+        async def call(
+            self,
+            tool_name: str,
+            arguments: dict[str, object],
+        ) -> _ComputerScenarioResult:
+            operations.append(tool_name)
+            return await super().call(tool_name, arguments)
+
+    _install_computer_scenario_fakes(
+        monkeypatch,
+        scenarios,
+        session_type=InventorySession,
+    )
+    runtime = _computer_runtime(
+        scenarios,
+        tmp_path,
+        device_id="portable-cua-e2e-agent",
+        run_id="portable-cua-inventory-test",
+    )
+
+    scenarios.run_computer_scenario(
+        runtime,
+        "relay-value",
+        expected_computer_app=_LINUX_COMPUTER_IDENTITY[0],
+        expected_computer_window_title=_LINUX_COMPUTER_IDENTITY[1],
+    )
+
+    assert operations[:2] == ["tools-list", "relay_device_status"]
+
+
+@pytest.mark.parametrize("inventory_kind", ["missing", "extra", "reordered"])
+def test_computer_scenario_rejects_unexpected_tool_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    inventory_kind: str,
+) -> None:
+    scenarios = _scenarios()
+    expected = scenarios.EXPECTED_MCP_TOOLS
+    inventories = {
+        "missing": expected[:-1],
+        "extra": (*expected, "relay_unexpected_tool"),
+        "reordered": tuple(reversed(expected)),
+    }
+    unexpected_inventory = inventories[inventory_kind]
+
+    class UnexpectedInventorySession(_ComputerScenarioSession):
+        async def list_tools(self) -> tuple[str, ...]:
+            return unexpected_inventory
+
+    _install_computer_scenario_fakes(
+        monkeypatch,
+        scenarios,
+        session_type=UnexpectedInventorySession,
+    )
+    runtime = _computer_runtime(
+        scenarios,
+        tmp_path,
+        device_id="portable-cua-e2e-agent",
+        run_id="portable-cua-inventory-rejection-test",
+    )
+
+    with pytest.raises(ValueError, match="unexpected MCP tools"):
+        scenarios.run_computer_scenario(
+            runtime,
+            "relay-value",
+            expected_computer_app=_WINDOWS_COMPUTER_IDENTITY[0],
+            expected_computer_window_title=_WINDOWS_COMPUTER_IDENTITY[1],
+        )

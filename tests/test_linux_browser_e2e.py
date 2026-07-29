@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import sys
@@ -97,3 +98,47 @@ def test_screenshot_validation_requires_bounded_nonzero_dimensions() -> None:
     zero_width = signature + b"\x00\x00\x00\x0dIHDR" + (0).to_bytes(4, "big") + (800).to_bytes(4, "big")
     with pytest.raises(harness.LinuxBrowserE2EError, match="dimensions"):
         harness.validate_screenshot_png(zero_width)
+
+
+def test_linux_screenshot_capture_uses_one_global_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness()
+
+    async def never_returns(_ws_url: str) -> bytes:
+        await asyncio.sleep(60)
+        return b""
+
+    monkeypatch.setattr(
+        harness,
+        "_fixture_page_socket",
+        lambda *_args: "ws://127.0.0.1/ws",
+    )
+    monkeypatch.setattr(harness, "_capture_png", never_returns)
+    monkeypatch.setattr(harness, "CDP_SCREENSHOT_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(harness.LinuxBrowserE2EError, match="timed out"):
+        harness.capture_screenshot(
+            "http://127.0.0.1:9222",
+            "http://127.0.0.1:8000/",
+            None,
+        )
+
+
+def test_linux_browser_failure_evidence_does_not_require_success_payloads() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    job = workflow.split("  e2e-linux-browser:", 1)[1].split(
+        "\n  e2e-linux-cua:", 1
+    )[0]
+
+    success_branch = job.index(
+        "if test \"$output\" = 'Linux Browser smoke scenario passed.'; then"
+    )
+    required_event = job.index('test -f "$evidence_dir/browser-events.jsonl"')
+    required_screenshot = job.index('test -f "$evidence_dir/screenshot.png"')
+
+    assert success_branch < required_event
+    assert success_branch < required_screenshot
+    assert 'if test -e "$evidence_dir/browser-events.jsonl"; then' in job
+    assert 'if test -e "$evidence_dir/screenshot.png"; then' in job
+    assert 'test ! -e "$path" && test ! -L "$path"' in job

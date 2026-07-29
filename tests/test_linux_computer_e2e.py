@@ -54,7 +54,9 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
 def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "  e2e-linux-cua:" in workflow
-    job = workflow.split("  e2e-linux-cua:", 1)[1]
+    job = workflow.split("  e2e-linux-cua:", 1)[1].split(
+        "\n  e2e-windows-native:", 1
+    )[0]
     assert "name: Native Linux CUA end-to-end" in job
     assert "runs-on: ubuntu-24.04" in job
     assert "uv sync --locked --extra browser --extra computer" in job
@@ -65,3 +67,19 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "docker" not in job.lower()
     assert "spikes/computer-use-xvfb" not in job
     assert "if: always()" in job
+
+
+def test_linux_cua_failure_evidence_does_not_require_fixture_event() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    job = workflow.split("  e2e-linux-cua:", 1)[1].split(
+        "\n  e2e-windows-native:", 1
+    )[0]
+
+    success_branch = job.index(
+        "if test \"$output\" = 'Linux CUA smoke scenario passed.'; then"
+    )
+    required_event = job.index('test -f "$evidence_dir/computer-events.jsonl"')
+
+    assert success_branch < required_event
+    assert 'if test -e "$evidence_dir/computer-events.jsonl"; then' in job
+    assert 'test ! -e "$path" && test ! -L "$path"' in job

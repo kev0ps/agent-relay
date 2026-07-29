@@ -278,7 +278,9 @@ jobs:
           test ! -L "$evidence_dir"
           allowed='output.log success.json browser-events.jsonl screenshot.png'
           for path in "$evidence_dir"/* "$evidence_dir"/.[!.]* "$evidence_dir"/..?*; do
-            test -e "$path" || continue
+            if test ! -e "$path" && test ! -L "$path"; then
+              continue
+            fi
             name="$(basename "$path")"
             case " $allowed " in *" $name "*) ;; *) exit 1 ;; esac
             test ! -L "$path"
@@ -286,20 +288,25 @@ jobs:
             test "$(stat -c %s "$path")" -le 524288
           done
           test -f "$evidence_dir/output.log"
-          test -f "$evidence_dir/browser-events.jsonl"
-          test -f "$evidence_dir/screenshot.png"
           test "$(wc -l < "$evidence_dir/output.log")" -ge 1
           test "$(wc -l < "$evidence_dir/output.log")" -le 2
           if grep -vEq '^(Linux Browser smoke scenario passed\.|Linux Browser E2E cleanup failed\.|Linux Browser E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$' "$evidence_dir/output.log"; then
             exit 1
           fi
-          uv run --frozen python -c 'import json, pathlib, re, struct; root=pathlib.Path("linux-browser-evidence"); lines=root.joinpath("browser-events.jsonl").read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="submitted"; assert re.fullmatch(r"linux-browser-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-browser-linux-browser-[0-9a-f]{24}", event["value"]); png=root.joinpath("screenshot.png").read_bytes(); assert png[:8]==b"\x89PNG\r\n\x1a\n" and png[12:16]==b"IHDR"; width,height=struct.unpack(">II", png[16:24]); assert 1<=width<=4096 and 1<=height<=4096'
           output="$(cat "$evidence_dir/output.log")"
           if test "$output" = 'Linux Browser smoke scenario passed.'; then
+            test -f "$evidence_dir/browser-events.jsonl"
+            test -f "$evidence_dir/screenshot.png"
             test -f "$evidence_dir/success.json"
             test "$(cat "$evidence_dir/success.json")" = '{"status":"passed"}'
           else
             test ! -e "$evidence_dir/success.json"
+          fi
+          if test -e "$evidence_dir/browser-events.jsonl"; then
+            uv run --frozen python -c 'import json, pathlib, re; path=pathlib.Path("linux-browser-evidence/browser-events.jsonl"); lines=path.read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="submitted"; assert re.fullmatch(r"linux-browser-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-browser-linux-browser-[0-9a-f]{24}", event["value"])'
+          fi
+          if test -e "$evidence_dir/screenshot.png"; then
+            uv run --frozen python -c 'import pathlib, struct; png=pathlib.Path("linux-browser-evidence/screenshot.png").read_bytes(); assert png[:8]==b"\x89PNG\r\n\x1a\n" and png[12:16]==b"IHDR"; width,height=struct.unpack(">II", png[16:24]); assert 1<=width<=4096 and 1<=height<=4096'
           fi
 
       - name: Upload bounded Linux Browser evidence
@@ -384,7 +391,9 @@ jobs:
           test ! -L "$evidence_dir"
           allowed='output.log success.json computer-events.jsonl'
           for path in "$evidence_dir"/* "$evidence_dir"/.[!.]* "$evidence_dir"/..?*; do
-            test -e "$path" || continue
+            if test ! -e "$path" && test ! -L "$path"; then
+              continue
+            fi
             name="$(basename "$path")"
             case " $allowed " in *" $name "*) ;; *) exit 1 ;; esac
             test ! -L "$path"
@@ -392,19 +401,21 @@ jobs:
             test "$(stat -c %s "$path")" -le 4096
           done
           test -f "$evidence_dir/output.log"
-          test -f "$evidence_dir/computer-events.jsonl"
           test "$(wc -l < "$evidence_dir/output.log")" -ge 1
           test "$(wc -l < "$evidence_dir/output.log")" -le 2
           if grep -vEq '^(Linux CUA smoke scenario passed\.|Linux CUA E2E cleanup failed\.|Linux CUA E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$' "$evidence_dir/output.log"; then
             exit 1
           fi
-          uv run --frozen python -c 'import json, pathlib, re; root=pathlib.Path("linux-cua-evidence"); lines=root.joinpath("computer-events.jsonl").read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="applied"; assert re.fullmatch(r"linux-cua-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-cua-linux-cua-[0-9a-f]{24}", event["value"])'
           output="$(cat "$evidence_dir/output.log")"
           if test "$output" = 'Linux CUA smoke scenario passed.'; then
+            test -f "$evidence_dir/computer-events.jsonl"
             test -f "$evidence_dir/success.json"
             test "$(cat "$evidence_dir/success.json")" = '{"status":"passed"}'
           else
             test ! -e "$evidence_dir/success.json"
+          fi
+          if test -e "$evidence_dir/computer-events.jsonl"; then
+            uv run --frozen python -c 'import json, pathlib, re; path=pathlib.Path("linux-cua-evidence/computer-events.jsonl"); lines=path.read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="applied"; assert re.fullmatch(r"linux-cua-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-cua-linux-cua-[0-9a-f]{24}", event["value"])'
           fi
 
       - name: Upload bounded Linux CUA evidence
@@ -705,6 +716,17 @@ jobs:
             if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
               throw "Windows CUA oracle evidence is missing"
             }
+            if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
+              throw "Windows CUA success marker is missing"
+            }
+            if ((Get-Content -LiteralPath $successPath -Raw).TrimEnd("`r", "`n") -ne '{"status":"passed"}') {
+              throw "Windows CUA success marker is invalid"
+            }
+          }
+          elseif (Test-Path -LiteralPath $successPath) {
+            throw "Windows CUA success marker exists after a failed scenario"
+          }
+          if (Test-Path -LiteralPath $eventPath -PathType Leaf) {
             $eventLines = @(Get-Content -LiteralPath $eventPath)
             if ($eventLines.Count -ne 1) {
               throw "Windows CUA oracle must contain exactly one event"
@@ -723,15 +745,6 @@ jobs:
             if ($event.value -cnotmatch '^relay-gh-cua-windows-cua-[0-9a-f]{24}$') {
               throw "Windows CUA oracle value is invalid"
             }
-            if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
-              throw "Windows CUA success marker is missing"
-            }
-            if ((Get-Content -LiteralPath $successPath -Raw).TrimEnd("`r", "`n") -ne '{"status":"passed"}') {
-              throw "Windows CUA success marker is invalid"
-            }
-          }
-          elseif (Test-Path -LiteralPath $successPath) {
-            throw "Windows CUA success marker exists after a failed scenario"
           }
 
       - name: Upload bounded native Windows CUA evidence
@@ -835,14 +848,9 @@ jobs:
           $outputPath = Join-Path $evidenceDir "output.log"
           $eventPath = Join-Path $evidenceDir "browser-events.jsonl"
           $screenshotPath = Join-Path $evidenceDir "screenshot.png"
+          $successPath = Join-Path $evidenceDir "success.json"
           if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
             throw "Browser output evidence is missing"
-          }
-          if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
-            throw "Browser oracle evidence is missing"
-          }
-          if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf)) {
-            throw "Browser screenshot evidence is missing"
           }
 
           $lines = @(Get-Content -LiteralPath $outputPath)
@@ -855,50 +863,14 @@ jobs:
             }
           }
 
-          $eventLines = @(Get-Content -LiteralPath $eventPath)
-          if ($eventLines.Count -ne 1) {
-            throw "Browser oracle must contain exactly one event"
-          }
-          $event = $eventLines[0] | ConvertFrom-Json
-          $eventProperties = @($event.PSObject.Properties.Name | Sort-Object)
-          if (($eventProperties -join ",") -ne "event,run_id,value") {
-            throw "Browser oracle schema is invalid"
-          }
-          if ($event.event -cne "submitted") {
-            throw "Browser oracle event is invalid"
-          }
-          if ($event.run_id -cnotmatch '^windows-browser-[0-9a-f]{24}$') {
-            throw "Browser oracle run id is invalid"
-          }
-          if ($event.value -cnotmatch '^relay-gh-browser-windows-browser-[0-9a-f]{24}$') {
-            throw "Browser oracle value is invalid"
-          }
-
-          $png = [IO.File]::ReadAllBytes($screenshotPath)
-          $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
-          if ($png.Length -lt 8) {
-            throw "Browser screenshot is too small"
-          }
-          for ($index = 0; $index -lt $signature.Length; $index++) {
-            if ($png[$index] -ne $signature[$index]) {
-              throw "Browser screenshot is not PNG"
-            }
-          }
-          if ($png.Length -lt 24) {
-            throw "Browser screenshot IHDR is missing"
-          }
-          if ($png[12] -ne 73 -or $png[13] -ne 72 -or $png[14] -ne 68 -or $png[15] -ne 82) {
-            throw "Browser screenshot IHDR is invalid"
-          }
-          $width = ([uint32]$png[16] -shl 24) -bor ([uint32]$png[17] -shl 16) -bor ([uint32]$png[18] -shl 8) -bor [uint32]$png[19]
-          $height = ([uint32]$png[20] -shl 24) -bor ([uint32]$png[21] -shl 16) -bor ([uint32]$png[22] -shl 8) -bor [uint32]$png[23]
-          if ($width -lt 1 -or $width -gt 4096 -or $height -lt 1 -or $height -gt 4096) {
-            throw "Browser screenshot dimensions are invalid"
-          }
-
-          $successPath = Join-Path $evidenceDir "success.json"
           $output = (Get-Content -LiteralPath $outputPath -Raw).TrimEnd("`r", "`n")
           if ($output -eq "Windows Browser smoke scenario passed.") {
+            if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
+              throw "Browser oracle evidence is missing"
+            }
+            if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf)) {
+              throw "Browser screenshot evidence is missing"
+            }
             if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
               throw "Browser success marker is missing"
             }
@@ -908,6 +880,51 @@ jobs:
           }
           elseif (Test-Path -LiteralPath $successPath) {
             throw "Browser success marker exists after a failed scenario"
+          }
+
+          if (Test-Path -LiteralPath $eventPath -PathType Leaf) {
+            $eventLines = @(Get-Content -LiteralPath $eventPath)
+            if ($eventLines.Count -ne 1) {
+              throw "Browser oracle must contain exactly one event"
+            }
+            $event = $eventLines[0] | ConvertFrom-Json
+            $eventProperties = @($event.PSObject.Properties.Name | Sort-Object)
+            if (($eventProperties -join ",") -ne "event,run_id,value") {
+              throw "Browser oracle schema is invalid"
+            }
+            if ($event.event -cne "submitted") {
+              throw "Browser oracle event is invalid"
+            }
+            if ($event.run_id -cnotmatch '^windows-browser-[0-9a-f]{24}$') {
+              throw "Browser oracle run id is invalid"
+            }
+            if ($event.value -cnotmatch '^relay-gh-browser-windows-browser-[0-9a-f]{24}$') {
+              throw "Browser oracle value is invalid"
+            }
+          }
+
+          if (Test-Path -LiteralPath $screenshotPath -PathType Leaf) {
+            $png = [IO.File]::ReadAllBytes($screenshotPath)
+            $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+            if ($png.Length -lt 8) {
+              throw "Browser screenshot is too small"
+            }
+            for ($index = 0; $index -lt $signature.Length; $index++) {
+              if ($png[$index] -ne $signature[$index]) {
+                throw "Browser screenshot is not PNG"
+              }
+            }
+            if ($png.Length -lt 24) {
+              throw "Browser screenshot IHDR is missing"
+            }
+            if ($png[12] -ne 73 -or $png[13] -ne 72 -or $png[14] -ne 68 -or $png[15] -ne 82) {
+              throw "Browser screenshot IHDR is invalid"
+            }
+            $width = ([uint32]$png[16] -shl 24) -bor ([uint32]$png[17] -shl 16) -bor ([uint32]$png[18] -shl 8) -bor [uint32]$png[19]
+            $height = ([uint32]$png[20] -shl 24) -bor ([uint32]$png[21] -shl 16) -bor ([uint32]$png[22] -shl 8) -bor [uint32]$png[23]
+            if ($width -lt 1 -or $width -gt 4096 -or $height -lt 1 -or $height -gt 4096) {
+              throw "Browser screenshot dimensions are invalid"
+            }
           }
 
       - name: Upload bounded Windows Browser evidence

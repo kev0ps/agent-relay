@@ -96,6 +96,15 @@ def test_windows_ci_has_a_native_cua_job_and_bounded_oracle() -> None:
     assert "--privileged" not in job.lower()
 
 
+def test_windows_cua_validates_optional_failure_event_when_present() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    job = workflow.split("  e2e-windows-cua:", 1)[1].split(
+        "\n  e2e-windows-browser:", 1
+    )[0]
+
+    assert 'if (Test-Path -LiteralPath $eventPath -PathType Leaf)' in job
+
+
 def test_windows_cua_fixture_emits_the_shared_computer_oracle_contract() -> None:
     fixture = FIXTURE.read_text(encoding="utf-8")
     assert "RunId" in fixture
