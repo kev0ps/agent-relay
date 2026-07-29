@@ -1,0 +1,52 @@
+[project]
+name = "agent-relay"
+version = "0.1.0"
+description = "Constrained MCP relay for explicitly enabled local capabilities"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "mcp>=1.28.1,<2",
+    "pydantic>=2.8,<3",
+    "uvicorn>=0.30,<1",
+    "websockets>=13,<16",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.49,<2"]
+computer = [
+    "cua-driver==0.8.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[project.scripts]
+agent-relay = "agent_relay.cli:main"
+agent-relay-agent = "agent_relay.agent:main"
+agent-relay-server = "agent_relay.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_relay"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: real loopback network tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

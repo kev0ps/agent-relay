@@ -1,0 +1,568 @@
+"""FastAPI application factory for the temporary Relay control API."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import uuid
+from collections.abc import Sequence
+from contextlib import asynccontextmanager
+from ipaddress import ip_address
+from typing import Annotated, Literal
+
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from .auth import credentials_match
+from .mcp_facade import create_mcp_facade
+from .output_models import (
+    BrowserActionOutput,
+    BrowserPageOutput,
+    BrowserTabsOutput,
+    ComputerActionOutput,
+    ComputerCaptureOutput,
+    PingOutput,
+    TerminalExecOutput,
+    validate_tool_output,
+)
+from .protocol import (
+    MAX_BROWSER_ELEMENT_ID_LENGTH,
+    MAX_BROWSER_FILL_VALUE_LENGTH,
+    MAX_BROWSER_URL_LENGTH,
+    MAX_COMPUTER_ELEMENT_ID_LENGTH,
+    MAX_TOKEN_LENGTH,
+    AgentError,
+    AgentResult,
+    BrowserClickInvoke,
+    BrowserFillInvoke,
+    BrowserListTabsInvoke,
+    BrowserNavigateInvoke,
+    BrowserReadPageInvoke,
+    Capabilities,
+    CommandId,
+    ComputerCaptureInvoke,
+    ComputerClickInvoke,
+    ComputerTypeInvoke,
+    ComputerTypeText,
+    DeviceId,
+    Heartbeat,
+    Progress,
+    Register,
+    RequestId,
+    SystemPingInvoke,
+    TerminalExecInvoke,
+    parse_agent_message,
+)
+from .registry import (
+    AuthenticationError,
+    DeviceAlreadyConnectedError,
+    DeviceBusyError,
+    DeviceOfflineError,
+    LateResponseError,
+    RelayRegistry,
+    RemoteAgentError,
+    UnknownDeviceError,
+    UnknownRequestError,
+    UnsupportedToolError,
+)
+
+
+class _SerializedWebSocket:
+    """One async write gate for every outbound frame on a WS connection."""
+
+    def __init__(self, websocket: WebSocket) -> None:
+        self._websocket = websocket
+        self._write_lock = asyncio.Lock()
+
+    async def send_json(self, message: object) -> None:
+        async with self._write_lock:
+            await self._websocket.send_json(message)
+
+    async def close(self, *, code: int, reason: str) -> None:
+        async with self._write_lock:
+            await self._websocket.close(code=code, reason=reason)
+
+
+class _MCPBearerAuth:
+    """Authenticate the one MCP route from raw ASGI headers."""
+
+    def __init__(self, app: ASGIApp, control_token: str) -> None:
+        self._app = app
+        self._expected = f"Bearer {control_token}"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") in {"/mcp", "/mcp/"}:
+            values = [
+                value
+                for name, value in scope.get("headers", [])
+                if name.lower() == b"authorization"
+            ]
+            supplied: str | None = None
+            if len(values) == 1 and len(values[0]) <= len(b"Bearer ") + MAX_TOKEN_LENGTH:
+                try:
+                    supplied = values[0].decode("ascii")
+                except UnicodeDecodeError:
+                    supplied = None
+            if supplied is None or not credentials_match(supplied, self._expected):
+                response = JSONResponse(
+                    {"detail": "authentication required"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+        await self._app(scope, receive, send)
+
+
+class RelaySettings(BaseModel):
+    """Explicit deployment settings; callers supply both independent secrets."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    device_id: DeviceId
+    agent_token: Annotated[str, Field(min_length=1, max_length=MAX_TOKEN_LENGTH)] = (
+        Field(repr=False)
+    )
+    control_token: Annotated[str, Field(min_length=1, max_length=MAX_TOKEN_LENGTH)] = (
+        Field(repr=False)
+    )
+    bind_host: str = "127.0.0.1"
+    mcp_allowed_hosts: tuple[str, ...] = ()
+    mcp_allowed_origins: tuple[str, ...] = ()
+    min_timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 0.1
+    max_timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 30.0
+    cancel_send_timeout_seconds: Annotated[float, Field(gt=0, le=5)] = 0.25
+    # Keep this aligned with Uvicorn's ws_max_size when that server setting is
+    # introduced in Lot D; it is enforced here before JSON decoding.
+    max_ws_message_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 128 * 1024
+
+    def __init__(self, /, **data: object) -> None:
+        try:
+            super().__init__(**data)
+        except ValidationError:
+            # Pydantic includes rejected input values in its normal error text.
+            # Server settings contain two credentials, so expose no raw input.
+            raise ValueError("invalid relay server configuration") from None
+
+    @classmethod
+    def model_validate(cls, *args: object, **kwargs: object) -> RelaySettings:
+        try:
+            return super().model_validate(*args, **kwargs)
+        except ValidationError:
+            raise ValueError("invalid relay server configuration") from None
+
+    @classmethod
+    def model_validate_json(cls, *args: object, **kwargs: object) -> RelaySettings:
+        try:
+            return super().model_validate_json(*args, **kwargs)
+        except ValidationError:
+            raise ValueError("invalid relay server configuration") from None
+
+    @classmethod
+    def model_validate_strings(cls, *args: object, **kwargs: object) -> RelaySettings:
+        try:
+            return super().model_validate_strings(*args, **kwargs)
+        except ValidationError:
+            raise ValueError("invalid relay server configuration") from None
+
+    @model_validator(mode="after")
+    def valid_timeout_range(self) -> RelaySettings:
+        if self.min_timeout_seconds > self.max_timeout_seconds:
+            raise ValueError("min_timeout_seconds must be <= max_timeout_seconds")
+        if credentials_match(self.agent_token, self.control_token):
+            raise ValueError("agent and control tokens must differ")
+        return self
+
+
+class _InvokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    timeout_seconds: Annotated[float | None, Field(gt=0, le=3600)] = None
+
+
+class SystemPingRequest(_InvokeRequest):
+    tool: Literal["system.ping"]
+
+
+class TerminalExecRequest(_InvokeRequest):
+    tool: Literal["terminal.exec"]
+    command_id: CommandId
+
+
+class BrowserListTabsRequest(_InvokeRequest):
+    tool: Literal["browser.list_tabs"]
+
+
+class BrowserNavigateRequest(_InvokeRequest):
+    tool: Literal["browser.navigate"]
+    url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)]
+
+
+class BrowserReadPageRequest(_InvokeRequest):
+    tool: Literal["browser.read_page"]
+
+
+class BrowserFillRequest(_InvokeRequest):
+    tool: Literal["browser.fill"]
+    element_id: Annotated[
+        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
+    ]
+    value: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_FILL_VALUE_LENGTH)]
+
+
+class BrowserClickRequest(_InvokeRequest):
+    tool: Literal["browser.click"]
+    element_id: Annotated[
+        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
+    ]
+
+
+class ComputerCaptureRequest(_InvokeRequest):
+    tool: Literal["computer.capture"]
+
+
+class ComputerClickRequest(_InvokeRequest):
+    tool: Literal["computer.click"]
+    element_id: Annotated[
+        str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)
+    ]
+
+
+class ComputerTypeRequest(_InvokeRequest):
+    tool: Literal["computer.type"]
+    element_id: Annotated[
+        str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)
+    ]
+    text: ComputerTypeText
+
+
+class InvokeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: RequestId
+    result: (
+        PingOutput | TerminalExecOutput | BrowserTabsOutput | BrowserPageOutput
+        | BrowserActionOutput | ComputerCaptureOutput | ComputerActionOutput
+    )
+
+
+InvokeRequest = Annotated[
+    SystemPingRequest
+    | TerminalExecRequest
+    | BrowserListTabsRequest
+    | BrowserNavigateRequest
+    | BrowserReadPageRequest
+    | BrowserFillRequest
+    | BrowserClickRequest
+    | ComputerCaptureRequest
+    | ComputerClickRequest
+    | ComputerTypeRequest,
+    Field(discriminator="tool"),
+]
+
+
+def create_app(settings: RelaySettings) -> FastAPI:
+    """Create a Relay server without reading or embedding any secrets."""
+    registry = RelayRegistry(
+        device_id=settings.device_id,
+        agent_token=settings.agent_token,
+        cancel_send_timeout_seconds=settings.cancel_send_timeout_seconds,
+    )
+    mcp = create_mcp_facade(
+        registry=registry,
+        device_id=settings.device_id,
+        timeout_seconds=settings.max_timeout_seconds,
+        host=settings.bind_host,
+        allowed_hosts=settings.mcp_allowed_hosts,
+        allowed_origins=settings.mcp_allowed_origins,
+    )
+    mcp_http_app = mcp.streamable_http_app()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        async with mcp.session_manager.run():
+            yield
+
+    app = FastAPI(lifespan=lifespan)
+    app.state.registry = registry
+    app.state.settings = settings
+    app.state.mcp = mcp
+
+    @app.websocket("/ws/agent")
+    async def agent_socket(websocket: WebSocket) -> None:
+        await websocket.accept()
+        connection = _SerializedWebSocket(websocket)
+        registered = False
+        try:
+            while True:
+                try:
+                    frame = await websocket.receive()
+                    if frame["type"] == "websocket.disconnect":
+                        raise WebSocketDisconnect(frame.get("code", 1000))
+                    if frame.get("bytes") is not None:
+                        await connection.close(
+                            code=1002, reason="binary frames are not allowed"
+                        )
+                        return
+                    text = frame.get("text")
+                    if not isinstance(text, str):
+                        await connection.close(code=1002, reason="invalid protocol message")
+                        return
+                    if len(text.encode("utf-8")) > settings.max_ws_message_bytes:
+                        await connection.close(code=1009, reason="message too large")
+                        return
+                    raw = json.loads(text)
+                    message = parse_agent_message(raw)
+                except (ValueError, RecursionError, ValidationError):
+                    await connection.close(code=1002, reason="invalid protocol message")
+                    return
+                if not registered:
+                    if not isinstance(message, Register):
+                        await connection.close(
+                            code=1002, reason="register required first"
+                        )
+                        return
+                    try:
+                        reply = await registry.register(connection, message)
+                    except AuthenticationError:
+                        await connection.close(code=1008, reason="authentication failed")
+                        return
+                    except DeviceAlreadyConnectedError:
+                        await connection.close(code=1013, reason="device already connected")
+                        return
+                    await registry.send(connection, reply.model_dump(mode="json"))
+                    registered = True
+                    continue
+                try:
+                    if isinstance(message, Capabilities):
+                        await registry.set_capabilities(connection, message)
+                    elif isinstance(message, Heartbeat):
+                        await registry.heartbeat(connection)
+                    elif isinstance(message, AgentResult):
+                        await registry.handle_result(message)
+                    elif isinstance(message, AgentError):
+                        await registry.handle_error(message)
+                    elif isinstance(message, Progress):
+                        await registry.handle_progress(message)
+                    else:
+                        await connection.close(
+                            code=1002, reason="unexpected agent message"
+                        )
+                        return
+                except LateResponseError:
+                    await connection.close(
+                        code=1002, reason="late or duplicate response"
+                    )
+                    return
+                except (AuthenticationError, UnknownRequestError):
+                    await connection.close(
+                        code=1002, reason="invalid request correlation"
+                    )
+                    return
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await registry.disconnect(connection)
+
+    @app.post("/v1/devices/{device_id}/invoke")
+    async def invoke(
+        device_id: str,
+        body: InvokeRequest,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> InvokeResponse:
+        expected = f"Bearer {settings.control_token}"
+        if authorization is None or not credentials_match(authorization, expected):
+            raise HTTPException(
+                status_code=401,
+                detail="authentication required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        timeout = body.timeout_seconds or settings.max_timeout_seconds
+        timeout = min(
+            max(timeout, settings.min_timeout_seconds), settings.max_timeout_seconds
+        )
+        request_id = uuid.uuid4().hex
+        if isinstance(body, SystemPingRequest):
+            message = SystemPingInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="system.ping",
+            )
+        elif isinstance(body, TerminalExecRequest):
+            message = TerminalExecInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="terminal.exec",
+                command_id=body.command_id,
+            )
+        elif isinstance(body, BrowserListTabsRequest):
+            message = BrowserListTabsInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.list_tabs",
+            )
+        elif isinstance(body, BrowserNavigateRequest):
+            message = BrowserNavigateInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.navigate",
+                url=body.url,
+            )
+        elif isinstance(body, BrowserReadPageRequest):
+            message = BrowserReadPageInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.read_page",
+            )
+        elif isinstance(body, BrowserFillRequest):
+            message = BrowserFillInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.fill",
+                element_id=body.element_id,
+                value=body.value,
+            )
+        elif isinstance(body, BrowserClickRequest):
+            message = BrowserClickInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.click",
+                element_id=body.element_id,
+            )
+        elif isinstance(body, ComputerCaptureRequest):
+            message = ComputerCaptureInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="computer.capture",
+            )
+        elif isinstance(body, ComputerClickRequest):
+            message = ComputerClickInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="computer.click",
+                element_id=body.element_id,
+            )
+        else:
+            message = ComputerTypeInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="computer.type",
+                element_id=body.element_id,
+                text=body.text,
+            )
+        try:
+            result = await registry.invoke(device_id, message, timeout)
+        except DeviceOfflineError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except UnknownDeviceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except DeviceBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except UnsupportedToolError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504, detail="agent invocation timed out"
+            ) from exc
+        except RemoteAgentError as exc:
+            raise HTTPException(
+                status_code=502, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        try:
+            validated = validate_tool_output(message.tool, result)
+        except ValidationError:
+            raise HTTPException(status_code=502, detail="device returned an invalid result") from None
+        return InvokeResponse(request_id=request_id, result=validated)
+
+    # Mount last so the existing control and WebSocket routes retain priority.
+    # The child owns /mcp directly, avoiding a /mcp -> /mcp/ redirect.
+    app.mount("/", _MCPBearerAuth(mcp_http_app, settings.control_token))
+
+    return app
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the control server from explicitly configured environment."""
+    parser = argparse.ArgumentParser(description="Agent Relay control server")
+    parser.add_argument("--host", default=os.environ.get("AGENT_RELAY_HOST", "127.0.0.1"))
+    parser.add_argument("--port", default=os.environ.get("AGENT_RELAY_PORT", "8000"))
+    args = parser.parse_args(argv)
+    try:
+        mcp_allowed_hosts = _split_csv(os.environ.get("AGENT_RELAY_MCP_ALLOWED_HOSTS", ""))
+        mcp_allowed_origins = _split_csv(os.environ.get("AGENT_RELAY_MCP_ALLOWED_ORIGINS", ""))
+        allow_non_loopback = os.environ.get(
+            "AGENT_RELAY_ALLOW_NON_LOOPBACK_BIND", "false"
+        ).lower() == "true"
+        if not _is_allowed_bind_host(
+            args.host,
+            allow_non_loopback=allow_non_loopback,
+            mcp_allowed_hosts=mcp_allowed_hosts,
+        ):
+            raise ValueError
+        port = int(args.port)
+        if not 1 <= port <= 65535:
+            raise ValueError
+        settings = RelaySettings(
+            device_id=os.environ["AGENT_RELAY_DEVICE_ID"],
+            agent_token=os.environ["AGENT_RELAY_AGENT_TOKEN"],
+            control_token=os.environ["AGENT_RELAY_CONTROL_TOKEN"],
+            bind_host=args.host,
+            mcp_allowed_hosts=mcp_allowed_hosts,
+            mcp_allowed_origins=mcp_allowed_origins,
+            max_ws_message_bytes=int(os.environ.get("AGENT_RELAY_MAX_WS_MESSAGE_BYTES", 128 * 1024)),
+        )
+    except (KeyError, ValueError):
+        parser.error("invalid relay server configuration")
+    import uvicorn
+
+    uvicorn.run(
+        create_app(settings),
+        host=args.host,
+        port=port,
+        ws_max_size=settings.max_ws_message_bytes,
+    )
+
+
+def _is_loopback_bind_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_allowed_bind_host(
+    host: str,
+    *,
+    allow_non_loopback: bool,
+    mcp_allowed_hosts: tuple[str, ...],
+) -> bool:
+    if _is_loopback_bind_host(host):
+        return True
+    return (
+        allow_non_loopback
+        and host in {"0.0.0.0", "::"}
+        and bool(mcp_allowed_hosts)
+    )
+
+
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+if __name__ == "__main__":
+    main()

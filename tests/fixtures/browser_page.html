@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Relay Browser Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Relay Browser Fixture</h1>
+    <form id="fixture-form">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" maxlength="256" required>
+      <button type="submit">Submit</button>
+    </form>
+    <p>Status: <output id="status" aria-live="polite">idle</output></p>
+  </main>
+  <script>
+    const form = document.getElementById('fixture-form');
+    const name = document.getElementById('name');
+    const status = document.getElementById('status');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const value = name.value.slice(0, 256);
+      status.textContent = `submitted:${value}`;
+      await fetch('/event', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'submitted', value}),
+      });
+    });
+  </script>
+</body>
+</html>

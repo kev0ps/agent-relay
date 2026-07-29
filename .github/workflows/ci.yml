@@ -1,0 +1,920 @@
+---
+# Immutable action SHAs necessarily exceed yamllint's default line limit.
+# yamllint disable rule:line-length
+name: CI
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python quality and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Check formatting and lint
+        run: uv run --frozen ruff check .
+
+      - name: Run test suite
+        run: uv run --frozen pytest -q
+
+      - name: Run explicit integration suite
+        run: uv run --frozen pytest -q -m integration
+
+      - name: Verify checks left the repository clean
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+
+  container:
+    name: Docker image smoke (${{ matrix.platform }})
+    needs: python
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+            runner: ubuntu-24.04
+            runner_arch: x86_64
+          - platform: linux/arm64
+            suffix: arm64
+            runner: ubuntu-24.04-arm
+            runner_arch: aarch64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.runner_arch }}
+        run: test "$(uname -m)" = "$EXPECTED_ARCH"
+
+      - name: Install Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+      - name: Build and load image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          tags: agent-relay:ci-${{ matrix.suffix }}
+
+      - name: Verify image contract
+        env:
+          IMAGE: agent-relay:ci-${{ matrix.suffix }}
+        run: |
+          test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = "relay"
+          test "$(docker image inspect "$IMAGE" --format '{{json .Config.Entrypoint}}')" = '["agent-relay"]'
+          test "$(docker image inspect "$IMAGE" --format '{{json .Config.ExposedPorts}}')" = 'null'
+
+      - name: Smoke-test both roles
+        env:
+          IMAGE: agent-relay:ci-${{ matrix.suffix }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker run --rm --platform="$PLATFORM" "$IMAGE" --help
+          docker run --rm --platform="$PLATFORM" "$IMAGE" server --help
+          docker run --rm --platform="$PLATFORM" "$IMAGE" agent --help
+
+  e2e-linux-native:
+    name: Native Linux Terminal end-to-end
+    needs: python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Check Linux Python quality
+        run: uv run --frozen ruff check .
+
+      - name: Run Linux native contract tests
+        run: uv run --frozen pytest -q tests/test_native_e2e.py tests/test_runner.py
+
+      - name: Run Linux integration suite
+        run: uv run --frozen pytest -q -m integration
+
+      - name: Run native Linux Terminal MCP end-to-end scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$GITHUB_WORKSPACE/native-evidence"
+          mkdir -p "$evidence_dir"
+          uv run --frozen python scripts/native_e2e.py \
+            --evidence-dir "$evidence_dir" \
+            --output-file "$evidence_dir/output.log"
+
+      - name: Validate bounded native Linux evidence
+        id: validate-native-evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$GITHUB_WORKSPACE/native-evidence"
+          test -d "$evidence_dir"
+          test ! -L "$evidence_dir"
+          test -f "$evidence_dir/output.log"
+          test ! -L "$evidence_dir/output.log"
+          test "$(stat -c %s "$evidence_dir/output.log")" -le 4096
+          for name in success.json output.log; do
+            path="$evidence_dir/$name"
+            if test -e "$path" || test -L "$path"; then
+              test ! -L "$path"
+              test -f "$path"
+              test "$(stat -c %s "$path")" -le 4096
+            fi
+          done
+          test -z "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 ! -name 'success.json' ! -name 'output.log' -print -quit)"
+          line_count="$(wc -l < "$evidence_dir/output.log")"
+          test "$line_count" -ge 1
+          test "$line_count" -le 2
+          test -z "$(grep -vE '^(Native Linux MCP end-to-end scenario passed\.|Native Linux E2E cleanup failed\.|Native Linux E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$' "$evidence_dir/output.log")"
+          if test "$(cat "$evidence_dir/output.log")" = 'Native Linux MCP end-to-end scenario passed.'; then
+            test -f "$evidence_dir/success.json"
+            test ! -L "$evidence_dir/success.json"
+            test "$(cat "$evidence_dir/success.json")" = '{"status":"passed"}'
+          else
+            test ! -e "$evidence_dir/success.json"
+            test ! -L "$evidence_dir/success.json"
+          fi
+
+      - name: Upload bounded native Linux evidence
+        if: always() && steps.validate-native-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: native-linux-e2e-evidence
+          path: native-evidence/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  e2e-linux-browser:
+    name: Native Linux Browser end-to-end
+    needs: python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        run: uv lock --check
+
+      - name: Install locked Browser dependencies
+        run: uv sync --locked --extra browser
+
+      - name: Check Linux Browser smoke quality
+        run: uv run --frozen ruff check .
+
+      - name: Run Linux Browser contract tests
+        run: uv run --frozen pytest -q tests/test_linux_browser_e2e.py tests/test_browser_capability.py
+
+      - name: Install pinned Playwright Chromium and Linux dependencies
+        run: uv run --frozen playwright install --with-deps chromium
+
+      - name: Run native Linux Browser end-to-end scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$GITHUB_WORKSPACE/linux-browser-evidence"
+          mkdir -p "$evidence_dir"
+          uv run --frozen python scripts/linux_browser_e2e.py \
+            --evidence-dir "$evidence_dir" \
+            --output-file "$evidence_dir/output.log"
+
+      - name: Validate bounded Linux Browser evidence
+        id: validate-linux-browser-evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$GITHUB_WORKSPACE/linux-browser-evidence"
+          test -d "$evidence_dir"
+          test ! -L "$evidence_dir"
+          allowed='output.log success.json browser-events.jsonl screenshot.png'
+          for path in "$evidence_dir"/* "$evidence_dir"/.[!.]* "$evidence_dir"/..?*; do
+            test -e "$path" || continue
+            name="$(basename "$path")"
+            case " $allowed " in *" $name "*) ;; *) exit 1 ;; esac
+            test ! -L "$path"
+            test -f "$path"
+            test "$(stat -c %s "$path")" -le 524288
+          done
+          test -f "$evidence_dir/output.log"
+          test -f "$evidence_dir/browser-events.jsonl"
+          test -f "$evidence_dir/screenshot.png"
+          test "$(wc -l < "$evidence_dir/output.log")" -ge 1
+          test "$(wc -l < "$evidence_dir/output.log")" -le 2
+          if grep -vEq '^(Linux Browser smoke scenario passed\.|Linux Browser E2E cleanup failed\.|Linux Browser E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$' "$evidence_dir/output.log"; then
+            exit 1
+          fi
+          uv run --frozen python -c 'import json, pathlib, re, struct; root=pathlib.Path("linux-browser-evidence"); lines=root.joinpath("browser-events.jsonl").read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="submitted"; assert re.fullmatch(r"linux-browser-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-browser-linux-browser-[0-9a-f]{24}", event["value"]); png=root.joinpath("screenshot.png").read_bytes(); assert png[:8]==b"\x89PNG\r\n\x1a\n" and png[12:16]==b"IHDR"; width,height=struct.unpack(">II", png[16:24]); assert 1<=width<=4096 and 1<=height<=4096'
+          output="$(cat "$evidence_dir/output.log")"
+          if test "$output" = 'Linux Browser smoke scenario passed.'; then
+            test -f "$evidence_dir/success.json"
+            test "$(cat "$evidence_dir/success.json")" = '{"status":"passed"}'
+          else
+            test ! -e "$evidence_dir/success.json"
+          fi
+
+      - name: Upload bounded Linux Browser evidence
+        if: always() && steps.validate-linux-browser-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: native-linux-browser-e2e-evidence
+          path: linux-browser-evidence/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  e2e-linux-cua:
+    name: Native Linux CUA end-to-end
+    needs: python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install Linux desktop prerequisites
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            at-spi2-core dbus-x11 gir1.2-atspi-2.0 libatk-bridge2.0-0 \
+            libglib2.0-bin openbox x11-utils xdotool xterm xvfb
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        run: uv lock --check
+
+      - name: Install locked Browser and Computer Use dependencies
+        run: uv sync --locked --extra browser --extra computer
+
+      - name: Check Linux CUA smoke quality
+        run: uv run --frozen ruff check .
+
+      - name: Run Linux CUA contract tests
+        run: uv run --frozen pytest -q tests/test_linux_computer_e2e.py tests/test_computer_capability.py tests/test_desktop_fixture.py
+
+      - name: Install pinned Playwright Chromium and Linux dependencies
+        run: uv run --frozen playwright install --with-deps chromium
+
+      - name: Run native Linux CUA end-to-end scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$GITHUB_WORKSPACE/linux-cua-evidence"
+          mkdir -p "$evidence_dir"
+          uv run --frozen python scripts/linux_computer_e2e.py \
+            --evidence-dir "$evidence_dir" \
+            --output-file "$evidence_dir/output.log"
+
+      - name: Validate bounded Linux CUA evidence
+        id: validate-linux-cua-evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$GITHUB_WORKSPACE/linux-cua-evidence"
+          test -d "$evidence_dir"
+          test ! -L "$evidence_dir"
+          allowed='output.log success.json computer-events.jsonl'
+          for path in "$evidence_dir"/* "$evidence_dir"/.[!.]* "$evidence_dir"/..?*; do
+            test -e "$path" || continue
+            name="$(basename "$path")"
+            case " $allowed " in *" $name "*) ;; *) exit 1 ;; esac
+            test ! -L "$path"
+            test -f "$path"
+            test "$(stat -c %s "$path")" -le 4096
+          done
+          test -f "$evidence_dir/output.log"
+          test -f "$evidence_dir/computer-events.jsonl"
+          test "$(wc -l < "$evidence_dir/output.log")" -ge 1
+          test "$(wc -l < "$evidence_dir/output.log")" -le 2
+          if grep -vEq '^(Linux CUA smoke scenario passed\.|Linux CUA E2E cleanup failed\.|Linux CUA E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$' "$evidence_dir/output.log"; then
+            exit 1
+          fi
+          uv run --frozen python -c 'import json, pathlib, re; root=pathlib.Path("linux-cua-evidence"); lines=root.joinpath("computer-events.jsonl").read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="applied"; assert re.fullmatch(r"linux-cua-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-cua-linux-cua-[0-9a-f]{24}", event["value"])'
+          output="$(cat "$evidence_dir/output.log")"
+          if test "$output" = 'Linux CUA smoke scenario passed.'; then
+            test -f "$evidence_dir/success.json"
+            test "$(cat "$evidence_dir/success.json")" = '{"status":"passed"}'
+          else
+            test ! -e "$evidence_dir/success.json"
+          fi
+
+      - name: Upload bounded Linux CUA evidence
+        if: always() && steps.validate-linux-cua-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: native-linux-cua-e2e-evidence
+          path: linux-cua-evidence/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  e2e-windows-native:
+    name: Native Windows Terminal end-to-end
+    needs: python
+    runs-on: windows-2025
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) {
+            throw "Checked-out commit does not match the expected workflow SHA"
+          }
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        shell: pwsh
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: uv sync --locked
+
+      - name: Check Windows Python quality
+        shell: pwsh
+        run: uv run --frozen ruff check .
+
+      - name: Run Windows test suite
+        shell: pwsh
+        run: >-
+          uv run --frozen pytest -q tests/test_windows_e2e.py tests/test_runner.py
+          -k "not git_search_skips_relative_default_path_entries"
+
+      - name: Run Windows integration suite
+        shell: pwsh
+        run: uv run --frozen pytest -q -m integration
+
+      - name: Run native Windows Terminal MCP end-to-end scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "windows-evidence"
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          uv run --frozen python scripts/windows_e2e.py `
+            --evidence-dir $evidenceDir `
+            --output-file (Join-Path $evidenceDir "output.log")
+
+      - name: Validate bounded native Windows evidence
+        id: validate-windows-evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "windows-evidence"
+          if (-not (Test-Path -LiteralPath $evidenceDir -PathType Container)) {
+            throw "Windows evidence directory is missing"
+          }
+          $directory = Get-Item -LiteralPath $evidenceDir -Force
+          if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Windows evidence directory is a reparse point"
+          }
+
+          $allowed = @("output.log", "success.json")
+          foreach ($entry in Get-ChildItem -LiteralPath $evidenceDir -Force) {
+            if ($entry.Name -notin $allowed) {
+              throw "Unexpected Windows evidence file"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Windows evidence file is a reparse point"
+            }
+            if ($entry.PSIsContainer -or $entry.Length -gt 4096) {
+              throw "Windows evidence file is invalid or oversized"
+            }
+          }
+
+          $outputPath = Join-Path $evidenceDir "output.log"
+          if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            throw "Windows output evidence is missing"
+          }
+          $lines = @(Get-Content -LiteralPath $outputPath)
+          if ($lines.Count -lt 1 -or $lines.Count -gt 2) {
+            throw "Windows output evidence is not bounded"
+          }
+          $linePattern = '^(Native Windows MCP end-to-end scenario passed\.|Native Windows E2E cleanup failed\.|Native Windows E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$'
+          foreach ($line in $lines) {
+            if ($line -cnotmatch $linePattern) {
+              throw "Windows output evidence contains an unexpected line"
+            }
+          }
+
+          $output = (Get-Content -LiteralPath $outputPath -Raw).TrimEnd("`r", "`n")
+          $successPath = Join-Path $evidenceDir "success.json"
+          if ($output -eq "Native Windows MCP end-to-end scenario passed.") {
+            if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
+              throw "Windows success marker is missing"
+            }
+            if ((Get-Content -LiteralPath $successPath -Raw).TrimEnd("`r", "`n") -ne '{"status":"passed"}') {
+              throw "Windows success marker is invalid"
+            }
+          }
+          elseif (Test-Path -LiteralPath $successPath) {
+            throw "Windows success marker exists after a failed scenario"
+          }
+
+      - name: Upload bounded native Windows evidence
+        if: always() && steps.validate-windows-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: native-windows-e2e-evidence
+          path: windows-evidence/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  e2e-windows-cua:
+    name: Native Windows CUA end-to-end
+    needs: python
+    runs-on: windows-2025
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) {
+            throw "Checked-out commit does not match the expected workflow SHA"
+          }
+
+      - name: Verify interactive Windows session
+        shell: pwsh
+        run: |
+          $sessionId = (Get-Process -Id $PID).SessionId
+          if ($sessionId -eq 0) {
+            throw "The Windows CUA runner is in Session 0; no interactive desktop is available"
+          }
+          Write-Host "Windows CUA interactive session: $sessionId"
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        shell: pwsh
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: uv sync --locked
+
+      - name: Install pinned cua-driver for Windows UI Automation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $driverRoot = Join-Path $env:RUNNER_TEMP "agent-relay-cua-driver"
+          $driverBin = Join-Path $driverRoot "bin"
+          $driverHome = Join-Path $driverRoot "home"
+          New-Item -ItemType Directory -Force -Path $driverRoot, $driverHome | Out-Null
+          if (Test-Path -LiteralPath $driverBin) {
+            Remove-Item -LiteralPath $driverBin -Recurse -Force
+          }
+          $installerUrl = "https://raw.githubusercontent.com/trycua/cua/1760f253d3c4d76618a8c97a04f2c100ffc491ac/libs/cua-driver/scripts/install.ps1"
+          $installer = Join-Path $env:RUNNER_TEMP "agent-relay-cua-driver-install.ps1"
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installer
+          $installerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Pinned cua-driver installer SHA256: $installerSha256"
+          $env:CUA_DRIVER_RS_INSTALL_DIR = $driverBin
+          $env:CUA_DRIVER_RS_HOME = $driverHome
+          $env:CUA_DRIVER_RS_KEEP_VERSIONS = "1"
+          $env:CUA_DRIVER_RS_VERSION = "0.12.6"
+          & $installer -Release "0.12.6" -NoAutoStart -NoPathUpdate
+          $installerExit = $LASTEXITCODE
+          Write-Host "Pinned cua-driver installer exit code: $installerExit"
+          $driver = Join-Path $driverBin "cua-driver.exe"
+          if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) {
+            throw "Installed cua-driver binary is missing"
+          }
+          $binInfo = Get-Item -LiteralPath $driverBin -Force
+          $currentDir = Join-Path $driverHome "packages\current"
+          $currentInfo = Get-Item -LiteralPath $currentDir -Force
+          if (($binInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -or
+              ($currentInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            throw "Installed cua-driver junction layout is invalid"
+          }
+          $version = (& $driver --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+            throw "Installed cua-driver --version failed"
+          }
+          Write-Host "Installed cua-driver: $version"
+          if ($installerExit -ne 0) {
+            Write-Warning "Pinned cua-driver installer returned $installerExit after a valid binary/junction/version check"
+          }
+          "AGENT_RELAY_COMPUTER_DRIVER_PATH=$driver" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "CUA_DRIVER_RS_HOME=$driverHome" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "CUA_DRIVER_RS_INSTALL_DIR=$driverBin" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Check Windows CUA Python quality
+        shell: pwsh
+        run: uv run --frozen ruff check .
+
+      - name: Run Windows CUA contract tests
+        shell: pwsh
+        run: >-
+          uv run --frozen pytest -q tests/test_windows_computer_e2e.py tests/test_windows_e2e.py tests/test_runner.py
+          -k "not git_search_skips_relative_default_path_entries"
+
+      - name: Run native Windows CUA Agent Relay end-to-end scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "windows-cua-evidence"
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          uv run --frozen python scripts/windows_computer_e2e.py `
+            --evidence-dir $evidenceDir `
+            --output-file (Join-Path $evidenceDir "output.log")
+
+      - name: Validate bounded native Windows CUA evidence
+        id: validate-windows-cua-evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "windows-cua-evidence"
+          if (-not (Test-Path -LiteralPath $evidenceDir -PathType Container)) {
+            throw "Windows CUA evidence directory is missing"
+          }
+          $directory = Get-Item -LiteralPath $evidenceDir -Force
+          if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Windows CUA evidence directory is a reparse point"
+          }
+          $allowed = @("output.log", "success.json", "computer-events.jsonl")
+          foreach ($entry in Get-ChildItem -LiteralPath $evidenceDir -Force) {
+            if ($entry.Name -notin $allowed) {
+              throw "Unexpected Windows CUA evidence file"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Windows CUA evidence file is a reparse point"
+            }
+            if ($entry.PSIsContainer -or $entry.Length -gt 4096) {
+              throw "Windows CUA evidence file is invalid or oversized"
+            }
+          }
+          $outputPath = Join-Path $evidenceDir "output.log"
+          if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            throw "Windows CUA output evidence is missing"
+          }
+          $lines = @(Get-Content -LiteralPath $outputPath)
+          if ($lines.Count -lt 1 -or $lines.Count -gt 2) {
+            throw "Windows CUA output evidence is not bounded"
+          }
+          foreach ($line in $lines) {
+            if ($line -cnotmatch '^(Windows CUA smoke scenario passed\.|Windows CUA E2E cleanup failed\.|Windows CUA E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+\.)$') {
+              throw "Windows CUA output evidence contains an unexpected line"
+            }
+          }
+          $output = (Get-Content -LiteralPath $outputPath -Raw).TrimEnd("`r", "`n")
+          $eventPath = Join-Path $evidenceDir "computer-events.jsonl"
+          $successPath = Join-Path $evidenceDir "success.json"
+          if ($output -eq "Windows CUA smoke scenario passed.") {
+            if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
+              throw "Windows CUA oracle evidence is missing"
+            }
+            $eventLines = @(Get-Content -LiteralPath $eventPath)
+            if ($eventLines.Count -ne 1) {
+              throw "Windows CUA oracle must contain exactly one event"
+            }
+            $event = $eventLines[0] | ConvertFrom-Json
+            $eventProperties = @($event.PSObject.Properties.Name | Sort-Object)
+            if (($eventProperties -join ",") -ne "event,run_id,value") {
+              throw "Windows CUA oracle schema is invalid"
+            }
+            if ($event.event -cne "applied") {
+              throw "Windows CUA oracle event is invalid"
+            }
+            if ($event.run_id -cnotmatch '^windows-cua-[0-9a-f]{24}$') {
+              throw "Windows CUA oracle run id is invalid"
+            }
+            if ($event.value -cnotmatch '^relay-gh-cua-windows-cua-[0-9a-f]{24}$') {
+              throw "Windows CUA oracle value is invalid"
+            }
+            if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
+              throw "Windows CUA success marker is missing"
+            }
+            if ((Get-Content -LiteralPath $successPath -Raw).TrimEnd("`r", "`n") -ne '{"status":"passed"}') {
+              throw "Windows CUA success marker is invalid"
+            }
+          }
+          elseif (Test-Path -LiteralPath $successPath) {
+            throw "Windows CUA success marker exists after a failed scenario"
+          }
+
+      - name: Upload bounded native Windows CUA evidence
+        if: always() && steps.validate-windows-cua-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: native-windows-cua-e2e-evidence
+          path: windows-cua-evidence/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  e2e-windows-browser:
+    name: Native Windows Browser end-to-end
+    needs: python
+    runs-on: windows-2025
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) {
+            throw "Checked-out commit does not match the expected workflow SHA"
+          }
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.6"
+          python-version: "3.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify committed lockfile
+        shell: pwsh
+        run: uv lock --check
+
+      - name: Install locked Browser dependencies
+        shell: pwsh
+        run: uv sync --locked --extra browser
+
+      - name: Check Windows Browser smoke quality
+        shell: pwsh
+        run: uv run --frozen ruff check .
+
+      - name: Run Browser contract tests
+        shell: pwsh
+        run: uv run --frozen pytest -q tests/test_windows_browser_e2e.py tests/test_browser_capability.py
+
+      - name: Install pinned Playwright Chromium
+        shell: pwsh
+        run: uv run --frozen playwright install chromium
+
+      - name: Run native Windows Browser end-to-end scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "browser-evidence"
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          uv run --frozen python scripts/windows_browser_e2e.py `
+            --evidence-dir $evidenceDir `
+            --output-file (Join-Path $evidenceDir "output.log")
+
+      - name: Validate bounded Windows Browser evidence
+        id: validate-windows-browser-evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "browser-evidence"
+          if (-not (Test-Path -LiteralPath $evidenceDir -PathType Container)) {
+            throw "Browser evidence directory is missing"
+          }
+          $directory = Get-Item -LiteralPath $evidenceDir -Force
+          if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Browser evidence directory is a reparse point"
+          }
+
+          $allowed = @("output.log", "success.json", "browser-events.jsonl", "screenshot.png")
+          foreach ($entry in Get-ChildItem -LiteralPath $evidenceDir -Force) {
+            if ($entry.Name -notin $allowed) {
+              throw "Unexpected Browser evidence file"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Browser evidence file is a reparse point"
+            }
+            if ($entry.PSIsContainer -or $entry.Length -gt 524288) {
+              throw "Browser evidence file is invalid or oversized"
+            }
+          }
+
+          $outputPath = Join-Path $evidenceDir "output.log"
+          $eventPath = Join-Path $evidenceDir "browser-events.jsonl"
+          $screenshotPath = Join-Path $evidenceDir "screenshot.png"
+          if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            throw "Browser output evidence is missing"
+          }
+          if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
+            throw "Browser oracle evidence is missing"
+          }
+          if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf)) {
+            throw "Browser screenshot evidence is missing"
+          }
+
+          $lines = @(Get-Content -LiteralPath $outputPath)
+          if ($lines.Count -lt 1 -or $lines.Count -gt 2) {
+            throw "Browser output evidence is not bounded"
+          }
+          foreach ($line in $lines) {
+            if ($line -cnotmatch '^(Windows Browser smoke scenario passed\.|Windows Browser E2E cleanup failed\.|Windows Browser E2E failed at scenario-[a-z0-9-]+: [A-Za-z0-9 _().-]+( \(phase-[a-z0-9-]+\))?\.)$') {
+              throw "Browser output evidence contains an unexpected line"
+            }
+          }
+
+          $eventLines = @(Get-Content -LiteralPath $eventPath)
+          if ($eventLines.Count -ne 1) {
+            throw "Browser oracle must contain exactly one event"
+          }
+          $event = $eventLines[0] | ConvertFrom-Json
+          $eventProperties = @($event.PSObject.Properties.Name | Sort-Object)
+          if (($eventProperties -join ",") -ne "event,run_id,value") {
+            throw "Browser oracle schema is invalid"
+          }
+          if ($event.event -cne "submitted") {
+            throw "Browser oracle event is invalid"
+          }
+          if ($event.run_id -cnotmatch '^windows-browser-[0-9a-f]{24}$') {
+            throw "Browser oracle run id is invalid"
+          }
+          if ($event.value -cnotmatch '^relay-gh-browser-windows-browser-[0-9a-f]{24}$') {
+            throw "Browser oracle value is invalid"
+          }
+
+          $png = [IO.File]::ReadAllBytes($screenshotPath)
+          $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+          if ($png.Length -lt 8) {
+            throw "Browser screenshot is too small"
+          }
+          for ($index = 0; $index -lt $signature.Length; $index++) {
+            if ($png[$index] -ne $signature[$index]) {
+              throw "Browser screenshot is not PNG"
+            }
+          }
+          if ($png.Length -lt 24) {
+            throw "Browser screenshot IHDR is missing"
+          }
+          if ($png[12] -ne 73 -or $png[13] -ne 72 -or $png[14] -ne 68 -or $png[15] -ne 82) {
+            throw "Browser screenshot IHDR is invalid"
+          }
+          $width = ([uint32]$png[16] -shl 24) -bor ([uint32]$png[17] -shl 16) -bor ([uint32]$png[18] -shl 8) -bor [uint32]$png[19]
+          $height = ([uint32]$png[20] -shl 24) -bor ([uint32]$png[21] -shl 16) -bor ([uint32]$png[22] -shl 8) -bor [uint32]$png[23]
+          if ($width -lt 1 -or $width -gt 4096 -or $height -lt 1 -or $height -gt 4096) {
+            throw "Browser screenshot dimensions are invalid"
+          }
+
+          $successPath = Join-Path $evidenceDir "success.json"
+          $output = (Get-Content -LiteralPath $outputPath -Raw).TrimEnd("`r", "`n")
+          if ($output -eq "Windows Browser smoke scenario passed.") {
+            if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
+              throw "Browser success marker is missing"
+            }
+            if ((Get-Content -LiteralPath $successPath -Raw).TrimEnd("`r", "`n") -ne '{"status":"passed"}') {
+              throw "Browser success marker is invalid"
+            }
+          }
+          elseif (Test-Path -LiteralPath $successPath) {
+            throw "Browser success marker exists after a failed scenario"
+          }
+
+      - name: Upload bounded Windows Browser evidence
+        if: always() && steps.validate-windows-browser-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: windows-browser-e2e-evidence
+          path: browser-evidence/**
+          if-no-files-found: warn
+          retention-days: 7

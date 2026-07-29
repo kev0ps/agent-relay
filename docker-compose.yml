@@ -1,0 +1,19 @@
+# Example deployment for a Linux host. Run from a checkout of the repository's
+# main branch. Keep credentials in the ignored .env file, never in this file.
+services:
+  relay-server:
+    build: .
+    image: agent-relay
+    command: ["server", "run"]
+    restart: unless-stopped
+    ports:
+      - "${AGENT_RELAY_PUBLIC_BIND_IP:-0.0.0.0}:${AGENT_RELAY_PUBLIC_PORT:-8000}:8000"
+    environment:
+      AGENT_RELAY_DEVICE_ID: "${AGENT_RELAY_DEVICE_ID:?set AGENT_RELAY_DEVICE_ID}"
+      AGENT_RELAY_AGENT_TOKEN: "${AGENT_RELAY_AGENT_TOKEN:?set AGENT_RELAY_AGENT_TOKEN}"
+      AGENT_RELAY_CONTROL_TOKEN: "${AGENT_RELAY_CONTROL_TOKEN:?set AGENT_RELAY_CONTROL_TOKEN}"
+      AGENT_RELAY_HOST: "0.0.0.0"
+      AGENT_RELAY_ALLOW_NON_LOOPBACK_BIND: "true"
+      AGENT_RELAY_PORT: "8000"
+      AGENT_RELAY_MCP_ALLOWED_HOSTS: "${AGENT_RELAY_MCP_ALLOWED_HOSTS:?set AGENT_RELAY_MCP_ALLOWED_HOSTS}"
+      AGENT_RELAY_MCP_ALLOWED_ORIGINS: "${AGENT_RELAY_MCP_ALLOWED_ORIGINS:-}"

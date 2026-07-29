@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Relay Desktop Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Relay Desktop Fixture</h1>
+    <form id="relay-form">
+      <label for="name">Name</label>
+      <input id="name" name="name" required maxlength="64" autocomplete="off">
+      <button type="submit" aria-label="Apply">Apply</button>
+    </form>
+    <section aria-label="Adversarial decoys">
+      <button type="button" disabled aria-label="Dormant Override">Unavailable</button>
+      <label for="decoy-secret">Vault Password</label>
+      <input id="decoy-secret" type="password" autocomplete="off">
+      <button type="button" aria-label="Grant Camera Permission">Permission</button>
+    </section>
+    <p>Status: <output id="status" aria-live="polite">idle</output></p>
+  </main>
+  <script>
+    const form = document.getElementById('relay-form');
+    const input = document.getElementById('name');
+    const status = document.getElementById('status');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const value = input.value;
+      status.textContent = 'applying';
+      try {
+        const response = await fetch('/event', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({event: 'applied', value}),
+        });
+        status.textContent = response.ok ? 'applied' : 'error';
+      } catch (_) {
+        status.textContent = 'error';
+      }
+    });
+  </script>
+</body>
+</html>
