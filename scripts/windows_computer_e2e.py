@@ -373,6 +373,8 @@ def run_scenario(
                 value,
                 scenario_markers,
                 expected_capabilities=CUA_CAPABILITIES,
+                expected_computer_app=COMPUTER_APP_NAME,
+                expected_computer_window_title=COMPUTER_WINDOW_TITLE,
             )
         finally:
             scenario_stop.set()

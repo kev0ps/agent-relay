@@ -321,7 +321,7 @@ _COMPUTER_DECOY_NAMES: frozenset[str] = frozenset(
     {"dormant override", "vault password", "grant camera permission"}
 )
 # Recognized Computer-Use field/button roles, normalized to lowercase.
-_FIELD_ROLES: frozenset[str] = frozenset({"textbox", "entry", "text"})
+_FIELD_ROLES: frozenset[str] = frozenset({"textbox", "entry", "text", "edit"})
 _BUTTON_ROLES: frozenset[str] = frozenset({"button", "push button"})
 
 
@@ -334,13 +334,16 @@ def validate_computer_capture(
     result: Any,
     *,
     diagnostic_phase: list[str] | None = None,
+    expected_app: str = "relay-desktop-fixture",
+    expected_window_title: str = "Relay Desktop Fixture",
 ) -> tuple[str, str]:
     """Validate a ``relay_computer_capture`` ``CallToolResult``.
 
     Returns ``(field_element_id, button_element_id)``. The fixture must
     expose exactly one enabled textbox-like field and exactly one
     enabled ``Apply`` button. Decoys and out-of-fixture window/app
-    identities fail closed.
+    identities fail closed. Platform harnesses may provide their synthetic
+    fixture identity; equality remains exact.
 
     ``diagnostic_phase`` (optional) receives short string markers on
     every internal step the oracle traverses, both successful and
@@ -356,8 +359,8 @@ def validate_computer_capture(
     _mark(diagnostic_phase, "capture-identity")
     elements = payload["elements"]
     if (
-        payload["app"] != "relay-desktop-fixture"
-        or payload["window_title"] != "Relay Desktop Fixture"
+        payload["app"] != expected_app
+        or payload["window_title"] != expected_window_title
         or not _exact_str(payload["generation"], nonempty=True, maximum=128)
         or type(elements) is not list
     ):

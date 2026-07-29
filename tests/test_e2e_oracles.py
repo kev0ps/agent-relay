@@ -553,6 +553,24 @@ def test_validate_computer_capture_returns_field_and_button_ids() -> None:
     assert button_id == "btn-1"
 
 
+def test_validate_computer_capture_accepts_harness_identity_and_uia_edit_role() -> None:
+    oracles = _oracles()
+    payload = _good_computer_capture_payload()
+    payload["app"] = "powershell"
+    payload["window_title"] = "Agent Relay Computer Use Windows Fixture"
+    payload["elements"][0]["role"] = "Edit"
+    result = _make_call_tool_result(payload)
+
+    field_id, button_id = oracles.validate_computer_capture(
+        result,
+        expected_app="powershell",
+        expected_window_title="Agent Relay Computer Use Windows Fixture",
+    )
+
+    assert field_id == "field-1"
+    assert button_id == "btn-1"
+
+
 def test_validate_computer_capture_rejects_wrong_app_name() -> None:
     oracles = _oracles()
     payload = _good_computer_capture_payload()

@@ -47,6 +47,8 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
         assert key in source
     assert "relay_computer_capture" in (ROOT / "tests" / "e2e" / "scenarios.py").read_text(encoding="utf-8")
     assert "spikes/computer-use-xvfb" not in source
+    assert "expected_computer_app=COMPUTER_APP_NAME" in source
+    assert "expected_computer_window_title=COMPUTER_WINDOW_TITLE" in source
 
 
 def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:

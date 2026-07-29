@@ -84,8 +84,8 @@ $input.TabIndex = 0
 
 $submit = New-Object System.Windows.Forms.Button
 $submit.Name = "SubmitButton"
-$submit.Text = "Submit"
-$submit.AccessibleName = "Submit"
+$submit.Text = "Apply"
+$submit.AccessibleName = "Apply"
 $submit.Location = New-Object System.Drawing.Point(160, 112)
 $submit.Size = New-Object System.Drawing.Size(120, 32)
 $submit.TabIndex = 1

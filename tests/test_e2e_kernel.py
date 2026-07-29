@@ -285,3 +285,98 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
         )
 
     assert observed == [expected]
+
+
+def test_computer_scenario_passes_expected_identity_to_both_capture_oracles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scenarios = _scenarios()
+    observed: list[tuple[object, object]] = []
+
+    class FakeResult:
+        def __init__(
+            self,
+            *,
+            generation: str | None = None,
+            is_error: bool = False,
+        ) -> None:
+            self.structuredContent = (
+                {"generation": generation} if generation is not None else {}
+            )
+            self.isError = is_error
+
+        def __str__(self) -> str:
+            return "rejected"
+
+    class FakeSession:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.capture_count = 0
+
+        async def __aenter__(self) -> "FakeSession":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def call(
+            self,
+            tool_name: str,
+            arguments: dict[str, object],
+        ) -> FakeResult:
+            if tool_name == "relay_computer_capture":
+                self.capture_count += 1
+                return FakeResult(generation=f"generation-{self.capture_count}")
+            if (
+                tool_name == "relay_computer_click"
+                and arguments.get("element_id") == "button-1"
+            ):
+                return FakeResult(is_error=True)
+            return FakeResult()
+
+    def validate_capture(_result: object, **kwargs: object) -> tuple[str, str]:
+        observed.append(
+            (kwargs.get("expected_app"), kwargs.get("expected_window_title"))
+        )
+        capture_number = len(observed)
+        return f"field-{capture_number}", f"button-{capture_number}"
+
+    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", FakeSession)
+    monkeypatch.setattr(scenarios._oracles, "validate_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_computer_capture",
+        validate_capture,
+    )
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_computer_action",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_computer_event",
+        lambda *_args, **_kwargs: b"stable-event",
+    )
+    monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
+
+    runtime = scenarios.RuntimeConfig(
+        mcp_url="http://127.0.0.1:8000/mcp",
+        control_token="control-token",
+        device_id="windows-cua-e2e-agent",
+        run_id="windows-cua-test",
+        fixture_url="http://127.0.0.1:1/",
+        fixtures_root=str(tmp_path),
+    )
+
+    scenarios.run_computer_scenario(
+        runtime,
+        "relay-value",
+        expected_computer_app="powershell",
+        expected_computer_window_title="Agent Relay Computer Use Windows Fixture",
+    )
+
+    assert observed == [
+        ("powershell", "Agent Relay Computer Use Windows Fixture"),
+        ("powershell", "Agent Relay Computer Use Windows Fixture"),
+    ]

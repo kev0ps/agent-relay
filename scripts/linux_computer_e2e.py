@@ -410,6 +410,8 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             value,
             scenario_phase,
             expected_capabilities=CUA_CAPABILITIES,
+            expected_computer_app=COMPUTER_APP_NAME,
+            expected_computer_window_title=COMPUTER_WINDOW_TITLE,
         )
         if any(process.poll() is not None for process in (server, fixture, browser, agent)):
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")

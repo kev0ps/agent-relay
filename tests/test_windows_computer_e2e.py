@@ -102,6 +102,17 @@ def test_windows_cua_fixture_emits_the_shared_computer_oracle_contract() -> None
     assert "run_id = $RunId" in fixture
     assert 'event = "applied"' in fixture
     assert "eventpath" in fixture.casefold()
+    assert '$submit.Text = "Apply"' in fixture
+    assert '$submit.AccessibleName = "Apply"' in fixture
+
+
+def test_windows_cua_passes_fixture_identity_to_portable_scenario() -> None:
+    source = (ROOT / "scripts" / "windows_computer_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "expected_computer_app=COMPUTER_APP_NAME" in source
+    assert "expected_computer_window_title=COMPUTER_WINDOW_TITLE" in source
 
 
 def test_windows_cua_contract_test_is_json_serializable() -> None:

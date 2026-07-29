@@ -57,6 +57,8 @@ TOOL_ORDER: Final[tuple[str, ...]] = (
 FIXTURE_TITLE: Final[str] = "Relay Browser Fixture"
 EVENT_FILE: Final[str] = "browser-events.jsonl"
 COMPUTER_EVENT_FILE: Final[str] = "computer-events.jsonl"
+DEFAULT_COMPUTER_APP: Final[str] = "relay-desktop-fixture"
+DEFAULT_COMPUTER_WINDOW_TITLE: Final[str] = "Relay Desktop Fixture"
 EVENT_POLL_TIMEOUT: Final[float] = 5.0
 MCP_OPERATION_TIMEOUT: Final[float] = 10.0
 
@@ -339,6 +341,8 @@ async def _run_computer_scenario_async(
     value: str,
     phase: list[str] | None = None,
     expected_capabilities: tuple[str, ...] | None = None,
+    expected_computer_app: str = DEFAULT_COMPUTER_APP,
+    expected_computer_window_title: str = DEFAULT_COMPUTER_WINDOW_TITLE,
 ) -> None:
     """Exercise bounded Computer Use controls and the stale-element rejection."""
     artifact = _fixture_path(runtime, COMPUTER_EVENT_FILE)
@@ -360,6 +364,8 @@ async def _run_computer_scenario_async(
             field, button = _oracles.validate_computer_capture(
                 first,
                 diagnostic_phase=markers,
+                expected_app=expected_computer_app,
+                expected_window_title=expected_computer_window_title,
             )
         except ValueError:
             _portable_phase(phase, markers, "capture-controls")
@@ -391,6 +397,8 @@ async def _run_computer_scenario_async(
             fresh_field, fresh_button = _oracles.validate_computer_capture(
                 second,
                 diagnostic_phase=second_markers,
+                expected_app=expected_computer_app,
+                expected_window_title=expected_computer_window_title,
             )
         except ValueError:
             _portable_phase(phase, second_markers, "capture-controls")
@@ -447,6 +455,8 @@ def run_computer_scenario(
     phase: list[str] | None = None,
     *,
     expected_capabilities: tuple[str, ...] | None = None,
+    expected_computer_app: str = DEFAULT_COMPUTER_APP,
+    expected_computer_window_title: str = DEFAULT_COMPUTER_WINDOW_TITLE,
 ) -> None:
     """Run the shared Computer Use scenario with bounded cleanup."""
     asyncio.run(
@@ -456,6 +466,8 @@ def run_computer_scenario(
                 value,
                 phase,
                 expected_capabilities,
+                expected_computer_app,
+                expected_computer_window_title,
             ),
             timeout=MCP_OPERATION_TIMEOUT * 8,
         )
