@@ -359,10 +359,12 @@ def _private_local_path(path: Path, *, directory: bool) -> os.stat_result:
     else:
         valid_type = stat.S_ISREG(info.st_mode)
         expected_mode = 0o600
-    if (
-        not valid_type
-        or stat.S_IMODE(info.st_mode) != expected_mode
-        or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+    if not valid_type or (
+        os.name != "nt"
+        and (
+            stat.S_IMODE(info.st_mode) != expected_mode
+            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        )
     ):
         raise ValueError("agent identity path is not private")
     return info
@@ -391,12 +393,13 @@ def _read_agent_id_file(path: Path) -> str:
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
-            or info.st_size > 128
-        ):
+        if not stat.S_ISREG(info.st_mode) or (
+            os.name != "nt"
+            and (
+                stat.S_IMODE(info.st_mode) != 0o600
+                or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+            )
+        ) or info.st_size > 128:
             raise ValueError("agent identity file is not private")
         value = os.read(fd, 129).decode("utf-8").strip()
     finally:

@@ -13,6 +13,8 @@ from agent_relay.agent import (
     AgentSettings,
     ConfigurationError,
     RelayAgent,
+    _private_local_path,
+    _read_agent_id_file,
     _read_token_file,
     _run_with_signal_handlers,
     main,
@@ -49,6 +51,22 @@ def _load_canonical_agent_settings(environment: dict[str, str]) -> AgentSettings
     except ConfigurationError as exc:
         pytest.fail(f"canonical Agent environment was rejected: {exc}")
     raise AssertionError("unreachable")
+
+
+def test_windows_identity_state_does_not_require_posix_mode_bits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_dir = tmp_path / ".agent-relay"
+    state_dir.mkdir()
+    state_dir.chmod(0o755)
+    identity_path = state_dir / "agent-id"
+    identity_path.write_text("windows-agent\n", encoding="utf-8")
+    identity_path.chmod(0o644)
+
+    monkeypatch.setattr(os, "name", "nt")
+
+    assert _private_local_path(state_dir, directory=True).st_mode
+    assert _read_agent_id_file(identity_path) == "windows-agent"
 
 
 def test_agent_settings_validate_url_workspace_and_mask_secret(tmp_path: Path) -> None:
