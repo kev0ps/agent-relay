@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from .auth import credentials_match
 from .protocol import (
     AgentError,
     AgentResult,
@@ -83,7 +82,7 @@ class _Device:
 class DeviceStatusSnapshot:
     """Safe, immutable public state copied while holding the registry lock."""
 
-    device_id: str
+    device_id: str | None
     connected: bool
     capabilities: tuple[str, ...]
     invocation_state: str
@@ -99,7 +98,7 @@ class RelayRegistry:
     def __init__(
         self,
         *,
-        device_id: str,
+        device_id: str | None = None,
         agent_token: str,
         cancel_send_timeout_seconds: float = 0.25,
     ) -> None:
@@ -149,17 +148,17 @@ class RelayRegistry:
 
     async def register(self, socket: JsonSocket, message: object) -> Registered:
         device_id = getattr(message, "device_id", None)
-        token = getattr(message, "token", None)
-        supplied = token.get_secret_value() if token is not None else ""
-        if device_id != self._device_id or not credentials_match(
-            supplied, self._agent_token
-        ):
+        if not isinstance(device_id, str):
             raise AuthenticationError("invalid device credentials")
         async with self._lock:
+            if self._device_id is not None and device_id != self._device_id:
+                raise AuthenticationError("invalid device credentials")
             if self._device is not None:
                 raise DeviceAlreadyConnectedError("device is already connected")
+            if self._device_id is None:
+                self._device_id = device_id
             self._device = _Device(socket=socket)
-        return Registered(version=1, type="registered", device_id=self._device_id)
+        return Registered(version=1, type="registered", device_id=device_id)
 
     async def set_capabilities(self, socket: JsonSocket, message: Capabilities) -> None:
         async with self._lock:
@@ -179,13 +178,15 @@ class RelayRegistry:
 
     async def invoke(
         self,
-        device_id: str,
+        device_id: str | None,
         message: InvokeMessage,
         timeout_seconds: float,
     ) -> dict[str, object]:
         request_id = message.request_id
         async with self._lock:
-            if device_id != self._device_id:
+            if self._device_id is None or (
+                device_id is not None and device_id != self._device_id
+            ):
                 raise UnknownDeviceError("unknown device")
             if self._device is None:
                 raise DeviceOfflineError("device is offline")

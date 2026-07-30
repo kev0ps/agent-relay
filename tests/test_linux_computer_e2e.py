@@ -40,9 +40,9 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     assert harness.COMPUTER_WINDOW_TITLE == "Relay Desktop Fixture"
     assert 'DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"' in source
     for key in (
-        "AGENT_RELAY_COMPUTER_DRIVER_PATH",
-        "AGENT_RELAY_COMPUTER_ALLOWED_APP_NAME",
-        "AGENT_RELAY_COMPUTER_ALLOWED_WINDOW_TITLE",
+        "RELAY_AGENT_COMPUTER_DRIVER_PATH",
+        "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME",
+        "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE",
     ):
         assert key in source
     assert "relay_computer_capture" in (ROOT / "tests" / "e2e" / "scenarios.py").read_text(encoding="utf-8")

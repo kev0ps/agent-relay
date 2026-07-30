@@ -635,6 +635,7 @@ def _status(
     *,
     connected: bool,
     expected_capabilities: tuple[str, ...] | None = None,
+    allow_unenrolled: bool = False,
 ) -> None:
     result = portable_mcp.call_tool(
         mcp_url,
@@ -646,9 +647,10 @@ def _status(
     )
     portable_oracles.validate_status(
         result,
-        device_id=DEVICE_ID,
+        device_id=None if allow_unenrolled else DEVICE_ID,
         connected=connected,
         expected_capabilities=expected_capabilities,
+        allow_unenrolled=allow_unenrolled,
     )
 
 
@@ -777,21 +779,23 @@ def run_scenario(
         server_environment = minimal_environment(
             home,
             {
-                "AGENT_RELAY_DEVICE_ID": DEVICE_ID,
-                "AGENT_RELAY_AGENT_TOKEN": agent_token,
-                "AGENT_RELAY_CONTROL_TOKEN": control_token,
-                "AGENT_RELAY_PORT": str(port),
+                "RELAY_SERVER_HOST": "127.0.0.1",
+                "RELAY_SERVER_PORT": str(port),
+                "RELAY_MCP_TOKEN": control_token,
+                "RELAY_AGENT_TOKEN": agent_token,
+                "RELAY_ALLOW_INSECURE_WS": "true",
             },
         )
         agent_environment = minimal_environment(
             home,
             {
-                "AGENT_RELAY_DEVICE_ID": DEVICE_ID,
-                "AGENT_RELAY_AGENT_TOKEN": agent_token,
-                "AGENT_RELAY_SERVER_URL": f"ws://127.0.0.1:{port}/ws/agent",
-                "AGENT_RELAY_WORKSPACE": str(workspace),
-                "AGENT_RELAY_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "AGENT_RELAY_E2E_RUN_ID": run_id,
+                "RELAY_URL": f"ws://127.0.0.1:{port}/ws/agent",
+                "RELAY_AGENT_TOKEN": agent_token,
+                "RELAY_AGENT_ID": DEVICE_ID,
+                "RELAY_AGENT_WORKSPACE": str(workspace),
+                "RELAY_ALLOW_INSECURE_WS": "true",
+                "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
+                "RELAY_AGENT_E2E_RUN_ID": run_id,
             },
         )
         runtime = _runtime(
@@ -810,7 +814,10 @@ def run_scenario(
         )
         _wait_for(
             "native Windows server",
-            lambda: _status(mcp_url, control_token, connected=False) is None,
+            lambda: _status(
+                mcp_url, control_token, connected=False, allow_unenrolled=True
+            )
+            is None,
             timeout=SERVER_READY_TIMEOUT_SECONDS,
         )
         if server.poll() is not None:

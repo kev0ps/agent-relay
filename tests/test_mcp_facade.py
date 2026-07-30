@@ -258,7 +258,7 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
         registry = app.state.registry
         await registry.register(
             agent_socket,
-            Register(version=1, type="register", device_id="one", token="agent-token"),
+            Register(version=1, type="register", device_id="one"),
         )
         await registry.set_capabilities(
             agent_socket,
@@ -371,7 +371,6 @@ def test_status_reports_offline_and_online_safe_state() -> None:
                     version=1,
                     type="register",
                     device_id="one",
-                    token="agent-token",
                 ),
             )
             await registry.set_capabilities(

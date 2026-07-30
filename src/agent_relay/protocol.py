@@ -11,7 +11,6 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    SecretStr,
     TypeAdapter,
     field_validator,
 )
@@ -89,7 +88,6 @@ class Message(BaseModel):
 class Register(Message):
     type: Literal["register"]
     device_id: DeviceId
-    token: SecretStr = Field(repr=False, max_length=MAX_TOKEN_LENGTH)
 
 
 class Capabilities(Message):

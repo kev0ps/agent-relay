@@ -646,7 +646,7 @@ jobs:
           if ($installerExit -ne 0) {
             Write-Warning "Pinned cua-driver installer returned $installerExit after a valid binary/junction/version check"
           }
-          "AGENT_RELAY_COMPUTER_DRIVER_PATH=$driver" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELAY_AGENT_COMPUTER_DRIVER_PATH=$driver" | Add-Content -LiteralPath $env:GITHUB_ENV
           "CUA_DRIVER_RS_HOME=$driverHome" | Add-Content -LiteralPath $env:GITHUB_ENV
           "CUA_DRIVER_RS_INSTALL_DIR=$driverBin" | Add-Content -LiteralPath $env:GITHUB_ENV
 

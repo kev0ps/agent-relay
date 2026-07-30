@@ -71,7 +71,9 @@ server. Today, one configured device can process one invocation at a time.
 ## Quick start on Linux
 
 Agent Relay currently targets Python 3.11 or newer and uses
-[`uv`](https://docs.astral.sh/uv/) for installation.
+[`uv`](https://docs.astral.sh/uv/) for installation. The MVP uses one Relay
+Server listener for both `/mcp` and `/ws/agent`; the Agent connects outbound and
+opens no listener.
 
 ```sh
 git clone https://github.com/kev0ps/agent-relay.git
@@ -82,29 +84,30 @@ STATE_DIR="$PWD/.agent-relay-state"
 install -d -m 700 "$STATE_DIR"
 umask 077
 uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/agent.token"
-uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/control.token"
-chmod 600 "$STATE_DIR/agent.token" "$STATE_DIR/control.token"
-cmp -s "$STATE_DIR/agent.token" "$STATE_DIR/control.token" && { echo 'tokens are identical: generate them again'; exit 1; } || :
+uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/mcp.token"
+chmod 600 "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token"
+cmp -s "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token" && { echo 'tokens are identical: generate them again'; exit 1; } || :
 ```
 
-Start the loopback server in the first terminal:
+Start the local-only Server in the first terminal:
 
 ```sh
 STATE_DIR="$PWD/.agent-relay-state"
-AGENT_RELAY_DEVICE_ID=linux-dev-1 \
-AGENT_RELAY_AGENT_TOKEN="$(cat "$STATE_DIR/agent.token")" \
-AGENT_RELAY_CONTROL_TOKEN="$(cat "$STATE_DIR/control.token")" \
-uv run agent-relay server run --host 127.0.0.1 --port 8000
+RELAY_SERVER_HOST=127.0.0.1 \
+RELAY_SERVER_PORT=8000 \
+RELAY_MCP_TOKEN="$(cat "$STATE_DIR/mcp.token")" \
+RELAY_AGENT_TOKEN="$(cat "$STATE_DIR/agent.token")" \
+RELAY_ALLOW_INSECURE_WS=true \
+uv run agent-relay server run
 ```
 
-Start the outbound agent in a second terminal:
+Start the outbound Agent in a second terminal:
 
 ```sh
 STATE_DIR="$PWD/.agent-relay-state"
-AGENT_RELAY_DEVICE_ID=linux-dev-1 \
-AGENT_RELAY_SERVER_URL=ws://127.0.0.1:8000/ws/agent \
-AGENT_RELAY_WORKSPACE="$PWD" \
-AGENT_RELAY_AGENT_TOKEN_FILE="$STATE_DIR/agent.token" \
+RELAY_URL=ws://127.0.0.1:8000/ws/agent \
+RELAY_AGENT_WORKSPACE="$PWD" \
+RELAY_AGENT_TOKEN_FILE="$STATE_DIR/agent.token" \
 uv run agent-relay client run
 ```
 
@@ -116,26 +119,25 @@ agent-relay client config validate
 agent-relay client config show
 ```
 
-`show` masks the agent token, and `init` refuses to overwrite an existing file.
-
-The complete setup guide covers token checks, direct control calls, private
-HTTPS/WSS access, diagnostics and shutdown. Optional capability settings are
-cataloged separately in [`.env.example`](.env.example).
+`show` masks the Agent token, and `init` refuses to overwrite an existing file.
+The complete setup guide covers token checks, direct local control calls,
+diagnostics and shutdown. Optional capability settings are cataloged
+separately in [`.env.example`](.env.example).
 
 **[Run Agent Relay on Linux →](docs/run-linux.md)**
 
-For a private Linux server with a native Windows Agent, see the
+For a Linux Server container with a native Windows Agent, see the
 **[Docker server deployment guide →](docs/run-server-docker.md)**.
 
 ## Connect Hermes
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. In the shell that launches
-Hermes, load the control token without printing it or placing its value in shell
-history:
+Hermes, load the distinct MCP token without printing it or placing its value in
+shell history:
 
 ```sh
 STATE_DIR="$PWD/.agent-relay-state"
-export AGENT_RELAY_CONTROL_TOKEN="$(cat "$STATE_DIR/control.token")"
+export RELAY_MCP_TOKEN="$(cat "$STATE_DIR/mcp.token")"
 ```
 
 Reference that environment variable from the Hermes configuration rather than
@@ -146,7 +148,7 @@ mcp_servers:
   agent_relay:
     url: http://127.0.0.1:8000/mcp
     headers:
-      Authorization: "Bearer ${AGENT_RELAY_CONTROL_TOKEN}"
+      Authorization: "Bearer ${RELAY_MCP_TOKEN}"
     supports_parallel_tool_calls: false
     tools:
       include:
@@ -170,10 +172,10 @@ Tool availability still depends on what the Relay Agent has enabled locally.
 Agent Relay is designed around explicit local authority rather than broad remote
 access:
 
-- the server defaults to loopback and requires an explicit opt-in plus an MCP
-  Host allowlist for `0.0.0.0` remote-test binds;
-- the device opens the WebSocket connection and hosts no listener;
-- agent and control credentials are separate;
+- the canonical Server has one listener on `RELAY_SERVER_HOST:RELAY_SERVER_PORT`,
+  defaulting to `0.0.0.0:8000`, for both `/mcp` and `/ws/agent`;
+- the Agent opens the WebSocket connection and hosts no listener;
+- `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN` are separate credentials;
 - messages, outputs, timeouts and collections are typed and bounded;
 - terminal commands come from a fixed allowlist and run without a shell;
 - browser access is restricted to configured local origins;
@@ -182,10 +184,19 @@ access:
 - the Docker production image builds as non-root for AMD64 and ARM64 and passes
   image-contract and CLI smoke checks.
 
-For access from another private machine, either keep the Relay Server on
-loopback and place a trusted HTTPS/WSS proxy such as Tailscale Serve in front
-of it, or use the explicit remote-test bind with a restrictive firewall and a
-trusted TLS/WSS layer. Never use unencrypted non-loopback WebSockets.
+MCP/Codex remains local at `http://127.0.0.1:8000/mcp`. For a trusted LAN/test
+connection, use `ws://<LAN-IP>:8000/ws/agent` with
+`RELAY_ALLOW_INSECURE_WS=true` and keep port `8000` LAN-firewalled. For WSS,
+use `wss://<TLS endpoint>/ws/agent` only when an external TLS endpoint already
+exists; the application does not implement TLS. With
+`RELAY_ALLOW_INSECURE_WS=false`, non-loopback plaintext `ws://` is rejected but
+`wss://` is accepted. Plaintext tokens are acceptable only on a trusted
+LAN/test network. The MVP prescribes no specific TLS endpoint or proxy
+implementation.
+
+`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` are deferred optional
+settings, not required by the simple MVP. They do not replace a LAN firewall or
+an external TLS boundary.
 
 Read the **[security model and honest limitations](docs/security.md)** before a
 private deployment. Report suspected vulnerabilities through the

@@ -96,6 +96,62 @@ def test_unified_cli_accepts_client_run_subcommand(
     assert received == [arguments]
 
 
+def _configure_canonical_client_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[str, Path]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    token_file = tmp_path / "agent.token"
+    token_file.write_text("canonical-client-secret\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    for key in (
+        "AGENT_RELAY_SERVER_URL",
+        "AGENT_RELAY_DEVICE_ID",
+        "AGENT_RELAY_WORKSPACE",
+        "AGENT_RELAY_AGENT_TOKEN_FILE",
+        "AGENT_RELAY_AGENT_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    values = {
+        "RELAY_URL": "wss://relay.example.test/ws/agent",
+        "RELAY_AGENT_WORKSPACE": str(workspace),
+        "RELAY_AGENT_TOKEN_FILE": str(token_file),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    return str(token_file), workspace
+
+
+def test_client_config_show_accepts_canonical_environment_and_redacts_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _configure_canonical_client_environment(monkeypatch, tmp_path)
+
+    try:
+        assert cli.main(["client", "config", "show"]) == 0
+    except SystemExit as exc:
+        pytest.fail(f"canonical client configuration was rejected: {exc}")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["agent_id"]
+    assert payload["agent_token"] == "[REDACTED]"
+    assert "canonical-client-secret" not in json.dumps(payload)
+
+
+def test_client_config_init_emits_only_canonical_agent_environment_names(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / ".env.client.example"
+
+    assert cli.main(["client", "config", "init", "--output", str(output_path)]) == 0
+    content = output_path.read_text(encoding="utf-8")
+    assert "RELAY_URL=" in content
+    assert "RELAY_AGENT_WORKSPACE=" in content
+    assert "RELAY_AGENT_TOKEN_FILE=" in content
+    assert "AGENT_RELAY_" not in content
+
+
 def _configure_valid_client_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> str:
@@ -105,10 +161,10 @@ def _configure_valid_client_environment(
     token_file.write_text("client-secret\n", encoding="utf-8")
     token_file.chmod(0o600)
     values = {
-        "AGENT_RELAY_SERVER_URL": "wss://relay.example.test/ws/agent",
-        "AGENT_RELAY_DEVICE_ID": "windows-laptop-1",
-        "AGENT_RELAY_WORKSPACE": str(workspace),
-        "AGENT_RELAY_AGENT_TOKEN_FILE": str(token_file),
+        "RELAY_URL": "wss://relay.example.test/ws/agent",
+        "RELAY_AGENT_ID": "windows-laptop-1",
+        "RELAY_AGENT_WORKSPACE": str(workspace),
+        "RELAY_AGENT_TOKEN_FILE": str(token_file),
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -137,7 +193,7 @@ def test_client_config_show_redacts_token(
 
     assert cli.main(["client", "config", "show"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["device_id"] == "windows-laptop-1"
+    assert payload["agent_id"] == "windows-laptop-1"
     assert payload["agent_token"] == "[REDACTED]"
     assert "client-secret" not in json.dumps(payload)
 
@@ -154,8 +210,10 @@ def test_client_config_init_creates_private_non_secret_template(
         )
         == 0
     )
-    assert output_path.read_text(encoding="utf-8").count("AGENT_RELAY_") >= 4
-    assert "client-secret" not in output_path.read_text(encoding="utf-8")
+    content = output_path.read_text(encoding="utf-8")
+    assert content.count("RELAY_") >= 4
+    assert "AGENT_RELAY_" not in content
+    assert "client-secret" not in content
     assert os.stat(output_path).st_mode & 0o777 == 0o600
     assert "created" in capsys.readouterr().out
 

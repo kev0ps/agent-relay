@@ -73,7 +73,7 @@ def _current_session_id() -> int:
 
 
 def _resolve_driver() -> Path:
-    raw = os.environ.get("AGENT_RELAY_COMPUTER_DRIVER_PATH")
+    raw = os.environ.get("RELAY_AGENT_COMPUTER_DRIVER_PATH")
     if not raw:
         raise WindowsCuaE2EError("cua-driver path is unavailable")
     path = Path(raw)
@@ -109,7 +109,13 @@ def _runtime(*, mcp_url: str, control_token: str, run_id: str, fixtures_root: Pa
     )
 
 
-def _status(mcp_url: str, control_token: str, *, connected: bool) -> None:
+def _status(
+    mcp_url: str,
+    control_token: str,
+    *,
+    connected: bool,
+    allow_unenrolled: bool = False,
+) -> None:
     result = portable_mcp.call_tool(
         mcp_url,
         control_token,
@@ -120,9 +126,10 @@ def _status(mcp_url: str, control_token: str, *, connected: bool) -> None:
     )
     windows.portable_oracles.validate_status(
         result,
-        device_id=DEVICE_ID,
+        device_id=None if allow_unenrolled else DEVICE_ID,
         connected=connected,
         expected_capabilities=CUA_CAPABILITIES,
+        allow_unenrolled=allow_unenrolled,
     )
 
 
@@ -218,23 +225,25 @@ def run_scenario(
         server_environment = _driver_environment(
             {
                 "HOME": str(home),
-                "AGENT_RELAY_DEVICE_ID": DEVICE_ID,
-                "AGENT_RELAY_AGENT_TOKEN": agent_token,
-                "AGENT_RELAY_CONTROL_TOKEN": control_token,
-                "AGENT_RELAY_PORT": str(server_port),
+                "RELAY_SERVER_HOST": "127.0.0.1",
+                "RELAY_SERVER_PORT": str(server_port),
+                "RELAY_MCP_TOKEN": control_token,
+                "RELAY_AGENT_TOKEN": agent_token,
+                "RELAY_ALLOW_INSECURE_WS": "true",
             }
         )
         agent_environment = _driver_environment(
             {
                 "HOME": str(home),
-                "AGENT_RELAY_DEVICE_ID": DEVICE_ID,
-                "AGENT_RELAY_AGENT_TOKEN": agent_token,
-                "AGENT_RELAY_SERVER_URL": f"ws://127.0.0.1:{server_port}/ws/agent",
-                "AGENT_RELAY_WORKSPACE": str(workspace),
-                "AGENT_RELAY_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "AGENT_RELAY_COMPUTER_DRIVER_PATH": str(driver),
-                "AGENT_RELAY_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
-                "AGENT_RELAY_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
+                "RELAY_URL": f"ws://127.0.0.1:{server_port}/ws/agent",
+                "RELAY_AGENT_TOKEN": agent_token,
+                "RELAY_AGENT_ID": DEVICE_ID,
+                "RELAY_AGENT_WORKSPACE": str(workspace),
+                "RELAY_ALLOW_INSECURE_WS": "true",
+                "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
+                "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
+                "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
+                "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
                 "AGENT_RELAY_NATIVE_DEBUG": "1",
             }
         )

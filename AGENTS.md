@@ -71,11 +71,13 @@ quietly choose the interpretation that makes the task easiest.
 
 ### Authentication and networking
 
-- The Relay Server defaults to loopback. A deliberately configured remote-test
-  deployment may bind `0.0.0.0` only with the explicit non-loopback opt-in, a
-  non-empty MCP Host allowlist, and a restrictive firewall/TLS plan.
-- Remote private access should use a trusted HTTPS/WSS layer. Non-loopback
-  plaintext WebSockets are out of bounds.
+- The canonical Relay Server MVP listens on `0.0.0.0:8000` so a trusted LAN
+  Agent can connect; restrict host port `8000` with the host firewall to the
+  intended LAN and never expose it directly to the Internet.
+- `RELAY_ALLOW_INSECURE_WS=true` permits the Agent's `ws://` URL for a trusted
+  LAN/test deployment; `false` rejects non-loopback `ws://` URLs and accepts
+  `wss://` configuration. This URL policy is enforced by the Agent; Relay does
+  not implement native TLS or reverse-proxy termination in this MVP.
 - Agent and control credentials are distinct. Generate ephemeral credentials
   for tests and keep credential files private.
 - Never print, log, commit, upload, or place in artifacts: tokens, Bearer

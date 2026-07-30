@@ -254,7 +254,13 @@ def _runtime(
     )
 
 
-def _status(mcp_url: str, control_token: str, *, connected: bool) -> None:
+def _status(
+    mcp_url: str,
+    control_token: str,
+    *,
+    connected: bool,
+    allow_unenrolled: bool = False,
+) -> None:
     result = portable_mcp.call_tool(
         mcp_url,
         control_token,
@@ -265,9 +271,10 @@ def _status(mcp_url: str, control_token: str, *, connected: bool) -> None:
     )
     portable_oracles.validate_status(
         result,
-        device_id=DEVICE_ID,
+        device_id=None if allow_unenrolled else DEVICE_ID,
         connected=connected,
         expected_capabilities=BROWSER_CAPABILITIES,
+        allow_unenrolled=allow_unenrolled,
     )
 
 
@@ -348,22 +355,24 @@ def run_scenario(
         server_environment = windows.minimal_environment(
             home,
             {
-                "AGENT_RELAY_DEVICE_ID": DEVICE_ID,
-                "AGENT_RELAY_AGENT_TOKEN": agent_token,
-                "AGENT_RELAY_CONTROL_TOKEN": control_token,
-                "AGENT_RELAY_PORT": str(server_port),
+                "RELAY_SERVER_HOST": "127.0.0.1",
+                "RELAY_SERVER_PORT": str(server_port),
+                "RELAY_MCP_TOKEN": control_token,
+                "RELAY_AGENT_TOKEN": agent_token,
+                "RELAY_ALLOW_INSECURE_WS": "true",
             },
         )
         agent_environment = windows.minimal_environment(
             home,
             {
-                "AGENT_RELAY_DEVICE_ID": DEVICE_ID,
-                "AGENT_RELAY_AGENT_TOKEN": agent_token,
-                "AGENT_RELAY_SERVER_URL": f"ws://127.0.0.1:{server_port}/ws/agent",
-                "AGENT_RELAY_WORKSPACE": str(workspace),
-                "AGENT_RELAY_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "AGENT_RELAY_BROWSER_CDP_URL": f"http://127.0.0.1:{cdp_port}",
-                "AGENT_RELAY_BROWSER_ALLOWED_ORIGINS": f"http://127.0.0.1:{fixture_port}",
+                "RELAY_URL": f"ws://127.0.0.1:{server_port}/ws/agent",
+                "RELAY_AGENT_TOKEN": agent_token,
+                "RELAY_AGENT_ID": DEVICE_ID,
+                "RELAY_AGENT_WORKSPACE": str(workspace),
+                "RELAY_ALLOW_INSECURE_WS": "true",
+                "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
+                "RELAY_AGENT_BROWSER_CDP_URL": f"http://127.0.0.1:{cdp_port}",
+                "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS": f"http://127.0.0.1:{fixture_port}",
             },
         )
         fixture_environment = windows.minimal_environment(
@@ -389,7 +398,10 @@ def run_scenario(
         )
         windows._wait_for(
             "Windows Browser server",
-            lambda: _status(mcp_url, control_token, connected=False) is None,
+            lambda: _status(
+                mcp_url, control_token, connected=False, allow_unenrolled=True
+            )
+            is None,
             timeout=windows.SERVER_READY_TIMEOUT_SECONDS,
         )
         if server.poll() is not None:

@@ -33,13 +33,18 @@ from agent_relay.protocol import (
 )
 
 
-def test_parses_strict_versioned_register_and_masks_token() -> None:
+def test_parses_strict_versioned_token_free_register() -> None:
     message = parse_agent_message(
-        {"version": 1, "type": "register", "device_id": "device-a", "token": "secret"}
+        {"version": 1, "type": "register", "device_id": "device-a"}
     )
 
     assert isinstance(message, Register)
-    assert "secret" not in repr(message)
+    assert message.model_dump(mode="json") == {
+        "version": 1,
+        "type": "register",
+        "device_id": "device-a",
+    }
+    assert "token" not in repr(message)
     assert "secret" not in str(message)
 
 
@@ -356,15 +361,25 @@ def test_computer_invokes_are_closed_bounded_and_preserve_semantic_target() -> N
             parse_server_message(base | payload)
 
 
-def test_token_is_never_emitted_when_model_is_serialized_for_diagnostics() -> None:
-    message = Register(version=1, type="register", device_id="device-a", token="secret")
+def test_register_frame_has_no_credential_field_or_secret_repr() -> None:
+    message = Register(version=1, type="register", device_id="device-a")
+    assert message.model_dump(mode="json") == {
+        "version": 1,
+        "type": "register",
+        "device_id": "device-a",
+    }
     assert "secret" not in repr(message)
-    assert "secret" not in json.dumps({"message": repr(message)})
+    assert "token" not in json.dumps(message.model_dump(mode="json"))
 
 
-def test_protocol_bounds_token_capabilities_and_agent_payloads() -> None:
+def test_protocol_rejects_register_frame_credentials_and_bounds_agent_payloads() -> None:
     with pytest.raises(ValidationError):
-        Register(version=1, type="register", device_id="device-a", token="x" * 257)
+        Register(
+            version=1,
+            type="register",
+            device_id="device-a",
+            token="secret",  # type: ignore[call-arg]
+        )
     with pytest.raises(ValidationError):
         Capabilities(version=1, type="capabilities", tools=["system.ping"] * 17)
     with pytest.raises(ValidationError):

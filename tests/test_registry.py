@@ -92,7 +92,7 @@ def register(registry: RelayRegistry, socket: FakeSocket) -> None:
     run(
         registry.register(
             socket,
-            Register(version=1, type="register", device_id="one", token="agent-token"),
+            Register(version=1, type="register", device_id="one"),
         )
     )
 
@@ -186,7 +186,7 @@ def test_status_snapshot_captures_busy_progress_under_registry_lock() -> None:
         socket = FakeSocket()
         await registry.register(
             socket,
-            Register(version=1, type="register", device_id="one", token="agent-token"),
+            Register(version=1, type="register", device_id="one"),
         )
         await registry.set_capabilities(
             socket,
@@ -217,28 +217,52 @@ def test_status_snapshot_captures_busy_progress_under_registry_lock() -> None:
     run(scenario())
 
 
-def test_wrong_token_unknown_device_and_second_connection_are_rejected() -> None:
+def test_unknown_device_and_second_connection_are_rejected() -> None:
     registry = RelayRegistry(device_id="one", agent_token="agent-token")
     socket = FakeSocket()
     with pytest.raises(AuthenticationError):
         run(
             registry.register(
                 socket,
-                Register(version=1, type="register", device_id="one", token="wrong"),
-            )
-        )
-    with pytest.raises(AuthenticationError):
-        run(
-            registry.register(
-                socket,
-                Register(
-                    version=1, type="register", device_id="other", token="agent-token"
-                ),
+                Register(version=1, type="register", device_id="other"),
             )
         )
     register(registry, socket)
     with pytest.raises(DeviceAlreadyConnectedError):
         register(registry, FakeSocket())
+
+
+
+def test_registry_starts_offline_without_a_preconfigured_agent_identity() -> None:
+    try:
+        registry = RelayRegistry(agent_token="agent-token")
+    except TypeError as exc:
+        pytest.fail(f"server-side Agent identity must be dynamic: {exc}")
+        raise AssertionError("unreachable")
+
+    snapshot = run(registry.status_snapshot())
+
+    assert snapshot.device_id is None
+    assert snapshot.connected is False
+    assert snapshot.capabilities == ()
+
+
+def test_registry_binds_first_identity_and_rejects_a_different_identity() -> None:
+    try:
+        registry = RelayRegistry(agent_token="agent-token")
+    except TypeError as exc:
+        pytest.fail(f"server-side Agent identity must be dynamic: {exc}")
+        raise AssertionError("unreachable")
+    first_socket = FakeSocket()
+    first = Register.model_construct(version=1, type="register", device_id="one")
+    run(registry.register(first_socket, first))
+    assert run(registry.status_snapshot()).device_id == "one"
+    run(registry.disconnect(first_socket))
+
+    second_socket = FakeSocket()
+    second = Register.model_construct(version=1, type="register", device_id="two")
+    with pytest.raises(AuthenticationError):
+        run(registry.register(second_socket, second))
 
 
 def test_every_tool_requires_a_declared_capability() -> None:

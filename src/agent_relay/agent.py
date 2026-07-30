@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
+import re
+import secrets
 import signal
 import stat
 import sys
@@ -13,7 +16,7 @@ import time
 from collections.abc import Mapping, Sequence
 from ipaddress import ip_address
 from pathlib import Path
-from typing import AsyncContextManager, Callable, Protocol
+from typing import Any, AsyncContextManager, Callable, Protocol
 from urllib.parse import urlparse
 
 import websockets
@@ -64,8 +67,12 @@ class AgentSettings(BaseModel):
 
     server_url: str
     device_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    agent_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$"
+    )
     agent_token: SecretStr = Field(repr=False, min_length=1, max_length=256)
     workspace: Path
+    allow_insecure_ws: bool = False
     heartbeat_interval_seconds: float = Field(default=15, gt=0, le=3600)
     reconnect_min_seconds: float = Field(default=0.1, gt=0, le=60)
     reconnect_max_seconds: float = Field(default=5, gt=0, le=3600)
@@ -127,8 +134,6 @@ class AgentSettings(BaseModel):
             raise ValueError("server_url must not include userinfo")
         if parsed.path != "/ws/agent" or parsed.params or parsed.query or parsed.fragment:
             raise ValueError("server_url must target exactly /ws/agent")
-        if parsed.scheme == "ws" and not _is_explicit_loopback(parsed.hostname):
-            raise ValueError("ws:// is permitted only for explicit loopback hosts")
         return value
 
     @field_validator("workspace")
@@ -140,6 +145,14 @@ class AgentSettings(BaseModel):
 
     @model_validator(mode="after")
     def secure_url_and_ranges(self) -> AgentSettings:
+        if self.agent_id is None:
+            self.agent_id = self.device_id
+        elif self.agent_id != self.device_id:
+            raise ValueError("device_id and agent_id must match")
+        parsed = urlparse(self.server_url)
+        if parsed.scheme == "ws" and not _is_explicit_loopback(parsed.hostname or ""):
+            if not self.allow_insecure_ws:
+                raise ValueError("ws:// is permitted only for explicit loopback hosts")
         if self.reconnect_min_seconds > self.reconnect_max_seconds:
             raise ValueError("reconnect_min_seconds must be <= reconnect_max_seconds")
         result_budget = min(MAX_RESULT_JSON_BYTES, self.max_ws_message_bytes) - 2048
@@ -171,54 +184,274 @@ class AgentSettings(BaseModel):
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> AgentSettings:
         try:
             env = os.environ if environ is None else environ
-            token = env.get("AGENT_RELAY_AGENT_TOKEN")
-            token_file = env.get("AGENT_RELAY_AGENT_TOKEN_FILE")
-            if token_file:
-                token = _read_token_file(Path(token_file))
-            if not token:
-                raise ConfigurationError()
-            required = {
-                "server_url": "AGENT_RELAY_SERVER_URL",
-                "device_id": "AGENT_RELAY_DEVICE_ID",
-                "workspace": "AGENT_RELAY_WORKSPACE",
-            }
-            if any(not env.get(key) for key in required.values()):
-                raise ConfigurationError()
-            values: dict[str, object] = {
-                "server_url": env["AGENT_RELAY_SERVER_URL"],
-                "device_id": env["AGENT_RELAY_DEVICE_ID"],
-                "workspace": Path(env["AGENT_RELAY_WORKSPACE"]),
-                "agent_token": token,
-            }
-            mapping = {"heartbeat_interval_seconds": float, "reconnect_min_seconds": float, "reconnect_max_seconds": float, "stable_session_seconds": float, "max_ws_message_bytes": int, "command_timeout_seconds": float, "stdout_limit": int, "stderr_limit": int}
-            for field, converter in mapping.items():
-                key = "AGENT_RELAY_" + field.upper()
-                if key in env:
-                    values[field] = converter(env[key])
-            if "AGENT_RELAY_BROWSER_CDP_URL" in env:
-                values["browser_cdp_url"] = env["AGENT_RELAY_BROWSER_CDP_URL"]
-            if "AGENT_RELAY_BROWSER_ALLOWED_ORIGINS" in env:
-                values["browser_allowed_origins"] = tuple(filter(None, (item.strip() for item in env["AGENT_RELAY_BROWSER_ALLOWED_ORIGINS"].split(","))))
-            for field in ("browser_connect_timeout_seconds", "browser_action_timeout_seconds"):
-                key = "AGENT_RELAY_" + field.upper()
-                if key in env:
-                    values[field] = float(env[key])
-            computer_mapping = {
-                "computer_driver_path": Path,
-                "computer_allowed_app_name": str,
-                "computer_allowed_window_title": str,
-                "computer_startup_timeout_seconds": float,
-                "computer_action_timeout_seconds": float,
-                "computer_shutdown_timeout_seconds": float,
-                "computer_max_elements": int,
-            }
-            for field, converter in computer_mapping.items():
-                key = "AGENT_RELAY_" + field.upper()
-                if key in env:
-                    values[field] = converter(env[key])
+            if any(key in env for key in _CANONICAL_AGENT_KEYS):
+                values = _canonical_agent_values(env)
+            else:
+                values = _legacy_agent_values(env)
             return cls(**values)
         except (ConfigurationError, OSError, ValueError, TypeError):
             raise ConfigurationError() from None
+
+
+
+
+_CANONICAL_AGENT_KEYS = frozenset(
+    {"RELAY_URL", "RELAY_AGENT_TOKEN_FILE", "RELAY_AGENT_WORKSPACE"}
+)
+_AGENT_OPTION_FIELDS = (
+    "heartbeat_interval_seconds",
+    "reconnect_min_seconds",
+    "reconnect_max_seconds",
+    "stable_session_seconds",
+    "max_ws_message_bytes",
+    "command_timeout_seconds",
+    "stdout_limit",
+    "stderr_limit",
+    "browser_connect_timeout_seconds",
+    "browser_action_timeout_seconds",
+    "computer_startup_timeout_seconds",
+    "computer_action_timeout_seconds",
+    "computer_shutdown_timeout_seconds",
+    "computer_max_elements",
+)
+_AGENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _environment_option(env: Mapping[str, str], field: str) -> str | None:
+    canonical = "RELAY_AGENT_" + field.upper()
+    legacy = "AGENT_RELAY_" + field.upper()
+    if canonical in env:
+        return env[canonical]
+    return env.get(legacy)
+
+
+def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
+    raw = env.get("RELAY_ALLOW_INSECURE_WS")
+    if raw is None:
+        raw = env.get("AGENT_RELAY_ALLOW_INSECURE_WS")
+    if raw is None:
+        return False
+    normalized = raw.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise ValueError("invalid insecure WebSocket policy")
+    return normalized == "true"
+
+
+def _token_from_environment(
+    env: Mapping[str, str], *, token_file_key: str, token_key: str
+) -> str:
+    token_file = env.get(token_file_key)
+    token = _read_token_file(Path(token_file)) if token_file else env.get(token_key)
+    if not token:
+        raise ConfigurationError()
+    return token
+
+
+def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> None:
+    converters: dict[str, Callable[[str], object]] = {
+        "heartbeat_interval_seconds": float,
+        "reconnect_min_seconds": float,
+        "reconnect_max_seconds": float,
+        "stable_session_seconds": float,
+        "max_ws_message_bytes": int,
+        "command_timeout_seconds": float,
+        "stdout_limit": int,
+        "stderr_limit": int,
+        "browser_connect_timeout_seconds": float,
+        "browser_action_timeout_seconds": float,
+        "computer_startup_timeout_seconds": float,
+        "computer_action_timeout_seconds": float,
+        "computer_shutdown_timeout_seconds": float,
+        "computer_max_elements": int,
+    }
+    for field in _AGENT_OPTION_FIELDS:
+        raw = _environment_option(env, field)
+        if raw is not None:
+            values[field] = converters[field](raw)
+
+    browser_cdp_url = _environment_option(env, "browser_cdp_url")
+    if browser_cdp_url is not None:
+        values["browser_cdp_url"] = browser_cdp_url
+    browser_origins = _environment_option(env, "browser_allowed_origins")
+    if browser_origins is not None:
+        values["browser_allowed_origins"] = tuple(
+            item.strip() for item in browser_origins.split(",") if item.strip()
+        )
+
+    computer_path = _environment_option(env, "computer_driver_path")
+    if computer_path is not None:
+        values["computer_driver_path"] = Path(computer_path)
+    for field in (
+        "computer_allowed_app_name",
+        "computer_allowed_window_title",
+    ):
+        raw = _environment_option(env, field)
+        if raw is not None:
+            values[field] = raw
+
+
+def _canonical_agent_values(env: Mapping[str, str]) -> dict[str, object]:
+    url = env.get("RELAY_URL")
+    workspace_value = env.get("RELAY_AGENT_WORKSPACE")
+    if not url or not workspace_value:
+        raise ConfigurationError()
+    token = _token_from_environment(
+        env,
+        token_file_key="RELAY_AGENT_TOKEN_FILE",
+        token_key="RELAY_AGENT_TOKEN",
+    )
+    workspace = _validated_workspace(Path(workspace_value))
+    agent_id = _load_or_create_agent_id(workspace, env.get("RELAY_AGENT_ID"))
+    values: dict[str, object] = {
+        "server_url": url,
+        "device_id": agent_id,
+        "agent_id": agent_id,
+        "agent_token": token,
+        "workspace": workspace,
+        "allow_insecure_ws": _allow_insecure_ws_from_environment(env),
+    }
+    _apply_agent_options(values, env)
+    return values
+
+
+def _legacy_agent_values(env: Mapping[str, str]) -> dict[str, object]:
+    server_url = env.get("AGENT_RELAY_SERVER_URL")
+    device_id = env.get("AGENT_RELAY_DEVICE_ID")
+    workspace_value = env.get("AGENT_RELAY_WORKSPACE")
+    if not server_url or not device_id or not workspace_value:
+        raise ConfigurationError()
+    token = _token_from_environment(
+        env,
+        token_file_key="AGENT_RELAY_AGENT_TOKEN_FILE",
+        token_key="AGENT_RELAY_AGENT_TOKEN",
+    )
+    values: dict[str, object] = {
+        "server_url": server_url,
+        "device_id": device_id,
+        "agent_id": device_id,
+        "agent_token": token,
+        "workspace": Path(workspace_value),
+        "allow_insecure_ws": _allow_insecure_ws_from_environment(env),
+    }
+    _apply_agent_options(values, env)
+    return values
+
+
+def _validated_workspace(path: Path) -> Path:
+    if not path.is_absolute() or not path.is_dir() or path.is_symlink():
+        raise ValueError("workspace must be an absolute existing non-symlink directory")
+    return path.resolve(strict=True)
+
+
+def _validate_agent_id(value: str) -> str:
+    if not _AGENT_ID_PATTERN.fullmatch(value):
+        raise ValueError("invalid agent identity")
+    return value
+
+
+def _private_local_path(path: Path, *, directory: bool) -> os.stat_result:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError("agent identity path must not be a symlink")
+    if directory:
+        valid_type = stat.S_ISDIR(info.st_mode)
+        expected_mode = 0o700
+    else:
+        valid_type = stat.S_ISREG(info.st_mode)
+        expected_mode = 0o600
+    if (
+        not valid_type
+        or stat.S_IMODE(info.st_mode) != expected_mode
+        or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+    ):
+        raise ValueError("agent identity path is not private")
+    return info
+
+
+def _ensure_agent_state_dir(workspace: Path) -> Path:
+    state_dir = workspace / ".agent-relay"
+    created = False
+    try:
+        state_dir.mkdir(mode=0o700)
+        created = True
+    except FileExistsError:
+        pass
+    if created:
+        try:
+            os.chmod(state_dir, 0o700)
+        except OSError:
+            state_dir.rmdir()
+            raise
+    _private_local_path(state_dir, directory=True)
+    return state_dir
+
+
+def _read_agent_id_file(path: Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+            or info.st_size > 128
+        ):
+            raise ValueError("agent identity file is not private")
+        value = os.read(fd, 129).decode("utf-8").strip()
+    finally:
+        os.close(fd)
+    return _validate_agent_id(value)
+
+
+def _create_agent_id_file(path: Path, value: str) -> str:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        existing = _read_agent_id_file(path)
+        if existing != value:
+            raise ValueError("existing agent identity differs")
+        return existing
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        encoded = value.encode("utf-8")
+        written = 0
+        while written < len(encoded):
+            count = os.write(fd, encoded[written:])
+            if count <= 0:
+                raise OSError("could not persist agent identity")
+            written += count
+        os.fsync(fd)
+    except OSError:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(fd)
+    return value
+
+
+def _load_or_create_agent_id(workspace: Path, configured: str | None) -> str:
+    selected = _validate_agent_id(configured) if configured else None
+    state_dir = _ensure_agent_state_dir(workspace)
+    identity_path = state_dir / "agent-id"
+    try:
+        _private_local_path(identity_path, directory=False)
+    except FileNotFoundError:
+        if selected is None:
+            selected = "agent-" + secrets.token_hex(16)
+        return _create_agent_id_file(identity_path, selected)
+    existing = _read_agent_id_file(identity_path)
+    if selected is not None and selected != existing:
+        raise ValueError("existing agent identity differs")
+    return existing
 
 
 def _is_explicit_loopback(hostname: str) -> bool:
@@ -334,6 +567,29 @@ class RelayAgent:
     def stop(self) -> None:
         self._stop_event.set()
 
+    def _connection_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "max_size": self.settings.max_ws_message_bytes,
+            "proxy": None,
+        }
+        headers = {
+            "Authorization": "Bearer " + self.settings.agent_token.get_secret_value()
+        }
+        try:
+            parameters = inspect.signature(self._connector).parameters
+        except (TypeError, ValueError):
+            parameter_names: set[str] = set()
+        else:
+            parameter_names = set(parameters)
+        header_option = (
+            "additional_headers"
+            if "additional_headers" in parameter_names
+            or "extra_headers" not in parameter_names
+            else "extra_headers"
+        )
+        options[header_option] = headers
+        return options
+
     async def run(self) -> None:
         try:
             delay = self.settings.reconnect_min_seconds
@@ -344,8 +600,7 @@ class RelayAgent:
                     await self._start_capabilities()
                     async with self._connector(
                         self.settings.server_url,
-                        max_size=self.settings.max_ws_message_bytes,
-                        proxy=None,
+                        **self._connection_options(),
                     ) as socket:
                         await self.run_session(socket)
                 except asyncio.CancelledError:
@@ -435,12 +690,11 @@ class RelayAgent:
             {
                 "version": 1,
                 "type": "register",
-                "device_id": self.settings.device_id,
-                "token": self.settings.agent_token.get_secret_value(),
+                "device_id": self.settings.agent_id,
             },
         )
         registered = await self._receive(socket)
-        if not isinstance(registered, Registered) or registered.device_id != self.settings.device_id:
+        if not isinstance(registered, Registered) or registered.device_id != self.settings.agent_id:
             raise ValueError("server did not confirm registration")
         self._session_registered = True
         self._registered_at = self._monotonic()
@@ -562,7 +816,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--agent-token", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.agent_token is not None:
-        parser.error("--agent-token is unsafe; use AGENT_RELAY_AGENT_TOKEN or AGENT_RELAY_AGENT_TOKEN_FILE")
+        parser.error(
+            "--agent-token is unsafe; use RELAY_AGENT_TOKEN_FILE or "
+            "AGENT_RELAY_AGENT_TOKEN_FILE"
+        )
     try:
         settings = AgentSettings.from_environment()
     except ConfigurationError:
@@ -617,10 +874,10 @@ def config_main(
 def _write_client_config_template(path: Path) -> None:
     template = """# Agent Relay client configuration template.
 # Export these values before running: agent-relay client run
-AGENT_RELAY_SERVER_URL=wss://relay.example.invalid/ws/agent
-AGENT_RELAY_DEVICE_ID=windows-laptop-1
-AGENT_RELAY_WORKSPACE=/absolute/path/to/workspace
-AGENT_RELAY_AGENT_TOKEN_FILE=/absolute/path/to/agent.token
+RELAY_URL=wss://relay.example.invalid/ws/agent
+RELAY_AGENT_WORKSPACE=/absolute/path/to/workspace
+RELAY_AGENT_TOKEN_FILE=/absolute/path/to/agent.token
+# RELAY_AGENT_ID=optional-provisioned-id
 """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
     flags |= getattr(os, "O_NOFOLLOW", 0)

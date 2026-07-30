@@ -51,7 +51,7 @@ from .registry import (
 
 
 class DeviceStatusOutput(Output):
-    device_id: str
+    device_id: str | None
     connected: bool
     capabilities: list[str]
     invocation_state: Literal["idle", "busy"]
@@ -62,8 +62,8 @@ class DeviceStatusOutput(Output):
 def create_mcp_facade(
     *,
     registry: RelayRegistry,
-    device_id: str,
     timeout_seconds: float,
+    device_id: str | None = None,
     host: str = "127.0.0.1",
     allowed_hosts: tuple[str, ...] = (),
     allowed_origins: tuple[str, ...] = (),
@@ -314,7 +314,7 @@ def _close_tool_input_schemas(mcp: FastMCP[Any]) -> None:
 
 async def _invoke(
     registry: RelayRegistry,
-    device_id: str,
+    device_id: str | None,
     message: InvokeMessage,
     timeout_seconds: float,
 ) -> dict[str, object]:

@@ -1,5 +1,5 @@
-# Example deployment for a Linux host. Run from a checkout of the repository's
-# main branch. Keep credentials in the ignored .env file, never in this file.
+# Simple one-listener MVP deployment for a Linux host.
+# Keep credentials in the ignored .env file, never in this file.
 services:
   relay-server:
     build: .
@@ -7,13 +7,10 @@ services:
     command: ["server", "run"]
     restart: unless-stopped
     ports:
-      - "${AGENT_RELAY_PUBLIC_BIND_IP:-0.0.0.0}:${AGENT_RELAY_PUBLIC_PORT:-8000}:8000"
+      - "8000:8000"
     environment:
-      AGENT_RELAY_DEVICE_ID: "${AGENT_RELAY_DEVICE_ID:?set AGENT_RELAY_DEVICE_ID}"
-      AGENT_RELAY_AGENT_TOKEN: "${AGENT_RELAY_AGENT_TOKEN:?set AGENT_RELAY_AGENT_TOKEN}"
-      AGENT_RELAY_CONTROL_TOKEN: "${AGENT_RELAY_CONTROL_TOKEN:?set AGENT_RELAY_CONTROL_TOKEN}"
-      AGENT_RELAY_HOST: "0.0.0.0"
-      AGENT_RELAY_ALLOW_NON_LOOPBACK_BIND: "true"
-      AGENT_RELAY_PORT: "8000"
-      AGENT_RELAY_MCP_ALLOWED_HOSTS: "${AGENT_RELAY_MCP_ALLOWED_HOSTS:?set AGENT_RELAY_MCP_ALLOWED_HOSTS}"
-      AGENT_RELAY_MCP_ALLOWED_ORIGINS: "${AGENT_RELAY_MCP_ALLOWED_ORIGINS:-}"
+      RELAY_SERVER_HOST: "0.0.0.0"
+      RELAY_SERVER_PORT: "8000"
+      RELAY_MCP_TOKEN: "${RELAY_MCP_TOKEN:?set RELAY_MCP_TOKEN}"
+      RELAY_AGENT_TOKEN: "${RELAY_AGENT_TOKEN:?set RELAY_AGENT_TOKEN}"
+      RELAY_ALLOW_INSECURE_WS: "${RELAY_ALLOW_INSECURE_WS:-true}"

@@ -125,6 +125,23 @@ def test_validate_status_accepts_a_well_formed_disconnected_payload() -> None:
     oracles.validate_status(result, device_id="test-device", connected=False)
 
 
+def test_validate_status_accepts_initial_unenrolled_offline_payload() -> None:
+    """Before enrollment the dynamic registry reports no device identity."""
+    oracles = _oracles()
+    payload = _good_status_payload("test-device", connected=False)
+    payload["device_id"] = None
+    result = _make_call_tool_result(payload)
+    oracles.validate_status(
+        result,
+        device_id=None,
+        connected=False,
+        allow_unenrolled=True,
+    )
+
+    with pytest.raises(ValueError):
+        oracles.validate_status(result, device_id="test-device", connected=False)
+
+
 def test_validate_status_accepts_a_narrow_core_capability_inventory() -> None:
     """A native core harness may advertise only its enabled capabilities."""
     oracles = _oracles()

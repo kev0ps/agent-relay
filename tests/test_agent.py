@@ -25,6 +25,32 @@ from agent_relay.protocol import (
 from agent_relay.runner import CommandResult
 
 
+def _canonical_agent_environment(
+    tmp_path: Path, *, url: str = "wss://relay.example.test/ws/agent"
+) -> tuple[dict[str, str], Path]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    token_file = tmp_path / "agent.token"
+    token_file.write_text("canonical-agent-secret\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    return (
+        {
+            "RELAY_URL": url,
+            "RELAY_AGENT_TOKEN_FILE": str(token_file),
+            "RELAY_AGENT_WORKSPACE": str(workspace),
+        },
+        token_file,
+    )
+
+
+def _load_canonical_agent_settings(environment: dict[str, str]) -> AgentSettings:
+    try:
+        return AgentSettings.from_environment(environment)
+    except ConfigurationError as exc:
+        pytest.fail(f"canonical Agent environment was rejected: {exc}")
+    raise AssertionError("unreachable")
+
+
 def test_agent_settings_validate_url_workspace_and_mask_secret(tmp_path: Path) -> None:
     settings = AgentSettings(
         server_url="ws://127.0.0.1:8765/ws/agent",
@@ -41,6 +67,73 @@ def test_agent_settings_validate_url_workspace_and_mask_secret(tmp_path: Path) -
             agent_token="secret-token",
             workspace=tmp_path,
         )
+
+
+def test_canonical_agent_environment_uses_private_token_file_and_redacts_secret(
+    tmp_path: Path,
+) -> None:
+    environment, token_file = _canonical_agent_environment(tmp_path)
+    settings = _load_canonical_agent_settings(environment)
+
+    assert settings.server_url == environment["RELAY_URL"]
+    assert settings.workspace == (tmp_path / "workspace").resolve()
+    assert settings.agent_token.get_secret_value() == "canonical-agent-secret"
+    assert "canonical-agent-secret" not in repr(settings)
+    assert token_file.is_file()
+    assert not token_file.is_symlink()
+    assert token_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_generated_agent_id_is_stable_across_configuration_reloads(tmp_path: Path) -> None:
+    environment, _ = _canonical_agent_environment(tmp_path)
+    first = _load_canonical_agent_settings(environment)
+    second = _load_canonical_agent_settings(environment)
+
+    first_id = getattr(first, "agent_id", None)
+    second_id = getattr(second, "agent_id", None)
+    assert isinstance(first_id, str) and first_id
+    assert first_id == second_id
+
+
+def test_existing_agent_id_is_preserved_instead_of_silently_replaced(
+    tmp_path: Path,
+) -> None:
+    environment, _ = _canonical_agent_environment(tmp_path)
+    environment["RELAY_AGENT_ID"] = "provisioned-agent-1"
+
+    settings = _load_canonical_agent_settings(environment)
+
+    assert getattr(settings, "agent_id", None) == "provisioned-agent-1"
+
+
+@pytest.mark.parametrize(
+    ("url", "allow_insecure_ws", "accepted"),
+    [
+        ("ws://relay.example.test/ws/agent", "true", True),
+        ("ws://relay.example.test/ws/agent", "false", False),
+        ("wss://relay.example.test/ws/agent", "false", True),
+        ("ws://127.0.0.1/ws/agent", "false", True),
+    ],
+)
+def test_canonical_agent_transport_policy(
+    tmp_path: Path,
+    url: str,
+    allow_insecure_ws: str,
+    accepted: bool,
+) -> None:
+    environment, _ = _canonical_agent_environment(tmp_path, url=url)
+    environment["RELAY_ALLOW_INSECURE_WS"] = allow_insecure_ws
+
+    try:
+        settings = AgentSettings.from_environment(environment)
+    except ConfigurationError as exc:
+        if accepted:
+            pytest.fail(f"allowed Agent URL was rejected: {exc}")
+        return
+
+    if not accepted:
+        pytest.fail("non-loopback ws:// was accepted while insecure transport was disabled")
+    assert settings.server_url == url
 
 
 def test_computer_settings_are_disabled_by_default_and_all_or_none(
@@ -433,6 +526,44 @@ def test_agent_reregisters_and_invokes_after_socket_loss(
     asyncio.run(scenario())
 
 
+def test_websocket_connections_send_bearer_only_in_handshake_options(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        seen: dict[str, object] = {}
+
+        def connector(*_: object, **kwargs: object) -> _Connection:
+            seen.update(kwargs)
+            raise ConnectionError("unused")
+
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="agent-handshake-secret",
+                workspace=tmp_path,
+                reconnect_min_seconds=0.001,
+                reconnect_max_seconds=0.001,
+            ),
+            connector=connector,
+        )
+
+        async def stop_after_retry(_: float) -> None:
+            agent.stop()
+
+        agent._sleep_or_stop = stop_after_retry  # type: ignore[method-assign]
+        await agent.run()
+        assert seen["additional_headers"] == {
+            "Authorization": "Bearer agent-handshake-secret"
+        }
+        assert seen["proxy"] is None
+        assert "agent-handshake-secret" not in json.dumps(
+            {key: value for key, value in seen.items() if key != "additional_headers"}
+        )
+
+    asyncio.run(scenario())
+
+
 def test_websocket_connections_disable_proxy_even_with_hostile_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -492,6 +623,37 @@ class _Socket:
 
     async def recv(self) -> str:
         return await self.inbound.get()
+
+
+def test_agent_register_frame_contains_no_agent_token(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        socket = _Socket(
+            [json.dumps({"version": 1, "type": "registered", "device_id": "d"})]
+        )
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="secret-token",
+                workspace=tmp_path,
+                heartbeat_interval_seconds=60,
+            )
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if len(socket.sent) >= 2:
+                break
+            await asyncio.sleep(0)
+        agent.stop()
+        await task
+
+        register = socket.sent[0]
+        assert register["type"] == "register"
+        assert "token" not in register
+        assert "agent_token" not in register
+        assert "secret-token" not in json.dumps(register)
+
+    asyncio.run(scenario())
 
 
 class _Capability:

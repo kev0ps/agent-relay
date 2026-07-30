@@ -34,6 +34,86 @@ def settings() -> RelaySettings:
     )
 
 
+def test_server_main_uses_canonical_environment_defaults_and_optional_deferred_mcp_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {
+        "RELAY_MCP_TOKEN": "mcp-secret",
+        "RELAY_AGENT_TOKEN": "agent-secret",
+    }
+    monkeypatch.setattr("agent_relay.server.os.environ", environment)
+    observed: dict[str, object] = {}
+
+    def fake_run(app: object, *, host: str, port: int, **_: object) -> None:
+        observed.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    try:
+        main([])
+    except SystemExit as exc:
+        pytest.fail(f"canonical server environment was rejected: {exc}")
+
+    assert observed["host"] == "0.0.0.0"
+    assert observed["port"] == 8000
+    assert "RELAY_AGENT_ID" not in environment
+    assert "RELAY_MCP_ALLOWED_HOSTS" not in environment
+    assert "RELAY_MCP_ALLOWED_ORIGINS" not in environment
+
+    environment["RELAY_AGENT_TOKEN"] = "mcp-secret"
+    with pytest.raises(SystemExit):
+        main([])
+
+
+def test_server_main_accepts_canonical_host_port_and_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {
+        "RELAY_SERVER_HOST": "127.0.0.1",
+        "RELAY_SERVER_PORT": "8765",
+        "RELAY_MCP_TOKEN": "mcp-secret",
+        "RELAY_AGENT_TOKEN": "agent-secret",
+    }
+    monkeypatch.setattr("agent_relay.server.os.environ", environment)
+    observed: dict[str, object] = {}
+
+    def fake_run(app: object, *, host: str, port: int, **_: object) -> None:
+        observed.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    try:
+        main([])
+    except SystemExit as exc:
+        pytest.fail(f"canonical server environment was rejected: {exc}")
+
+    assert observed["host"] == "127.0.0.1"
+    assert observed["port"] == 8765
+
+
+def test_server_main_accepts_explicit_canonical_lan_wildcard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {
+        "RELAY_SERVER_HOST": "0.0.0.0",
+        "RELAY_SERVER_PORT": "8000",
+        "RELAY_MCP_TOKEN": "mcp-secret",
+        "RELAY_AGENT_TOKEN": "agent-secret",
+    }
+    monkeypatch.setattr("agent_relay.server.os.environ", environment)
+    observed: dict[str, object] = {}
+
+    def fake_run(app: object, *, host: str, port: int, **_: object) -> None:
+        observed.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    try:
+        main([])
+    except SystemExit as exc:
+        pytest.fail(f"explicit canonical LAN bind was rejected: {exc}")
+
+    assert observed["host"] == "0.0.0.0"
+    assert observed["port"] == 8000
+
+
 def test_relay_configuration_errors_never_echo_tokens(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -562,23 +642,66 @@ def test_control_endpoint_distinguishes_unknown_and_offline_device() -> None:
 def test_websocket_requires_register_as_first_message() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_json({"version": 1, "type": "heartbeat"})
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 ws.receive_json()
     assert exc_info.value.code == 1002
 
 
+def test_websocket_authenticates_agent_bearer_before_token_free_register_frame() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/agent", headers={"Authorization": "Bearer agent-secret"}
+        ) as ws:
+            ws.send_json(
+                {"version": 1, "type": "register", "device_id": "device-a"}
+            )
+            try:
+                registered = ws.receive_json()
+            except WebSocketDisconnect as exc:
+                pytest.fail(
+                    "a valid Agent Bearer handshake must accept a token-free register "
+                    f"frame (closed with {exc.code})"
+                )
+    assert registered == {
+        "version": 1,
+        "type": "registered",
+        "device_id": "device-a",
+    }
+
+
+def test_websocket_rejects_invalid_agent_bearer_before_processing_register_frame() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        try:
+            with client.websocket_connect(
+                "/ws/agent", headers={"Authorization": "Bearer wrong"}
+            ) as ws:
+                ws.send_json(
+                    {
+                        "version": 1,
+                        "type": "register",
+                        "device_id": "device-a",
+                        }
+                )
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    ws.receive_json()
+                assert exc_info.value.code == 1008
+        except WebSocketDisconnect as exc:
+            assert exc.code == 1008
+
+
 def test_websocket_register_invoke_and_result() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_json(
                 {
                     "version": 1,
                     "type": "register",
                     "device_id": "device-a",
-                    "token": "agent-secret",
                 }
             )
             assert ws.receive_json()["type"] == "registered"
@@ -623,25 +746,24 @@ def test_websocket_register_invoke_and_result() -> None:
             }  # type: ignore[union-attr]
 
 
-def test_websocket_rejects_bad_token_and_second_connection_distinctly() -> None:
+def test_websocket_rejects_missing_agent_bearer_before_any_frame() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as bad_token:
-            bad_token.send_json(
-                {
-                    "version": 1,
-                    "type": "register",
-                    "device_id": "device-a",
-                    "token": "wrong",
-                }
-            )
+        with client.websocket_connect("/ws/agent") as ws:
             with pytest.raises(WebSocketDisconnect) as exc_info:
-                bad_token.receive_json()
-        assert exc_info.value.code == 1008
-        assert "wrong" not in exc_info.value.reason
+                ws.receive_json()
 
-        with client.websocket_connect("/ws/agent") as first:
-            first.send_json(
+    assert exc_info.value.code == 1008
+    assert "agent-secret" not in exc_info.value.reason
+
+
+def test_websocket_rejects_register_frame_credentials_even_with_valid_bearer() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/agent", headers={"Authorization": "Bearer agent-secret"}
+        ) as ws:
+            ws.send_json(
                 {
                     "version": 1,
                     "type": "register",
@@ -649,15 +771,28 @@ def test_websocket_rejects_bad_token_and_second_connection_distinctly() -> None:
                     "token": "agent-secret",
                 }
             )
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_json()
+
+    assert exc_info.value.code == 1002
+    assert "agent-secret" not in exc_info.value.reason
+
+
+def test_websocket_rejects_bad_token_and_second_connection_distinctly() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/agent", headers={"Authorization": "Bearer agent-secret"}
+        ) as first:
+            first.send_json(
+                {"version": 1, "type": "register", "device_id": "device-a"}
+            )
             assert first.receive_json()["type"] == "registered"
-            with client.websocket_connect("/ws/agent") as duplicate:
+            with client.websocket_connect(
+                "/ws/agent", headers={"Authorization": "Bearer agent-secret"}
+            ) as duplicate:
                 duplicate.send_json(
-                    {
-                        "version": 1,
-                        "type": "register",
-                        "device_id": "device-a",
-                        "token": "agent-secret",
-                    }
+                    {"version": 1, "type": "register", "device_id": "device-a"}
                 )
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     duplicate.receive_json()
@@ -665,29 +800,11 @@ def test_websocket_rejects_bad_token_and_second_connection_distinctly() -> None:
             assert exc_info.value.reason == "device already connected"
 
 
-def test_websocket_rejects_non_ascii_register_token() -> None:
-    app = create_app(settings())
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
-            ws.send_json(
-                {
-                    "version": 1,
-                    "type": "register",
-                    "device_id": "device-a",
-                    "token": "token-\u00e9",
-                }
-            )
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                ws.receive_json()
-
-    assert exc_info.value.code == 1008
-
-
 def test_websocket_rejects_json_integer_exceeding_python_limit() -> None:
     app = create_app(settings())
     oversized_integer = "9" * 4301
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_text(
                 '{"version":1,"type":"heartbeat","integer":' + oversized_integer + "}"
             )
@@ -727,13 +844,12 @@ def test_websocket_processes_capabilities_heartbeat_progress_and_error(
     monkeypatch.setattr(app.state.registry, "handle_progress", observed_handle_progress)
     headers = {"Authorization": "Bearer control-secret"}
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_json(
                 {
                     "version": 1,
                     "type": "register",
                     "device_id": "device-a",
-                    "token": "agent-secret",
                 }
             )
             assert ws.receive_json()["type"] == "registered"
@@ -798,13 +914,12 @@ def test_websocket_closes_cleanly_for_a_duplicate_result() -> None:
     app = create_app(settings())
     headers = {"Authorization": "Bearer control-secret"}
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_json(
                 {
                     "version": 1,
                     "type": "register",
                     "device_id": "device-a",
-                    "token": "agent-secret",
                 }
             )
             assert ws.receive_json()["type"] == "registered"
@@ -844,13 +959,12 @@ def test_websocket_closes_for_a_result_sent_after_timeout() -> None:
     app = create_app(settings())
     headers = {"Authorization": "Bearer control-secret"}
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_json(
                 {
                     "version": 1,
                     "type": "register",
                     "device_id": "device-a",
-                    "token": "agent-secret",
                 }
             )
             assert ws.receive_json()["type"] == "registered"
@@ -895,13 +1009,12 @@ def test_websocket_disconnect_during_invocation_releases_caller_and_registry() -
     headers = {"Authorization": "Bearer control-secret"}
     with TestClient(app) as client:
         response: dict[str, object] = {}
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_json(
                 {
                     "version": 1,
                     "type": "register",
                     "device_id": "device-a",
-                    "token": "agent-secret",
                 }
             )
             assert ws.receive_json()["type"] == "registered"
@@ -928,19 +1041,19 @@ def test_websocket_disconnect_during_invocation_releases_caller_and_registry() -
 def test_websocket_rejects_oversized_text_binary_and_deep_json() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_text("x" * (app.state.settings.max_ws_message_bytes + 1))
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 ws.receive_json()
         assert exc_info.value.code == 1009
 
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_bytes(b"{}")
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 ws.receive_json()
         assert exc_info.value.code == 1002
 
-        with client.websocket_connect("/ws/agent") as ws:
+        with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
             ws.send_text("{" * 1100 + "}" * 1100)
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 ws.receive_json()

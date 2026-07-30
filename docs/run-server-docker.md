@@ -1,53 +1,51 @@
 # Run the Relay Server with Docker
 
-This compose deployment runs **only the Relay Server** on a Linux host. The
+This recipe runs the **Relay Server only** in Docker on a Linux host. The
 Relay Agent remains on the controlled Windows laptop and opens an outbound
-`wss://` connection to the server. The MCP client connects to the server's
-`/mcp` endpoint.
+connection. MCP/Codex remains local to the Linux host and connects to the
+Server's `/mcp` endpoint.
 
-This is a private-pilot deployment recipe for the current core MCP surface. It
-is not a complete Browser or Computer Use deployment.
+This is the simple one-listener MVP deployment. The application exposes one
+TCP listener on port `8000`; that listener serves both `/mcp` and `/ws/agent`.
+This recipe does not configure TLS termination, labels, or an additional network
+component.
 
 ## Topology
 
 ```text
-MCP client
-    | HTTPS /mcp + control token
+Linux host: MCP/Codex
+    |
+    | http://127.0.0.1:8000/mcp + Bearer RELAY_MCP_TOKEN
     v
-Linux host / Docker port 8000
+Docker relay-server: 0.0.0.0:8000
+    ^
     |
-    +-- TLS/WSS proxy -> /ws/agent
-    |                    ^
-    |                    | outbound from the laptop
-    |                    |
-    |                Windows laptop: Relay Agent
+    | outbound Agent connection:
+    | ws://<LAN-IP>:8000/ws/agent  (trusted LAN/test)
+    | or wss://<TLS endpoint>/ws/agent (external TLS already exists)
     |
-    +-- HTTPS reverse proxy -> /mcp
+Windows laptop: Relay Agent
 ```
 
-The remote-test compose deliberately opts into `AGENT_RELAY_HOST=0.0.0.0` and
-publishes port `8000` on all host interfaces. Without this bind, a Windows
-laptop cannot reach the server directly. The opt-in also requires an explicit
-MCP Host allowlist; the default application configuration remains loopback-only.
-
-Port `8000` is plain HTTP/WebSocket and should be restricted by the server
-firewall to the private test network or placed behind a trusted TLS/WSS reverse
-proxy. The Windows Agent rejects non-loopback plaintext `ws://`, so a real
-remote Agent connection must use `wss://` even when Docker publishes port 8000.
+Port `8000` is plain HTTP/WebSocket in the application and must be
+LAN-firewalled. The Agent has no inbound listener. The application does not
+implement TLS. Plaintext tokens are acceptable only on a trusted LAN/test
+network.
 
 ## Prerequisites
 
 - Linux host with Docker Engine and Docker Compose v2;
 - a checked-out, reviewed Agent Relay revision;
-- a firewall rule limiting the test port, or a trusted HTTPS/WSS reverse proxy
-  such as Tailscale Serve;
-- a private DNS name for the Relay Server;
-- Python/uv on the Windows laptop for the native Agent installation.
+- a firewall rule limiting port `8000` to the trusted LAN/test network;
+- Python 3.11+ and `uv` on the Windows laptop for the native Agent;
+- if WSS is required, an externally provided TLS endpoint that already serves
+  `/ws/agent` and reaches the published listener. This guide does not prescribe
+  a particular TLS endpoint implementation.
 
 The local Docker daemon is not required to prepare this file, but the actual
 image build and container smoke test must run on a Linux Docker host.
 
-## Checkout `main` on the server
+## Checkout the reviewed revision on the server
 
 The image is built locally from the Dockerfile and source in the checked-out
 repository. Nothing is pulled from a prebuilt Agent Relay image.
@@ -69,24 +67,26 @@ private; `.env` is ignored by Git.
 ```bash
 umask 077
 agent_token="$(openssl rand -base64 32)"
-control_token="$(openssl rand -base64 32)"
-if [ "$agent_token" = "$control_token" ]; then
+mcp_token="$(openssl rand -base64 32)"
+if [ "$agent_token" = "$mcp_token" ]; then
   echo "token collision; generate again" >&2
   exit 1
 fi
 cat > .env <<EOF
-AGENT_RELAY_DEVICE_ID=windows-laptop-1
-AGENT_RELAY_AGENT_TOKEN=$agent_token
-AGENT_RELAY_CONTROL_TOKEN=$control_token
-AGENT_RELAY_MCP_ALLOWED_HOSTS=relay.example.invalid:*
-AGENT_RELAY_MCP_ALLOWED_ORIGINS=https://relay.example.invalid
+RELAY_SERVER_HOST=0.0.0.0
+RELAY_SERVER_PORT=8000
+RELAY_MCP_TOKEN=$mcp_token
+RELAY_AGENT_TOKEN=$agent_token
+RELAY_ALLOW_INSECURE_WS=true
 EOF
-unset agent_token control_token
+unset agent_token mcp_token
 chmod 600 .env
 ```
 
-Do not commit `.env`, print its contents, use `set -x`, or place the token
-values directly in a shell command or proxy configuration.
+Do not commit `.env`, print its contents, use `set -x`, or place token values
+directly in a shell command. `RELAY_MCP_ALLOWED_HOSTS` and
+`RELAY_MCP_ALLOWED_ORIGINS` are deferred optional settings for a later
+configuration step; leave them unset for this MVP.
 
 ## Build and start
 
@@ -94,69 +94,59 @@ Validate the rendered Compose model without printing interpolated secrets:
 
 ```bash
 docker compose -f docker-compose.yml config --quiet
-```
-
-Build and start the server:
-
-```bash
 docker compose -f docker-compose.yml build --pull
 docker compose -f docker-compose.yml up -d
-```
-
-Check the container state:
-
-```bash
 docker compose -f docker-compose.yml ps
 ```
 
-The generated container name can differ if the Compose project name is
-changed; use the name shown by `docker compose -f docker-compose.yml ps` when querying it.
-
-The compose service publishes `0.0.0.0:8000` by default. Restrict that port in
-the Linux firewall. The server's MCP Host protection requires the incoming Host
-header to match `AGENT_RELAY_MCP_ALLOWED_HOSTS`; use a real hostname or address
-instead of the example value. The allowed-host patterns may include `:*` for
-the port.
-
-If a TLS/WSS reverse proxy is used, it must preserve these exact paths:
-
-- MCP: `/mcp`
-- Agent WebSocket: `/ws/agent`
-
-The proxy must preserve WebSocket Upgrade and validate TLS. It may forward to
-`http://127.0.0.1:8000` or the container's published host port. Do not use
-non-loopback plaintext `ws://` for the laptop connection.
+The compose service publishes the single listener as `0.0.0.0:8000` by
+default. Confirm that the Linux firewall allows only the intended trusted
+LAN/test peers. Do not expose port `8000` to the public Internet.
 
 ## Configure the Windows Agent
 
 Install the reviewed repository revision on the laptop with Python 3.11+ and
-`uv`, then create a private token file containing the **same agent token** as
-the server. The file must be a private regular file. Configure the Agent with
+`uv`, then create a private token file containing the **same Agent token** as
+the Server. The file must be a private regular file. Configure the Agent with
 values equivalent to:
 
 ```powershell
-$env:AGENT_RELAY_DEVICE_ID = "windows-laptop-1"
-$env:AGENT_RELAY_SERVER_URL = "wss://relay.example.invalid/ws/agent"
-$env:AGENT_RELAY_WORKSPACE = Join-Path $env:USERPROFILE "agent-relay-workspace"
-$env:AGENT_RELAY_AGENT_TOKEN_FILE = Join-Path $env:USERPROFILE ".agent-relay\agent.token"
+$env:RELAY_URL = "ws://<LAN-IP>:8000/ws/agent"
+$env:RELAY_AGENT_WORKSPACE = Join-Path $env:USERPROFILE "agent-relay-workspace"
+$env:RELAY_AGENT_TOKEN_FILE = Join-Path $env:USERPROFILE ".agent-relay\agent.token"
+$env:RELAY_AGENT_ID = "windows-laptop-1"
+$env:RELAY_ALLOW_INSECURE_WS = "true"
 uv run agent-relay client run
 ```
 
-Replace the example hostname and paths with the private deployment values. Do
-not put the control token on the laptop: the Agent needs only the agent token.
-The laptop does not need an inbound firewall rule or a published port.
+Replace `<LAN-IP>` and the paths with the private deployment values. The
+explicit `RELAY_AGENT_ID` is optional; when omitted, the Agent persists a stable
+identity in its private workspace state. The laptop does not need an inbound
+firewall rule or a published port.
 
-## Configure the MCP client
+For an externally provided TLS endpoint, use the exact Agent path and leave the
+Agent URL policy false or unset:
 
-Point the MCP client at the HTTPS endpoint exposed by the reverse proxy:
-
-```text
-https://relay.example.invalid/mcp
+```powershell
+$env:RELAY_URL = "wss://<TLS endpoint>/ws/agent"
+# RELAY_ALLOW_INSECURE_WS is not needed for wss://
+uv run agent-relay client run
 ```
 
-Authenticate it with the distinct control token from the server's private
-`.env`. Do not put the control token in the repository, a public proxy setting,
-or logs.
+`RELAY_ALLOW_INSECURE_WS=true` permits both `ws://` and `wss://` URLs. With
+`false`, non-loopback `ws://` is rejected while `wss://` is accepted.
+
+## Configure MCP/Codex
+
+MCP/Codex stays on the Linux host and uses the local endpoint:
+
+```text
+http://127.0.0.1:8000/mcp
+```
+
+Authenticate it with the distinct `RELAY_MCP_TOKEN` from the Server's private
+`.env` as a Bearer token. Do not put the MCP token in the repository, display
+it in logs, or send it to the Windows laptop.
 
 ## Stop and rotate credentials
 
@@ -164,27 +154,25 @@ or logs.
 docker compose -f docker-compose.yml down
 ```
 
-To rotate credentials, stop the Agent and server, generate distinct new agent
-and control tokens, update the server `.env` and the Agent token file, then
-restart both:
+To rotate credentials, stop the Agent and Server, generate distinct new Agent
+and MCP tokens, update the Server `.env` and the Agent token file, then restart
+both:
 
 ```bash
 docker compose -f docker-compose.yml build --pull
 docker compose -f docker-compose.yml up -d
 ```
 
-Delete or revoke the old values according to the server's secret-management
+Delete or revoke the old values according to the Server's secret-management
 policy.
 
 ## Current limitations
 
-- This compose has not been built or executed in the current environment because the
-  local Docker daemon/CLI is unavailable; validate it on the Linux deployment
-  host with `docker compose -f docker-compose.yml config --quiet`, `docker compose -f docker-compose.yml build`, and a real
-  startup smoke test.
+- This recipe does not provide TLS; WSS depends on an externally provided TLS
+  endpoint, and the application does not prescribe its implementation.
 - The current Windows CI proof is loopback/native on a Windows runner, not this
   mixed Linux-server/Windows-laptop topology.
 - Browser Windows E2E and Computer Use Windows are not covered by this recipe.
 - There is no packaged Windows service installer or Linux systemd unit yet;
-  process supervision is currently provided by Compose on the server and the
+  process supervision is currently provided by Compose on the Server and the
   operator's chosen Windows startup/service mechanism on the laptop.

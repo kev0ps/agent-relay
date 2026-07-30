@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from typing import Annotated, Literal
@@ -118,21 +118,46 @@ class _MCPBearerAuth:
         await self._app(scope, receive, send)
 
 
+def _websocket_bearer_matches(websocket: WebSocket, expected: str) -> bool:
+    """Validate exactly one bounded ASCII Bearer header without exposing it."""
+    values = [
+        value
+        for name, value in websocket.scope.get("headers", [])
+        if name.lower() == b"authorization"
+    ]
+    if len(values) != 1 or len(values[0]) > len(b"Bearer ") + MAX_TOKEN_LENGTH:
+        return False
+    try:
+        supplied = values[0].decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    return credentials_match(supplied, expected)
+
+
 class RelaySettings(BaseModel):
-    """Explicit deployment settings; callers supply both independent secrets."""
+    """Explicit deployment settings; callers supply both independent secrets.
+
+    ``mcp_token`` is the canonical control-plane credential.  ``control_token``
+    remains accepted as an input compatibility alias for existing deployments;
+    it is intentionally not a model field so new configuration cannot
+    accidentally configure two MCP credentials.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    device_id: DeviceId
     agent_token: Annotated[str, Field(min_length=1, max_length=MAX_TOKEN_LENGTH)] = (
         Field(repr=False)
     )
-    control_token: Annotated[str, Field(min_length=1, max_length=MAX_TOKEN_LENGTH)] = (
+    mcp_token: Annotated[str, Field(min_length=1, max_length=MAX_TOKEN_LENGTH)] = (
         Field(repr=False)
     )
-    bind_host: str = "127.0.0.1"
+    # A server can start before any Agent has registered.  The optional value
+    # is retained only as a compatibility seed for the pre-migration API.
+    device_id: DeviceId | None = None
+    bind_host: str = "0.0.0.0"
     mcp_allowed_hosts: tuple[str, ...] = ()
     mcp_allowed_origins: tuple[str, ...] = ()
+    allow_insecure_ws: bool = True
     min_timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 0.1
     max_timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 30.0
     cancel_send_timeout_seconds: Annotated[float, Field(gt=0, le=5)] = 0.25
@@ -141,6 +166,8 @@ class RelaySettings(BaseModel):
     max_ws_message_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 128 * 1024
 
     def __init__(self, /, **data: object) -> None:
+        if "mcp_token" not in data and "control_token" in data:
+            data["mcp_token"] = data.pop("control_token")
         try:
             super().__init__(**data)
         except ValidationError:
@@ -173,9 +200,56 @@ class RelaySettings(BaseModel):
     def valid_timeout_range(self) -> RelaySettings:
         if self.min_timeout_seconds > self.max_timeout_seconds:
             raise ValueError("min_timeout_seconds must be <= max_timeout_seconds")
-        if credentials_match(self.agent_token, self.control_token):
+        if credentials_match(self.agent_token, self.mcp_token):
             raise ValueError("agent and control tokens must differ")
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_control_token_alias(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            data = dict(value)
+            if "mcp_token" not in data and "control_token" in data:
+                data["mcp_token"] = data.pop("control_token")
+            return data
+        return value
+
+    @property
+    def control_token(self) -> str:
+        """Compatibility view for callers still using the old field name."""
+        return self.mcp_token
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        bind_host: str | None = None,
+    ) -> RelaySettings:
+        """Load canonical server settings without requiring an Agent identity."""
+        env = os.environ if environ is None else environ
+        try:
+            values: dict[str, object] = {
+                "agent_token": env["RELAY_AGENT_TOKEN"],
+                "mcp_token": env["RELAY_MCP_TOKEN"],
+                "bind_host": bind_host
+                if bind_host is not None
+                else env.get("RELAY_SERVER_HOST", "0.0.0.0"),
+                "allow_insecure_ws": _parse_bool(
+                    env.get("RELAY_ALLOW_INSECURE_WS", "true")
+                ),
+                "mcp_allowed_hosts": _split_csv(
+                    env.get("RELAY_MCP_ALLOWED_HOSTS", "")
+                ),
+                "mcp_allowed_origins": _split_csv(
+                    env.get("RELAY_MCP_ALLOWED_ORIGINS", "")
+                ),
+            }
+            if "RELAY_MAX_WS_MESSAGE_BYTES" in env:
+                values["max_ws_message_bytes"] = int(env["RELAY_MAX_WS_MESSAGE_BYTES"])
+            return cls(**values)
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("invalid relay server configuration") from None
 
 
 class _InvokeRequest(BaseModel):
@@ -273,7 +347,6 @@ def create_app(settings: RelaySettings) -> FastAPI:
     )
     mcp = create_mcp_facade(
         registry=registry,
-        device_id=settings.device_id,
         timeout_seconds=settings.max_timeout_seconds,
         host=settings.bind_host,
         allowed_hosts=settings.mcp_allowed_hosts,
@@ -294,6 +367,11 @@ def create_app(settings: RelaySettings) -> FastAPI:
     @app.websocket("/ws/agent")
     async def agent_socket(websocket: WebSocket) -> None:
         await websocket.accept()
+        if not _websocket_bearer_matches(
+            websocket, f"Bearer {settings.agent_token}"
+        ):
+            await websocket.close(code=1008, reason="authentication failed")
+            return
         connection = _SerializedWebSocket(websocket)
         registered = False
         try:
@@ -373,7 +451,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
         body: InvokeRequest,
         authorization: Annotated[str | None, Header()] = None,
     ) -> InvokeResponse:
-        expected = f"Bearer {settings.control_token}"
+        expected = f"Bearer {settings.mcp_token}"
         if authorization is None or not credentials_match(authorization, expected):
             raise HTTPException(
                 status_code=401,
@@ -489,42 +567,79 @@ def create_app(settings: RelaySettings) -> FastAPI:
 
     # Mount last so the existing control and WebSocket routes retain priority.
     # The child owns /mcp directly, avoiding a /mcp -> /mcp/ redirect.
-    app.mount("/", _MCPBearerAuth(mcp_http_app, settings.control_token))
+    app.mount("/", _MCPBearerAuth(mcp_http_app, settings.mcp_token))
 
     return app
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run the control server from explicitly configured environment."""
+    """Run the control server from canonical or legacy environment settings."""
+    env = os.environ
+    canonical = any(
+        key in env
+        for key in (
+            "RELAY_AGENT_TOKEN",
+            "RELAY_MCP_TOKEN",
+            "RELAY_SERVER_HOST",
+            "RELAY_SERVER_PORT",
+        )
+    )
     parser = argparse.ArgumentParser(description="Agent Relay control server")
-    parser.add_argument("--host", default=os.environ.get("AGENT_RELAY_HOST", "127.0.0.1"))
-    parser.add_argument("--port", default=os.environ.get("AGENT_RELAY_PORT", "8000"))
+    parser.add_argument(
+        "--host",
+        default=(
+            env.get("RELAY_SERVER_HOST", "0.0.0.0")
+            if canonical
+            else env.get("AGENT_RELAY_HOST", "127.0.0.1")
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        default=(
+            env.get("RELAY_SERVER_PORT", "8000")
+            if canonical
+            else env.get("AGENT_RELAY_PORT", "8000")
+        ),
+    )
     args = parser.parse_args(argv)
     try:
-        mcp_allowed_hosts = _split_csv(os.environ.get("AGENT_RELAY_MCP_ALLOWED_HOSTS", ""))
-        mcp_allowed_origins = _split_csv(os.environ.get("AGENT_RELAY_MCP_ALLOWED_ORIGINS", ""))
-        allow_non_loopback = os.environ.get(
-            "AGENT_RELAY_ALLOW_NON_LOOPBACK_BIND", "false"
-        ).lower() == "true"
-        if not _is_allowed_bind_host(
-            args.host,
-            allow_non_loopback=allow_non_loopback,
-            mcp_allowed_hosts=mcp_allowed_hosts,
-        ):
-            raise ValueError
         port = int(args.port)
         if not 1 <= port <= 65535:
             raise ValueError
-        settings = RelaySettings(
-            device_id=os.environ["AGENT_RELAY_DEVICE_ID"],
-            agent_token=os.environ["AGENT_RELAY_AGENT_TOKEN"],
-            control_token=os.environ["AGENT_RELAY_CONTROL_TOKEN"],
-            bind_host=args.host,
-            mcp_allowed_hosts=mcp_allowed_hosts,
-            mcp_allowed_origins=mcp_allowed_origins,
-            max_ws_message_bytes=int(os.environ.get("AGENT_RELAY_MAX_WS_MESSAGE_BYTES", 128 * 1024)),
-        )
-    except (KeyError, ValueError):
+        if canonical:
+            settings = RelaySettings.from_environment(env, bind_host=args.host)
+            # The canonical server intentionally boots on its documented
+            # default before the deferred host/origin configuration lands.
+            if not _is_canonical_bind_host(args.host):
+                raise ValueError
+        else:
+            mcp_allowed_hosts = _split_csv(
+                env.get("AGENT_RELAY_MCP_ALLOWED_HOSTS", "")
+            )
+            mcp_allowed_origins = _split_csv(
+                env.get("AGENT_RELAY_MCP_ALLOWED_ORIGINS", "")
+            )
+            allow_non_loopback = env.get(
+                "AGENT_RELAY_ALLOW_NON_LOOPBACK_BIND", "false"
+            ).lower() == "true"
+            if not _is_allowed_bind_host(
+                args.host,
+                allow_non_loopback=allow_non_loopback,
+                mcp_allowed_hosts=mcp_allowed_hosts,
+            ):
+                raise ValueError
+            settings = RelaySettings(
+                device_id=env["AGENT_RELAY_DEVICE_ID"],
+                agent_token=env["AGENT_RELAY_AGENT_TOKEN"],
+                control_token=env["AGENT_RELAY_CONTROL_TOKEN"],
+                bind_host=args.host,
+                mcp_allowed_hosts=mcp_allowed_hosts,
+                mcp_allowed_origins=mcp_allowed_origins,
+                max_ws_message_bytes=int(
+                    env.get("AGENT_RELAY_MAX_WS_MESSAGE_BYTES", 128 * 1024)
+                ),
+            )
+    except (KeyError, TypeError, ValueError):
         parser.error("invalid relay server configuration")
     import uvicorn
 
@@ -545,6 +660,11 @@ def _is_loopback_bind_host(host: str) -> bool:
         return False
 
 
+def _is_canonical_bind_host(host: str) -> bool:
+    """Allow loopback and the documented LAN wildcard binds for canonical config."""
+    return _is_loopback_bind_host(host) or host in {"0.0.0.0", "::"}
+
+
 def _is_allowed_bind_host(
     host: str,
     *,
@@ -562,6 +682,15 @@ def _is_allowed_bind_host(
 
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError
 
 
 if __name__ == "__main__":

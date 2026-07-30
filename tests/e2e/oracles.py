@@ -83,9 +83,10 @@ def _structured(result: Any, description: str) -> dict[str, Any]:
 def validate_status(
     result: Any,
     *,
-    device_id: str,
+    device_id: str | None,
     connected: bool,
     expected_capabilities: tuple[str, ...] | None = None,
+    allow_unenrolled: bool = False,
 ) -> None:
     """Validate a ``relay_device_status`` ``CallToolResult``.
 
@@ -95,9 +96,11 @@ def validate_status(
         The ``CallToolResult`` returned by the server. The kernel only
         inspects ``structuredContent``, ``isError``, and ``model_extra``.
     device_id:
-        The opaque device identifier the harness generated and
-        registered against the server. The kernel refuses payloads
-        whose ``device_id`` differs from this value.
+        The learned opaque device identifier, or ``None`` only for the
+        pre-enrollment offline state.
+    allow_unenrolled:
+        Permit ``device_id=None`` for the initial offline probe only. This
+        must remain false for post-enrollment offline assertions.
     connected:
         ``True`` if the harness expects the agent to be online;
         ``False`` if the harness is asserting the offline / restarting
@@ -109,7 +112,11 @@ def validate_status(
     if set(payload) != set(_STATUS_KEYS):
         raise ValueError("invalid status response schema")
 
-    if type(payload["device_id"]) is not str or payload["device_id"] != device_id:
+    observed_device_id = payload["device_id"]
+    if allow_unenrolled:
+        if connected or device_id is not None or observed_device_id is not None:
+            raise ValueError("invalid status response schema")
+    elif type(observed_device_id) is not str or observed_device_id != device_id:
         raise ValueError("invalid status response schema")
 
     if type(payload["connected"]) is not bool or payload["connected"] is not connected:

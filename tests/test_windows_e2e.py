@@ -65,10 +65,10 @@ def test_minimal_environment_does_not_inherit_unrelated_secrets(
 
     environment = harness.minimal_environment(
         tmp_path,
-        {"AGENT_RELAY_DEVICE_ID": "windows-e2e"},
+        {"RELAY_AGENT_ID": "windows-e2e"},
     )
 
-    assert environment["AGENT_RELAY_DEVICE_ID"] == "windows-e2e"
+    assert environment["RELAY_AGENT_ID"] == "windows-e2e"
     assert environment["USERPROFILE"] == str(tmp_path)
     assert environment["TEMP"] == str(tmp_path)
     assert environment["TMP"] == str(tmp_path)
