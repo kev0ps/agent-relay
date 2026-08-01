@@ -181,7 +181,10 @@ access:
 - `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN` are separate credentials;
 - messages, outputs, timeouts and collections are typed and bounded;
 - terminal commands come from a fixed allowlist and run without a shell;
-- browser access is restricted to configured local origins;
+- browser access uses an exact origin allowlist by default; the optional
+  `any` browser origin policy permits only `http://` and `https://` pages and
+  still rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
+  and other non-Web schemes;
 - Computer Use exposes semantic elements instead of screenshots, coordinates or
   raw accessibility trees;
 - the Docker production image builds as non-root for AMD64 and ARM64 and passes

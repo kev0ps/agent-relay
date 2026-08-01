@@ -185,6 +185,57 @@ def test_browser_bounds_random_handles_and_exact_pinned_actions() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///tmp/page.html",
+        "javascript:alert(1)",
+        "data:text/html,blocked",
+        "chrome://newtab",
+        "edge://newtab",
+        "about:blank",
+    ],
+)
+def test_browser_any_origin_allows_only_http_and_https(url: str) -> None:
+    async def scenario() -> None:
+        session = FakeSession()
+        capability = BrowserCapability(
+            Path.cwd() / "browser-profile",
+            (),
+            origin_policy="any",
+            adapter_factory=lambda *_: session,
+        )
+        await capability.start()
+
+        if url.startswith(("http://", "https://")):
+            result = await capability.invoke(msg("navigate", url=url))
+            assert result["success"] is True
+        else:
+            with pytest.raises(LocalActionError):
+                await capability.invoke(msg("navigate", url=url))
+
+    asyncio.run(scenario())
+
+
+def test_browser_any_origin_accepts_http_and_https_redirect_targets() -> None:
+    async def scenario() -> None:
+        session = FakeSession()
+        capability = BrowserCapability(
+            Path.cwd() / "browser-profile",
+            (),
+            origin_policy="any",
+            adapter_factory=lambda *_: session,
+        )
+        await capability.start()
+
+        for url in ("http://example.test/path", "https://example.test/path"):
+            result = await capability.invoke(msg("navigate", url=url))
+            assert result["success"] is True
+            assert result["url"] == url
+
+    asyncio.run(scenario())
+
+
 def test_click_revalidation_rejects_element_that_is_no_longer_clickable() -> None:
     async def scenario() -> None:
         session = FakeSession()

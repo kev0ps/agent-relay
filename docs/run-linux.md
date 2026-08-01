@@ -120,6 +120,15 @@ are advertised by the Agent only when its persistent User Data Dir and allowed
 origins are configured as shown in `.env.example`; the Agent then launches the
 Playwright-managed Chromium instance itself. It does not attach to an external
 browser or expose a CDP endpoint.
+
+The browser `origin_policy` defaults to `allowlist`, which requires exact
+`http://` or `https://` origins in `RELAY_AGENT_BROWSER_ALLOWED_ORIGINS`. For a
+trusted browsing profile, `RELAY_AGENT_BROWSER_ORIGIN_POLICY=any` may be used
+without an origin allowlist. That mode permits every HTTP(S) Web origin, but
+always rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
+`about:` navigation, malformed URLs, and other non-Web schemes. The initial
+`about:blank` tab is retained only as a startup bootstrap and cannot be
+snapshotted or navigated to through the Browser tool.
 Parallel calls are disabled because the configured single device supports only
 one invocation at a time.
 

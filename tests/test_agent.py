@@ -311,6 +311,62 @@ def test_browser_configuration_rejects_existing_profile_file(tmp_path: Path) -> 
         )
 
 
+def test_browser_origin_policy_any_does_not_require_an_allowlist(tmp_path: Path) -> None:
+    settings = AgentSettings(
+        server_url="ws://localhost/ws/agent",
+        device_id="d",
+        agent_token="secret",
+        workspace=tmp_path,
+        browser_user_data_dir=tmp_path / "browser-profile",
+        browser_origin_policy="any",
+    )
+
+    assert settings.browser_origin_policy == "any"
+    assert settings.browser_allowed_origins == ()
+
+
+def test_browser_origin_policy_rejects_ambiguous_or_partial_configuration(
+    tmp_path: Path,
+) -> None:
+    base = dict(
+        server_url="ws://localhost/ws/agent",
+        device_id="d",
+        agent_token="secret",
+        workspace=tmp_path,
+    )
+    with pytest.raises(ConfigurationError):
+        AgentSettings(**base, browser_origin_policy="any")
+    with pytest.raises(ConfigurationError):
+        AgentSettings(
+            **base,
+            browser_user_data_dir=tmp_path / "browser-profile",
+            browser_origin_policy="any",
+            browser_allowed_origins=("http://127.0.0.1:8899",),
+        )
+    with pytest.raises(ConfigurationError):
+        AgentSettings(
+            **base,
+            browser_user_data_dir=tmp_path / "browser-profile",
+            browser_origin_policy="unsupported",
+        )
+
+
+def test_browser_origin_policy_any_is_loaded_from_environment(tmp_path: Path) -> None:
+    environment, _ = _canonical_agent_environment(tmp_path)
+    profile = tmp_path / "browser-profile"
+    environment.update(
+        {
+            "RELAY_AGENT_BROWSER_USER_DATA_DIR": str(profile),
+            "RELAY_AGENT_BROWSER_ORIGIN_POLICY": " any ",
+        }
+    )
+
+    settings = _load_canonical_agent_settings(environment)
+
+    assert settings.browser_origin_policy == "any"
+    assert settings.browser_allowed_origins == ()
+
+
 @pytest.mark.parametrize(
     "origin",
     [

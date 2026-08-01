@@ -16,7 +16,7 @@ import time
 from collections.abc import Mapping, Sequence
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, AsyncContextManager, Callable, Protocol
+from typing import Any, AsyncContextManager, Callable, Literal, Protocol
 from urllib.parse import urlparse
 
 import websockets
@@ -84,6 +84,7 @@ class AgentSettings(BaseModel):
     stderr_limit: int = Field(default=24 * 1024, ge=0, le=48 * 1024)
     browser_user_data_dir: Path | None = None
     browser_allowed_origins: tuple[str, ...] = ()
+    browser_origin_policy: Literal["allowlist", "any"] = "allowlist"
     browser_headless: bool = False
     browser_startup_timeout_seconds: float = Field(default=30, gt=0, le=60)
     browser_action_timeout_seconds: float = Field(default=10, gt=0, le=30)
@@ -172,9 +173,14 @@ class AgentSettings(BaseModel):
         result_budget = min(MAX_RESULT_JSON_BYTES, self.max_ws_message_bytes) - 2048
         if self.stdout_limit + self.stderr_limit > result_budget:
             raise ValueError("combined output limits exceed the protocol message budget")
-        if (self.browser_user_data_dir is not None) != bool(self.browser_allowed_origins):
-            raise ValueError("partial browser configuration")
-        if self.browser_user_data_dir is not None:
+        if self.browser_user_data_dir is None:
+            if self.browser_origin_policy != "allowlist" or self.browser_allowed_origins:
+                raise ValueError("partial browser configuration")
+        elif self.browser_origin_policy == "allowlist" and not self.browser_allowed_origins:
+            raise ValueError("allowlist browser configuration requires origins")
+        elif self.browser_origin_policy == "any" and self.browser_allowed_origins:
+            raise ValueError("any browser origin policy cannot include an allowlist")
+        if self.browser_allowed_origins:
             from .capabilities.browser import normalize_origin
             self.browser_allowed_origins = tuple(
                 dict.fromkeys(normalize_origin(origin) for origin in self.browser_allowed_origins)
@@ -220,6 +226,7 @@ _AGENT_OPTION_FIELDS = (
     "command_timeout_seconds",
     "stdout_limit",
     "stderr_limit",
+    "browser_origin_policy",
     "browser_headless",
     "browser_startup_timeout_seconds",
     "browser_action_timeout_seconds",
@@ -244,6 +251,13 @@ def _strict_bool(value: str) -> bool:
     if normalized not in {"true", "false"}:
         raise ValueError("invalid boolean option")
     return normalized == "true"
+
+
+def _strict_browser_origin_policy(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in {"allowlist", "any"}:
+        raise ValueError("invalid browser origin policy")
+    return normalized
 
 
 def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
@@ -278,6 +292,7 @@ def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> N
         "command_timeout_seconds": float,
         "stdout_limit": int,
         "stderr_limit": int,
+        "browser_origin_policy": _strict_browser_origin_policy,
         "browser_headless": _strict_bool,
         "browser_startup_timeout_seconds": float,
         "browser_action_timeout_seconds": float,
@@ -566,6 +581,7 @@ class RelayAgent:
                 BrowserCapability(
                     settings.browser_user_data_dir,
                     settings.browser_allowed_origins,
+                    origin_policy=settings.browser_origin_policy,
                     headless=settings.browser_headless,
                     startup_timeout_seconds=settings.browser_startup_timeout_seconds,
                     action_timeout_seconds=settings.browser_action_timeout_seconds,

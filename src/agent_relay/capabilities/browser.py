@@ -9,7 +9,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from ..protocol import (
@@ -44,6 +44,9 @@ class BrowserUnavailableError(LocalActionError):
 
 class BrowserStartupError(BrowserUnavailableError):
     """The configured persistent browser could not be launched safely."""
+
+
+BrowserOriginPolicy = Literal["allowlist", "any"]
 
 
 async def _await_shared_cleanup(task: asyncio.Task[None]) -> None:
@@ -153,14 +156,20 @@ class BrowserCapability:
         headless: bool = False,
         startup_timeout_seconds: float = 15,
         action_timeout_seconds: float = 10,
+        origin_policy: BrowserOriginPolicy = "allowlist",
         adapter_factory: Callable[..., BrowserSession | Awaitable[BrowserSession]] | None = None,
     ) -> None:
         if not isinstance(user_data_dir, Path) or not user_data_dir.is_absolute():
             raise ValueError("browser user data directory must be absolute")
+        if origin_policy not in {"allowlist", "any"}:
+            raise ValueError("invalid browser origin policy")
         self._user_data_dir = user_data_dir
         self._origins = frozenset(normalize_origin(item) for item in allowed_origins)
-        if not self._origins:
+        if origin_policy == "allowlist" and not self._origins:
             raise ValueError("allowed origins required")
+        if origin_policy == "any" and self._origins:
+            raise ValueError("allowed origins cannot be combined with any origin policy")
+        self._origin_policy = origin_policy
         self._headless = headless
         self._startup_timeout = startup_timeout_seconds
         self._action_timeout = action_timeout_seconds
@@ -253,11 +262,12 @@ class BrowserCapability:
 
     def _check_origin(self, url: str) -> None:
         try:
-            allowed = origin_of_url(url) in self._origins
+            origin = origin_of_url(url)
         except ValueError:
-            allowed = False
-        if not allowed:
-            raise LocalActionError()
+            raise LocalActionError() from None
+        if self._origin_policy == "any" or origin in self._origins:
+            return
+        raise LocalActionError()
 
     async def _snapshot(self) -> dict[str, object]:
         session = self._ready()
