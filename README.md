@@ -9,6 +9,7 @@ without turning that machine into a general-purpose remote shell.
 
 [![CI](https://github.com/kev0ps/agent-relay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kev0ps/agent-relay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Coverage: 83% (informational)](https://img.shields.io/badge/coverage-83%25-informational)](https://github.com/kev0ps/agent-relay/actions/workflows/ci.yml)
 
 </div>
 

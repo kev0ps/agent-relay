@@ -46,8 +46,10 @@ jobs:
       - name: Check formatting and lint
         run: uv run --frozen ruff check .
 
-      - name: Run test suite
-        run: uv run --frozen pytest -q
+      - name: Run test suite with informational coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/agent-relay.coverage
+        run: uv run --frozen pytest -q --cov=agent_relay --cov-report=term-missing
 
       - name: Run explicit integration suite
         run: uv run --frozen pytest -q -m integration

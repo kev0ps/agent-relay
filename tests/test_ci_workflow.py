@@ -6,6 +6,17 @@ WORKFLOW_DIR = Path(__file__).parents[1] / ".github/workflows"
 WORKFLOW = WORKFLOW_DIR / "ci.yml"
 
 
+def test_ci_reports_informational_python_coverage_without_threshold() -> None:
+    workflow = WORKFLOW.read_text()
+    python_job = workflow.split("  python:", 1)[1].split("\n  container:", 1)[0]
+
+    assert "Run test suite with informational coverage" in python_job
+    assert "COVERAGE_FILE: ${{ runner.temp }}/agent-relay.coverage" in python_job
+    assert "--cov=agent_relay" in python_job
+    assert "--cov-report=term-missing" in python_job
+    assert "--cov-fail-under" not in python_job
+
+
 def test_ci_has_one_public_workflow_without_legacy_windows_diagnostics() -> None:
     assert {path.name for path in WORKFLOW_DIR.glob("*.yml")} == {"ci.yml"}
 
