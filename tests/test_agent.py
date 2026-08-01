@@ -1007,8 +1007,7 @@ def test_unknown_and_duplicate_capabilities_are_rejected(tmp_path: Path) -> None
     )
     with pytest.raises(ValueError, match="unsupported local capability"):
         RelayAgent(settings, capabilities=[_Capability("unknown.action")])
-    with pytest.raises(ValueError, match="at least one local capability"):
-        RelayAgent(settings, capabilities=[])
+    assert RelayAgent(settings, capabilities=[])._capabilities == {}
     with pytest.raises(ValueError, match="duplicate local capability"):
         RelayAgent(
             settings,
@@ -1349,10 +1348,10 @@ def test_token_file_must_be_private(tmp_path: Path) -> None:
     token_file.write_text("secret")
     token_file.chmod(0o644)
     env = {
-        "AGENT_RELAY_SERVER_URL": "ws://127.0.0.1:9999/ws/agent",
-        "AGENT_RELAY_DEVICE_ID": "device-a",
-        "AGENT_RELAY_WORKSPACE": str(tmp_path),
-        "AGENT_RELAY_AGENT_TOKEN_FILE": str(token_file),
+        "RELAY_URL": "ws://127.0.0.1:9999/future-path",
+        "RELAY_AGENT_ID": "device-a",
+        "RELAY_AGENT_WORKSPACE": str(tmp_path),
+        "RELAY_AGENT_TOKEN_FILE": str(token_file),
     }
     with pytest.raises(ConfigurationError, match="invalid agent configuration"):
         AgentSettings.from_environment(env)

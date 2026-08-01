@@ -71,58 +71,49 @@ server. Today, one configured device can process one invocation at a time.
 ## Quick start on Linux
 
 Agent Relay currently targets Python 3.11 or newer and uses
-[`uv`](https://docs.astral.sh/uv/) for installation. The MVP uses one Relay
-Server listener for both `/mcp` and `/ws/agent`; the Agent connects outbound and
-opens no listener.
+[`uv`](https://docs.astral.sh/uv/) for installation. The CLI stores the shared
+YAML configuration at `~/.agent-relay/config.yaml` by default. The Server and
+Agent use separate secret files below `~/.agent-relay/secrets/` and never put
+token values in YAML.
 
 ```sh
 git clone https://github.com/kev0ps/agent-relay.git
 cd agent-relay
 uv sync --group dev
+uv run agent-relay config init server
 
-STATE_DIR="$PWD/.agent-relay-state"
-install -d -m 700 "$STATE_DIR"
-umask 077
-uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/agent.token"
-uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/mcp.token"
-chmod 600 "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token"
-cmp -s "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token" && { echo 'tokens are identical: generate them again'; exit 1; } || :
+# Paste the generated Server agent token at the hidden prompt, or use --stdin
+# in automation. The Agent starts with zero enabled tools.
+uv run agent-relay config init agent
+uv run agent-relay config validate server
+uv run agent-relay config validate agent
+uv run agent-relay tools list
 ```
 
-Start the local-only Server in the first terminal:
+Start the Server in the first terminal:
 
 ```sh
-STATE_DIR="$PWD/.agent-relay-state"
-RELAY_SERVER_HOST=127.0.0.1 \
-RELAY_SERVER_PORT=8000 \
-RELAY_MCP_TOKEN="$(cat "$STATE_DIR/mcp.token")" \
-RELAY_AGENT_TOKEN="$(cat "$STATE_DIR/agent.token")" \
-RELAY_ALLOW_INSECURE_WS=true \
-uv run agent-relay server run
+uv run agent-relay server
 ```
 
 Start the outbound Agent in a second terminal:
 
 ```sh
-STATE_DIR="$PWD/.agent-relay-state"
-RELAY_URL=ws://127.0.0.1:8000/ws/agent \
-RELAY_AGENT_WORKSPACE="$PWD" \
-RELAY_AGENT_TOKEN_FILE="$STATE_DIR/agent.token" \
-uv run agent-relay client run
+uv run agent-relay agent
 ```
 
-The client CLI also provides safe configuration helpers:
+Enable only the tools the local operator wants to expose:
 
 ```bash
-agent-relay client config init --output .env.client.example
-agent-relay client config validate
-agent-relay client config show
+agent-relay tools enable relay_system_ping
+agent-relay tools enable relay_terminal_exec
+agent-relay config validate agent
 ```
 
-`show` masks the Agent token, and `init` refuses to overwrite an existing file.
-The complete setup guide covers token checks, direct local control calls,
-diagnostics and shutdown. Optional capability settings are cataloged
-separately in [`.env.example`](.env.example).
+`config get server` and `config get agent` print YAML with sensitive values
+redacted. `doctor` performs the combined offline audit. The complete setup
+guide covers token checks, direct local control calls, diagnostics and
+shutdown. Optional capability settings are part of the Agent YAML section.
 
 **[Run Agent Relay on Linux →](docs/run-linux.md)**
 

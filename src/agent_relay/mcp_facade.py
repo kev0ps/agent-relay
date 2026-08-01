@@ -8,9 +8,11 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.fastmcp.tools.tool_manager import ToolManager
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field, ValidationError
 
+from .config import INTERNAL_TO_PUBLIC, SERVER_LOCAL_TOOL
 from .output_models import (
     BrowserActionOutput,
     BrowserPageOutput,
@@ -63,6 +65,40 @@ class DeviceStatusOutput(Output):
     heartbeat_age_seconds: float | None
 
 
+class _AnnouncedToolManager(ToolManager):
+    """Expose only the tools declared by the currently connected Agent."""
+
+    def __init__(
+        self, registry: RelayRegistry, *, warn_on_duplicate_tools: bool = True
+    ) -> None:
+        super().__init__(warn_on_duplicate_tools=warn_on_duplicate_tools)
+        self._registry = registry
+
+    def _is_available(self, name: str) -> bool:
+        if name == SERVER_LOCAL_TOOL:
+            return True
+        internal = next(
+            (
+                candidate
+                for candidate, public in INTERNAL_TO_PUBLIC.items()
+                if public == name
+            ),
+            None,
+        )
+        return (
+            internal is not None
+            and internal in self._registry.announced_capabilities
+        )
+
+    def list_tools(self) -> list[Any]:
+        return [tool for tool in super().list_tools() if self._is_available(tool.name)]
+
+    def get_tool(self, name: str) -> Any | None:
+        if not self._is_available(name):
+            return None
+        return super().get_tool(name)
+
+
 def create_mcp_facade(
     *,
     registry: RelayRegistry,
@@ -71,6 +107,7 @@ def create_mcp_facade(
     host: str = "127.0.0.1",
     allowed_hosts: tuple[str, ...] = (),
     allowed_origins: tuple[str, ...] = (),
+    only_announced: bool = False,
 ) -> FastMCP:
     """Create one stateless, JSON-response MCP server for a Relay app."""
     transport_security = None
@@ -96,6 +133,11 @@ def create_mcp_facade(
         streamable_http_path="/mcp",
         transport_security=transport_security,
     )
+    if only_announced:
+        mcp._tool_manager = _AnnouncedToolManager(
+            registry,
+            warn_on_duplicate_tools=mcp.settings.warn_on_duplicate_tools,
+        )
 
     @mcp.tool(structured_output=True)
     async def relay_device_status() -> DeviceStatusOutput:

@@ -1,96 +1,116 @@
 # Run the MVP on Linux
 
-This guide runs the Relay Server and outbound Relay Agent on one Linux machine
-using one Server listener. The canonical Server defaults to
-`0.0.0.0:8000`; this local-only example explicitly binds it to `127.0.0.1`.
-MCP/Codex uses the local `/mcp` endpoint and the Agent opens no listener.
+This guide runs the Relay Server and outbound Relay Agent on one Linux machine.
+The shared configuration lives at `~/.agent-relay/config.yaml`; the Agent opens
+no listener and connects outbound to the Server.
 
-## Installation and secrets
+## Installation and initialization
 
 From the repository root, install `uv` according to its documentation, then:
 
 ```sh
 uv sync --group dev
-STATE_DIR="$PWD/.agent-relay-state"
-WORKSPACE="$PWD"
-install -d -m 700 "$STATE_DIR"
-umask 077
-uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/agent.token"
-uv run python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$STATE_DIR/mcp.token"
-chmod 600 "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token"
-cmp -s "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token" && { echo 'tokens are identical: generate them again'; exit 1; } || :
+agent-relay config init server
+agent-relay config init agent
 ```
 
-Tokens are neither displayed nor placed in the repository. The Agent validates
-`agent.token`: it must be a regular file owned by the current user, not a
-symlink, and exactly mode `0600`.
+`config init server` creates the YAML section and two private Server secret
+files. `config init agent` creates or reuses the persistent Agent identity,
+creates `./workspace` relative to the configuration file, and prompts for the
+Agent token without echoing it. In automation, pipe the token through stdin:
+
+```sh
+printf '%s\n' "$RELAY_AGENT_TOKEN" | \
+  agent-relay config init agent --stdin
+```
+
+The initial Agent tool allowlist is empty. Select tools interactively during
+initialization or enable them explicitly:
+
+```sh
+agent-relay tools enable relay_system_ping
+agent-relay tools enable relay_terminal_exec
+agent-relay config validate server
+agent-relay config validate agent
+agent-relay doctor
+```
+
+Tokens are neither displayed nor placed in the repository. They are separate
+files with mode `0600`, owned by the current user, and rejected if they are
+symlinks. The Server's `agent_token` and the Agent's `agent_token` files contain
+the same value but are physically distinct files.
+
+Use `--config PATH` when the default path is not appropriate:
+
+```sh
+agent-relay --config /etc/agent-relay/config.yaml config validate server
+```
 
 ## Start
 
-In a first terminal, run the Server with its secrets explicitly injected. This
-command does not source a shared Server/Agent file.
+In a first terminal, run the Server:
 
 ```sh
-STATE_DIR="$PWD/.agent-relay-state"
-RELAY_SERVER_HOST=127.0.0.1 \
-RELAY_SERVER_PORT=8000 \
-RELAY_MCP_TOKEN="$(cat "$STATE_DIR/mcp.token")" \
-RELAY_AGENT_TOKEN="$(cat "$STATE_DIR/agent.token")" \
-RELAY_ALLOW_INSECURE_WS=true \
-uv run agent-relay server run
+agent-relay server
 ```
 
-In a second terminal (redefine `STATE_DIR` and `WORKSPACE` if needed):
+In a second terminal, run the outbound Agent:
 
 ```sh
-STATE_DIR="$PWD/.agent-relay-state"
-WORKSPACE="$PWD"
-RELAY_URL=ws://127.0.0.1:8000/ws/agent \
-RELAY_AGENT_WORKSPACE="$WORKSPACE" \
-RELAY_AGENT_TOKEN_FILE="$STATE_DIR/agent.token" \
-RELAY_AGENT_ID=linux-dev-1 \
-uv run agent-relay client run
+agent-relay agent
 ```
 
-`RELAY_AGENT_ID` is optional. If omitted, the Agent persists a stable identity
-under the workspace's private `.agent-relay` state directory. `WORKSPACE` must
-be an absolute path to an existing non-symlink directory. Wait for the Agent to
-connect before making the following calls.
+The `relay_url` value is a generic `ws://` or `wss://` URL. The configuration
+validator does not impose a fixed WebSocket path so the transport protocol can
+evolve independently. The current protocol example uses `/ws/agent`.
+
+## Configuration examples
+
+The public YAML shape is:
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8000
+  allow_insecure_ws: true
+  secrets:
+    mcp_token_file: ./secrets/server/mcp_token
+    agent_token_file: ./secrets/server/agent_token
+
+agent:
+  identity:
+    id: 00000000-0000-4000-8000-000000000001
+  relay_url: ws://127.0.0.1:8000/ws/agent
+  workspace: ./workspace
+  tools:
+    allowlist: []
+  secrets:
+    agent_token_file: ./secrets/agent/agent_token
+  browser:
+    origin_policy: allowlist
+    allowed_origins: []
+```
+
+Relative paths are resolved from the directory containing `config.yaml`. Token
+values never belong in this file. For Docker, canonical `RELAY_*` environment
+variables override YAML values, including `RELAY_MCP_TOKEN` and
+`RELAY_AGENT_TOKEN`; legacy `AGENT_RELAY_*` variables are not supported.
+
+The Browser `origin_policy` defaults to `allowlist`; `any` is an explicit,
+warning-producing choice during configuration and permits only HTTP(S) pages.
+It still rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
+`about:` navigation, malformed URLs, and other non-Web schemes.
 
 ## Control invocations
 
-In a third terminal:
+The MCP endpoint is hosted by the Relay Server at `http://127.0.0.1:8000/mcp`.
+Use `agent-relay tools list` to see the complete inventory. The server-local
+`relay_device_status` entry is always available from the facade but cannot be
+selected in the Agent allowlist. Agent-executed tools are advertised only after
+the Agent announces them over the authenticated connection.
 
-```sh
-STATE_DIR="$PWD/.agent-relay-state"
-MCP_TOKEN="$(cat "$STATE_DIR/mcp.token")"
-curl --fail-with-body -sS \
-  -H "Authorization: Bearer $MCP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tool":"system.ping"}' \
-  http://127.0.0.1:8000/v1/devices/linux-dev-1/invoke
-curl --fail-with-body -sS \
-  -H "Authorization: Bearer $MCP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tool":"terminal.exec","command_id":"pwd"}' \
-  http://127.0.0.1:8000/v1/devices/linux-dev-1/invoke
-curl --fail-with-body -sS \
-  -H "Authorization: Bearer $MCP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"tool":"terminal.exec","command_id":"python_version"}' \
-  http://127.0.0.1:8000/v1/devices/linux-dev-1/invoke
-```
-
-Do not put `MCP_TOKEN=...` in shell history; the commands above read it from
-the private file. Do not use `set -x`, and do not copy `Authorization` headers
-into logs.
-
-## MCP and Hermes
-
-MCP is hosted by the Relay Server at `http://127.0.0.1:8000/mcp` and uses the
-MCP bearer token as the HTTP control credential. It is stateless Streamable HTTP
-with JSON responses. The Agent does not host MCP or any listener: it keeps only
-its outbound WebSocket connection to the Server.
-
-Configure Hermes with the canonical URL and an environment placeholder, not a
-literal credential:
+Configure Hermes with the MCP URL and a secret supplied by the environment, not
+a literal credential:
 
 ```yaml
 mcp_servers:
@@ -104,84 +124,55 @@ mcp_servers:
         - relay_device_status
         - relay_system_ping
         - relay_terminal_exec
-        - relay_browser_list_tabs
-        - relay_browser_navigate
-        - relay_browser_snapshot
-        - relay_browser_fill
-        - relay_browser_click
-        - relay_browser_scroll
-        - relay_browser_type
-        - relay_browser_back
 ```
 
-The allowlist matches the current MCP facade. Terminal execution accepts only
-`pwd`, `whoami`, `python_version`, `git_status`, or `git_branch`. Browser calls
-are advertised by the Agent only when its persistent User Data Dir and allowed
-origins are configured as shown in `.env.example`; the Agent then launches the
-Playwright-managed Chromium instance itself. It does not attach to an external
-browser or expose a CDP endpoint.
-
-The browser `origin_policy` defaults to `allowlist`, which requires exact
-`http://` or `https://` origins in `RELAY_AGENT_BROWSER_ALLOWED_ORIGINS`. For a
-trusted browsing profile, `RELAY_AGENT_BROWSER_ORIGIN_POLICY=any` may be used
-without an origin allowlist. That mode permits every HTTP(S) Web origin, but
-always rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
-`about:` navigation, malformed URLs, and other non-Web schemes. The initial
-`about:blank` tab is retained only as a startup bootstrap and cannot be
-snapshotted or navigated to through the Browser tool.
-Parallel calls are disabled because the configured single device supports only
-one invocation at a time.
+Terminal execution accepts only `pwd`, `whoami`, `python_version`,
+`git_status`, or `git_branch`. Browser and Computer Use are advertised only
+when their local configuration and provider prerequisites are complete.
 
 ## Stop, logs, and diagnostics
 
-Send `Ctrl-C` to the Server and Agent (SIGINT/SIGTERM stops the Agent). To keep
-secret-free output, redirect only the process stderr/stdout, never your
-environment or curl headers:
+Send `Ctrl-C` to the Server and Agent. Before startup, `doctor` performs the
+combined offline audit without connecting to the network:
 
 ```sh
-mkdir -p "$STATE_DIR/logs"
-# Example to append to a start command: 2>&1 | tee -a "$STATE_DIR/logs/server.log"
-ss -ltnp '( sport = :8000 )'
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/docs
-stat -c '%a %F %U %n' "$STATE_DIR/agent.token" "$STATE_DIR/mcp.token"
+agent-relay doctor
+agent-relay config get server
+agent-relay config get agent
 ```
 
-A `401` means a missing/invalid MCP token; `503` means the Agent is offline;
-`409` means an invocation is already in progress or a capability is undeclared;
-`504` means timeout. `invalid agent configuration` indicates, among other
-things, an invalid URL, workspace, or token file. If the Server uses its
-canonical `0.0.0.0:8000` default, keep that listener LAN-firewalled.
+`config get` prints YAML with secret values redacted. Do not use `set -x`, and
+do not copy Authorization headers into logs. A `401` from `/mcp` means a
+missing/invalid MCP token; `503` means the Agent is offline; `409` means a tool
+is unavailable or an invocation is already in progress; `504` means timeout.
 
 ## Private LAN or external WSS
 
-For a trusted LAN/test Agent connection, configure the Agent with the Server's
-LAN address and explicitly allow plaintext WebSockets:
+For a trusted LAN/test connection, set the Server policy and the Agent URL in
+YAML or with canonical environment overrides:
 
 ```sh
-RELAY_URL=ws://<LAN-IP>:8000/ws/agent
-RELAY_ALLOW_INSECURE_WS=true
+agent-relay config set server host 0.0.0.0
+agent-relay config set server allow_insecure_ws true
+agent-relay config set agent relay_url ws://192.168.1.10:8000/ws/agent
+agent-relay config validate server
+agent-relay config validate agent
 ```
 
-Port `8000` must remain LAN-firewalled, and plaintext tokens are acceptable only
-on that trusted LAN/test network. For WSS, use an externally provided TLS
-endpoint and the exact Agent path:
+Keep port `8000` LAN-firewalled. Plaintext tokens are acceptable only on that
+trusted LAN/test network. For WSS, use an externally provided TLS endpoint;
+the application does not implement TLS:
 
 ```sh
-RELAY_URL=wss://<TLS endpoint>/ws/agent
+agent-relay config set agent relay_url wss://tls.example.test/relay
 ```
-
-The application does not implement TLS. With `RELAY_ALLOW_INSECURE_WS=false`,
-non-loopback `ws://` is rejected while `wss://` is accepted; `true` permits
-both. `RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` are deferred
-optional settings and are not required for this MVP. MCP/Codex remains local at
-`http://127.0.0.1:8000/mcp`.
 
 ## Docker image CI validation
 
 GitHub Actions builds the production image for both `linux/amd64` and
 `linux/arm64`. Each image is checked for the non-root `relay` user, the expected
 `agent-relay` entrypoint, and the absence of published ports, then smoke-tested
-with `--help`, `server --help`, and `agent --help`.
+with the root `--help` and `--version` commands.
 
 These jobs validate packaging and startup only. They do not run Browser or
 Computer Use, do not create a two-container desktop topology, and do not upload

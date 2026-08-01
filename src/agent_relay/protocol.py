@@ -111,7 +111,7 @@ class Capabilities(Message):
             "computer.click",
             "computer.type",
         ]
-    ] = Field(min_length=1, max_length=MAX_CAPABILITIES)
+    ] = Field(min_length=0, max_length=MAX_CAPABILITIES)
 
 
 class Heartbeat(Message):

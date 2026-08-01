@@ -33,7 +33,7 @@ from agent_relay.server import (
 
 def settings() -> RelaySettings:
     return RelaySettings(
-        device_id="device-a", agent_token="agent-secret", control_token="control-secret"
+        device_id="device-a", agent_token="agent-secret", mcp_token="control-secret"
     )
 
 
@@ -168,7 +168,7 @@ def test_relay_configuration_errors_never_echo_tokens(
         ("device_id", "a" * 128, "a" * 129),
         ("device_id", "device.a_1-2", "device/a"),
         ("agent_token", "a" * 256, "a" * 257),
-        ("control_token", "c" * 256, "c" * 257),
+        ("mcp_token", "c" * 256, "c" * 257),
     ],
 )
 def test_relay_settings_match_protocol_identifier_and_token_limits(
@@ -177,7 +177,7 @@ def test_relay_settings_match_protocol_identifier_and_token_limits(
     base = {
         "device_id": "device-a",
         "agent_token": "agent-secret",
-        "control_token": "control-secret",
+        "mcp_token": "control-secret",
     }
 
     assert getattr(RelaySettings(**(base | {field: valid})), field) == valid
@@ -258,7 +258,7 @@ def test_mcp_accepts_configured_remote_host_when_public_bind_is_enabled() -> Non
         RelaySettings(
             device_id="device-a",
             agent_token="agent-secret",
-            control_token="control-secret",
+            mcp_token="control-secret",
             bind_host="0.0.0.0",
             mcp_allowed_hosts=("relay.example.test:*",),
             mcp_allowed_origins=("https://relay.example.test",),

@@ -39,6 +39,7 @@ from .capabilities.base import (
 from .capabilities.browser import BrowserStartupError
 from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
+from .config import PUBLIC_TO_INTERNAL, load_agent_settings
 from .protocol import (
     MAX_RESULT_JSON_BYTES,
     TOOL_ORDER,
@@ -82,6 +83,9 @@ class AgentSettings(BaseModel):
     command_timeout_seconds: float = Field(default=30, gt=0, le=3600)
     stdout_limit: int = Field(default=24 * 1024, ge=0, le=48 * 1024)
     stderr_limit: int = Field(default=24 * 1024, ge=0, le=48 * 1024)
+    # ``None`` preserves the programmatic API's historical all-configured
+    # behavior. YAML always supplies a tuple, including an empty tuple.
+    tools_allowlist: tuple[str, ...] | None = None
     browser_user_data_dir: Path | None = None
     browser_allowed_origins: tuple[str, ...] = ()
     browser_origin_policy: Literal["allowlist", "any"] = "allowlist"
@@ -129,14 +133,17 @@ class AgentSettings(BaseModel):
     def valid_server_url(cls, value: str) -> str:
         try:
             parsed = urlparse(value)
+            parsed.port
         except ValueError as error:
             raise ValueError("invalid server_url") from error
         if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
             raise ValueError("server_url must be a ws:// or wss:// URL")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("server_url must not include userinfo")
-        if parsed.path != "/ws/agent" or parsed.params or parsed.query or parsed.fragment:
-            raise ValueError("server_url must target exactly /ws/agent")
+        # The endpoint path is intentionally not part of the configuration
+        # contract; a future Relay protocol may move it.
+        if parsed.fragment:
+            raise ValueError("server_url must not include a fragment")
         return value
 
     @field_validator("workspace")
@@ -203,10 +210,7 @@ class AgentSettings(BaseModel):
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> AgentSettings:
         try:
             env = os.environ if environ is None else environ
-            if any(key in env for key in _CANONICAL_AGENT_KEYS):
-                values = _canonical_agent_values(env)
-            else:
-                values = _legacy_agent_values(env)
+            values = _canonical_agent_values(env)
             return cls(**values)
         except (ConfigurationError, OSError, ValueError, TypeError):
             raise ConfigurationError() from None
@@ -214,9 +218,6 @@ class AgentSettings(BaseModel):
 
 
 
-_CANONICAL_AGENT_KEYS = frozenset(
-    {"RELAY_URL", "RELAY_AGENT_TOKEN_FILE", "RELAY_AGENT_WORKSPACE"}
-)
 _AGENT_OPTION_FIELDS = (
     "heartbeat_interval_seconds",
     "reconnect_min_seconds",
@@ -240,10 +241,7 @@ _AGENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 def _environment_option(env: Mapping[str, str], field: str) -> str | None:
     canonical = "RELAY_AGENT_" + field.upper()
-    legacy = "AGENT_RELAY_" + field.upper()
-    if canonical in env:
-        return env[canonical]
-    return env.get(legacy)
+    return env.get(canonical)
 
 
 def _strict_bool(value: str) -> bool:
@@ -262,8 +260,6 @@ def _strict_browser_origin_policy(value: str) -> str:
 
 def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
     raw = env.get("RELAY_ALLOW_INSECURE_WS")
-    if raw is None:
-        raw = env.get("AGENT_RELAY_ALLOW_INSECURE_WS")
     if raw is None:
         return False
     normalized = raw.strip().lower()
@@ -339,6 +335,11 @@ def _canonical_agent_values(env: Mapping[str, str]) -> dict[str, object]:
     )
     workspace = _validated_workspace(Path(workspace_value))
     agent_id = _load_or_create_agent_id(workspace, env.get("RELAY_AGENT_ID"))
+    tools_allowlist = tuple(
+        item.strip()
+        for item in env.get("RELAY_AGENT_TOOLS", "").split(",")
+        if item.strip()
+    )
     values: dict[str, object] = {
         "server_url": url,
         "device_id": agent_id,
@@ -346,30 +347,15 @@ def _canonical_agent_values(env: Mapping[str, str]) -> dict[str, object]:
         "agent_token": token,
         "workspace": workspace,
         "allow_insecure_ws": _allow_insecure_ws_from_environment(env),
+        "tools_allowlist": tools_allowlist,
     }
-    _apply_agent_options(values, env)
-    return values
-
-
-def _legacy_agent_values(env: Mapping[str, str]) -> dict[str, object]:
-    server_url = env.get("AGENT_RELAY_SERVER_URL")
-    device_id = env.get("AGENT_RELAY_DEVICE_ID")
-    workspace_value = env.get("AGENT_RELAY_WORKSPACE")
-    if not server_url or not device_id or not workspace_value:
-        raise ConfigurationError()
-    token = _token_from_environment(
-        env,
-        token_file_key="AGENT_RELAY_AGENT_TOKEN_FILE",
-        token_key="AGENT_RELAY_AGENT_TOKEN",
-    )
-    values: dict[str, object] = {
-        "server_url": server_url,
-        "device_id": device_id,
-        "agent_id": device_id,
-        "agent_token": token,
-        "workspace": Path(workspace_value),
-        "allow_insecure_ws": _allow_insecure_ws_from_environment(env),
-    }
+    invalid_tools = [
+        item
+        for item in tools_allowlist
+        if item not in PUBLIC_TO_INTERNAL
+    ]
+    if invalid_tools:
+        raise ValueError("invalid Agent tool allowlist")
     _apply_agent_options(values, env)
     return values
 
@@ -587,7 +573,19 @@ class RelayAgent:
                     action_timeout_seconds=settings.browser_action_timeout_seconds,
                 )
             )
-        self._capabilities = self._index_capabilities(configured_capabilities)
+        allowed_tools: set[str] | None = None
+        if settings.tools_allowlist is not None:
+            allowed_tools = {
+                PUBLIC_TO_INTERNAL.get(name, name) for name in settings.tools_allowlist
+            }
+            configured_capabilities = [
+                capability
+                for capability in configured_capabilities
+                if any(tool in allowed_tools for tool in capability.tools)
+            ]
+        self._capabilities = self._index_capabilities(
+            configured_capabilities, allowed_tools=allowed_tools
+        )
         self._unique_capabilities = tuple(dict.fromkeys(map(id, configured_capabilities)))
         self._capability_objects = {id(item): item for item in configured_capabilities}
         self._close_task: asyncio.Task[None] | None = None
@@ -639,13 +637,13 @@ class RelayAgent:
                     ) as socket:
                         await self.run_session(socket)
                 except BrowserStartupError:
-                    if os.environ.get("AGENT_RELAY_NATIVE_DEBUG") == "1":
+                    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
                         print("agent browser startup failed", file=sys.stderr, flush=True)
                     raise
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    if os.environ.get("AGENT_RELAY_NATIVE_DEBUG") == "1":
+                    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
                         phase = getattr(error, "startup_phase", None)
                         detail = (
                             f" phase-{phase}"
@@ -669,19 +667,21 @@ class RelayAgent:
     @staticmethod
     def _index_capabilities(
         capabilities: Sequence[LocalCapability],
+        *,
+        allowed_tools: set[str] | None = None,
     ) -> dict[CapabilityName, LocalCapability]:
         indexed: dict[ToolName, LocalCapability] = {}
         for capability in capabilities:
             if not capability.tools:
                 raise ValueError("unsupported local capability")
             for tool in capability.tools:
+                if allowed_tools is not None and tool not in allowed_tools:
+                    continue
                 if tool not in TOOL_ORDER:
                     raise ValueError("unsupported local capability")
                 if tool in indexed:
                     raise ValueError(f"duplicate local capability: {tool}")
                 indexed[tool] = capability
-        if not indexed:
-            raise ValueError("at least one local capability is required")
         return indexed
 
     async def _start_capabilities(self) -> None:
@@ -852,91 +852,26 @@ async def _run_with_signal_handlers(agent: RelayAgent) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Agent Relay outbound agent")
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--agent-token", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.agent_token is not None:
         parser.error(
-            "--agent-token is unsafe; use RELAY_AGENT_TOKEN_FILE or "
-            "AGENT_RELAY_AGENT_TOKEN_FILE"
+            "--agent-token is unsafe; use RELAY_AGENT_TOKEN_FILE, "
+            "RELAY_AGENT_TOKEN, or the YAML secret file"
         )
     try:
-        settings = AgentSettings.from_environment()
-    except ConfigurationError:
+        settings = (
+            load_agent_settings(args.config)
+            if args.config is not None
+            else AgentSettings.from_environment()
+        )
+    except (ConfigurationError, ValueError):
         parser.error("invalid agent configuration")
     try:
         asyncio.run(_run_with_signal_handlers(RelayAgent(settings)))
     except BrowserStartupError:
         parser.exit(1, "agent browser startup failed\n")
-
-
-def config_main(
-    argv: Sequence[str] | None = None,
-    *,
-    prog: str = "agent-relay client config",
-) -> int:
-    """Validate, display, or initialize client configuration safely."""
-    parser = argparse.ArgumentParser(prog=prog)
-    actions = parser.add_subparsers(dest="action", required=True)
-    actions.add_parser("validate", help="validate the current environment")
-    actions.add_parser("show", help="show effective configuration with secrets masked")
-    init_parser = actions.add_parser(
-        "init", help="create a non-secret configuration template"
-    )
-    init_parser.add_argument(
-        "--output",
-        default=".env.client.example",
-        help="new template path (refuses to overwrite an existing file)",
-    )
-    args = parser.parse_args(argv)
-
-    if args.action == "init":
-        output = Path(args.output)
-        try:
-            _write_client_config_template(output)
-        except ValueError as exc:
-            parser.error(str(exc))
-        print(f"created client configuration template: {output}")
-        return 0
-
-    try:
-        settings = AgentSettings.from_environment()
-    except ConfigurationError:
-        parser.error("invalid client configuration")
-
-    if args.action == "validate":
-        print("client configuration is valid")
-        return 0
-
-    payload = settings.model_dump(mode="json")
-    payload["agent_token"] = "[REDACTED]"
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0
-
-
-def _write_client_config_template(path: Path) -> None:
-    template = """# Agent Relay client configuration template.
-# Export these values before running: agent-relay client run
-RELAY_URL=wss://relay.example.invalid/ws/agent
-RELAY_AGENT_WORKSPACE=/absolute/path/to/workspace
-RELAY_AGENT_TOKEN_FILE=/absolute/path/to/agent.token
-# RELAY_AGENT_ID=optional-provisioned-id
-"""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError:
-        raise ValueError(f"refusing to overwrite existing file: {path}") from None
-    except OSError as exc:
-        raise ValueError(f"could not create configuration template: {path}") from exc
-    try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
-            stream.write(template)
-    except OSError as exc:
-        path.unlink(missing_ok=True)
-        raise ValueError(f"could not create configuration template: {path}") from exc
 
 
 if __name__ == "__main__":

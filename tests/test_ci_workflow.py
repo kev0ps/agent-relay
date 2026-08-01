@@ -20,8 +20,7 @@ def test_ci_keeps_docker_image_smoke_without_container_ui_e2e() -> None:
     assert "Smoke-test both roles" in workflow
     assert "PLATFORM: ${{ matrix.platform }}" in workflow
     assert 'docker run --rm --platform="$PLATFORM" "$IMAGE" --help' in workflow
-    assert 'docker run --rm --platform="$PLATFORM" "$IMAGE" server --help' in workflow
-    assert 'docker run --rm --platform="$PLATFORM" "$IMAGE" agent --help' in workflow
+    assert 'docker run --rm --platform="$PLATFORM" "$IMAGE" --version' in workflow
 
     assert "  container-e2e:" not in workflow
     assert "Dockerfile.e2e-client" not in workflow

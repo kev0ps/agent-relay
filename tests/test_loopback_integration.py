@@ -71,7 +71,7 @@ def test_real_loopback_server_agent_and_runner(tmp_path: Path) -> None:
         server_settings = RelaySettings(
             device_id="linux-test",
             agent_token="agent-secret",
-            control_token="control-secret",
+            mcp_token="control-secret",
             max_timeout_seconds=5,
         )
         app = create_app(server_settings)

@@ -109,6 +109,35 @@ class StubRegistry:
         return self.result
 
 
+def test_dynamic_facade_only_lists_announced_agent_tools() -> None:
+    async def scenario() -> None:
+        registry = RelayRegistry(agent_token="agent-token")
+        mcp = create_mcp_facade(
+            registry=registry,
+            timeout_seconds=1,
+            only_announced=True,
+        )
+        assert [tool.name for tool in mcp._tool_manager.list_tools()] == [
+            "relay_device_status"
+        ]
+        socket = FakeSocket()
+        registered = await registry.register(
+            socket,
+            Register(version=1, type="register", device_id="one"),
+        )
+        assert registered.device_id == "one"
+        await registry.set_capabilities(
+            socket,
+            Capabilities(version=1, type="capabilities", tools=["system.ping"]),
+        )
+        assert [tool.name for tool in mcp._tool_manager.list_tools()] == [
+            "relay_device_status",
+            "relay_system_ping",
+        ]
+
+    run(scenario())
+
+
 def test_tool_discovery_is_exact_and_closed() -> None:
     async def scenario() -> None:
         registry = RelayRegistry(device_id="one", agent_token="agent-token")
@@ -266,7 +295,7 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
             RelaySettings(
                 device_id="one",
                 agent_token="agent-token",
-                control_token="control-token",
+                mcp_token="control-token",
                 max_timeout_seconds=10,
             )
         )
@@ -896,7 +925,7 @@ def test_official_streamable_http_client_uses_authenticated_canonical_mcp_url() 
             RelaySettings(
                 device_id="one",
                 agent_token="agent-placeholder",
-                control_token="control-placeholder",
+                mcp_token="control-placeholder",
             )
         )
         server = uvicorn.Server(
@@ -931,22 +960,7 @@ def test_official_streamable_http_client_uses_authenticated_canonical_mcp_url() 
             await asyncio.wait_for(server_task, timeout=2)
 
         assert initialized.serverInfo.name == "Agent Relay"
-        assert [tool.name for tool in tools] == [
-            "relay_device_status",
-            "relay_system_ping",
-            "relay_terminal_exec",
-            "relay_browser_list_tabs",
-            "relay_browser_navigate",
-            "relay_browser_snapshot",
-            "relay_browser_fill",
-            "relay_browser_click",
-            "relay_browser_scroll",
-            "relay_browser_type",
-            "relay_browser_back",
-            "relay_computer_capture",
-            "relay_computer_click",
-            "relay_computer_type",
-        ]
+        assert [tool.name for tool in tools] == ["relay_device_status"]
         assert status.isError is False
         assert status.structuredContent is not None
         assert status.structuredContent["connected"] is False

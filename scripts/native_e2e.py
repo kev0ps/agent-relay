@@ -340,7 +340,7 @@ def _wait_for(
             if predicate():
                 return
         except (ConnectionError, OSError, ValueError) as error:
-            if os.environ.get("AGENT_RELAY_NATIVE_DEBUG") == "1":
+            if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
                 print(
                     f"readiness {description}: {type(error).__name__}",
                     file=sys.stderr,
@@ -516,6 +516,7 @@ def run_scenario(
                     "RELAY_AGENT_WORKSPACE": str(workspace),
                     "RELAY_ALLOW_INSECURE_WS": "true",
                     "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
+                    "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
                     "RELAY_AGENT_E2E_RUN_ID": run_id,
                 },
             )

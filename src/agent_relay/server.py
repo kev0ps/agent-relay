@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .auth import credentials_match
+from .config import load_server_runtime
 from .mcp_facade import create_mcp_facade
 from .output_models import (
     BrowserActionOutput,
@@ -94,9 +95,9 @@ class _SerializedWebSocket:
 class _MCPBearerAuth:
     """Authenticate the one MCP route from raw ASGI headers."""
 
-    def __init__(self, app: ASGIApp, control_token: str) -> None:
+    def __init__(self, app: ASGIApp, mcp_token: str) -> None:
         self._app = app
-        self._expected = f"Bearer {control_token}"
+        self._expected = f"Bearer {mcp_token}"
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("path") in {"/mcp", "/mcp/"}:
@@ -139,13 +140,7 @@ def _websocket_bearer_matches(websocket: WebSocket, expected: str) -> bool:
 
 
 class RelaySettings(BaseModel):
-    """Explicit deployment settings; callers supply both independent secrets.
-
-    ``mcp_token`` is the canonical control-plane credential.  ``control_token``
-    remains accepted as an input compatibility alias for existing deployments;
-    it is intentionally not a model field so new configuration cannot
-    accidentally configure two MCP credentials.
-    """
+    """Explicit deployment settings; callers supply both independent secrets."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -155,8 +150,7 @@ class RelaySettings(BaseModel):
     mcp_token: Annotated[str, Field(min_length=1, max_length=MAX_TOKEN_LENGTH)] = (
         Field(repr=False)
     )
-    # A server can start before any Agent has registered.  The optional value
-    # is retained only as a compatibility seed for the pre-migration API.
+    # A server can start before any Agent has registered.
     device_id: DeviceId | None = None
     bind_host: str = "0.0.0.0"
     mcp_allowed_hosts: tuple[str, ...] = ()
@@ -170,8 +164,6 @@ class RelaySettings(BaseModel):
     max_ws_message_bytes: Annotated[int, Field(ge=1024, le=1024 * 1024)] = 128 * 1024
 
     def __init__(self, /, **data: object) -> None:
-        if "mcp_token" not in data and "control_token" in data:
-            data["mcp_token"] = data.pop("control_token")
         try:
             super().__init__(**data)
         except ValidationError:
@@ -208,20 +200,6 @@ class RelaySettings(BaseModel):
             raise ValueError("agent and control tokens must differ")
         return self
 
-    @model_validator(mode="before")
-    @classmethod
-    def accept_control_token_alias(cls, value: object) -> object:
-        if isinstance(value, Mapping):
-            data = dict(value)
-            if "mcp_token" not in data and "control_token" in data:
-                data["mcp_token"] = data.pop("control_token")
-            return data
-        return value
-
-    @property
-    def control_token(self) -> str:
-        """Compatibility view for callers still using the old field name."""
-        return self.mcp_token
 
     @classmethod
     def from_environment(
@@ -375,6 +353,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
         host=settings.bind_host,
         allowed_hosts=settings.mcp_allowed_hosts,
         allowed_origins=settings.mcp_allowed_origins,
+        only_announced=True,
     )
     mcp_http_app = mcp.streamable_http_app()
 
@@ -621,79 +600,32 @@ def create_app(settings: RelaySettings) -> FastAPI:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run the control server from canonical or legacy environment settings."""
+    """Run the Relay server from YAML, with canonical Docker env overrides."""
     env = os.environ
-    canonical = any(
-        key in env
-        for key in (
-            "RELAY_AGENT_TOKEN",
-            "RELAY_MCP_TOKEN",
-            "RELAY_SERVER_HOST",
-            "RELAY_SERVER_PORT",
-        )
-    )
     parser = argparse.ArgumentParser(description="Agent Relay control server")
-    parser.add_argument(
-        "--host",
-        default=(
-            env.get("RELAY_SERVER_HOST", "0.0.0.0")
-            if canonical
-            else env.get("AGENT_RELAY_HOST", "127.0.0.1")
-        ),
-    )
-    parser.add_argument(
-        "--port",
-        default=(
-            env.get("RELAY_SERVER_PORT", "8000")
-            if canonical
-            else env.get("AGENT_RELAY_PORT", "8000")
-        ),
-    )
+    parser.add_argument("--config", type=str)
+    parser.add_argument("--host")
+    parser.add_argument("--port")
     args = parser.parse_args(argv)
     try:
-        port = int(args.port)
-        if not 1 <= port <= 65535:
-            raise ValueError
-        if canonical:
-            settings = RelaySettings.from_environment(env, bind_host=args.host)
-            # The canonical server intentionally boots on its documented
-            # default before the deferred host/origin configuration lands.
-            if not _is_canonical_bind_host(args.host):
-                raise ValueError
+        if args.config is not None:
+            runtime = load_server_runtime(args.config, env=env)
+            settings = runtime.settings
+            host = runtime.host
+            port = runtime.port
         else:
-            mcp_allowed_hosts = _split_csv(
-                env.get("AGENT_RELAY_MCP_ALLOWED_HOSTS", "")
-            )
-            mcp_allowed_origins = _split_csv(
-                env.get("AGENT_RELAY_MCP_ALLOWED_ORIGINS", "")
-            )
-            allow_non_loopback = env.get(
-                "AGENT_RELAY_ALLOW_NON_LOOPBACK_BIND", "false"
-            ).lower() == "true"
-            if not _is_allowed_bind_host(
-                args.host,
-                allow_non_loopback=allow_non_loopback,
-                mcp_allowed_hosts=mcp_allowed_hosts,
-            ):
+            host = args.host or env.get("RELAY_SERVER_HOST", "0.0.0.0")
+            port = int(args.port or env.get("RELAY_SERVER_PORT", "8000"))
+            if not 1 <= port <= 65535 or not _is_canonical_bind_host(host):
                 raise ValueError
-            settings = RelaySettings(
-                device_id=env["AGENT_RELAY_DEVICE_ID"],
-                agent_token=env["AGENT_RELAY_AGENT_TOKEN"],
-                control_token=env["AGENT_RELAY_CONTROL_TOKEN"],
-                bind_host=args.host,
-                mcp_allowed_hosts=mcp_allowed_hosts,
-                mcp_allowed_origins=mcp_allowed_origins,
-                max_ws_message_bytes=int(
-                    env.get("AGENT_RELAY_MAX_WS_MESSAGE_BYTES", 128 * 1024)
-                ),
-            )
-    except (KeyError, TypeError, ValueError):
+            settings = RelaySettings.from_environment(env, bind_host=host)
+    except (KeyError, TypeError, ValueError, OSError):
         parser.error("invalid relay server configuration")
     import uvicorn
 
     uvicorn.run(
         create_app(settings),
-        host=args.host,
+        host=host,
         port=port,
         ws_max_size=settings.max_ws_message_bytes,
     )

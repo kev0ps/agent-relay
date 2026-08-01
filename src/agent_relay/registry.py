@@ -123,6 +123,12 @@ class RelayRegistry:
     def last_heartbeat(self) -> float | None:
         return self._device.last_heartbeat if self._device is not None else None
 
+    @property
+    def announced_capabilities(self) -> frozenset[str]:
+        """Return the current Agent announcement for synchronous MCP filtering."""
+        device = self._device
+        return frozenset(device.capabilities) if device is not None else frozenset()
+
     async def status_snapshot(self) -> DeviceStatusSnapshot:
         """Return only safe device state, copied atomically under the lock."""
         async with self._lock:

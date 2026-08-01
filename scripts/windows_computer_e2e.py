@@ -241,10 +241,11 @@ def run_scenario(
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
                 "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
-                "AGENT_RELAY_NATIVE_DEBUG": "1",
+                "RELAY_NATIVE_DEBUG": "1",
             }
         )
         fixture_environment = _driver_environment({"HOME": str(home)})

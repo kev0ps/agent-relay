@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.115,<1",
     "mcp>=1.28.1,<2",
     "pydantic>=2.8,<3",
+    "pyyaml>=6,<7",
     "uvicorn>=0.30,<1",
     "websockets>=13,<16",
 ]
@@ -22,8 +23,6 @@ computer = [
 
 [project.scripts]
 agent-relay = "agent_relay.cli:main"
-agent-relay-agent = "agent_relay.agent:main"
-agent-relay-server = "agent_relay.server:main"
 
 [dependency-groups]
 dev = [

@@ -114,8 +114,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           docker run --rm --platform="$PLATFORM" "$IMAGE" --help
-          docker run --rm --platform="$PLATFORM" "$IMAGE" server --help
-          docker run --rm --platform="$PLATFORM" "$IMAGE" agent --help
+          docker run --rm --platform="$PLATFORM" "$IMAGE" --version
 
   e2e-linux-native:
     name: Native Linux Terminal end-to-end

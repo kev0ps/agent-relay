@@ -4,7 +4,7 @@ services:
   relay-server:
     build: .
     image: agent-relay
-    command: ["server", "run"]
+    command: ["server"]
     restart: unless-stopped
     ports:
       - "8000:8000"

@@ -37,7 +37,11 @@ def test_package_metadata_declares_mit_license() -> None:
 @pytest.mark.parametrize("relative_path", ["README.md", "docs/run-linux.md"])
 def test_hermes_examples_use_tools_include_mapping(relative_path: str) -> None:
     text = (Path(__file__).parents[1] / relative_path).read_text()
-    snippet = text.split("```yaml", 1)[1].split("```", 1)[0]
+    snippet = next(
+        block.split("```", 1)[0]
+        for block in text.split("```yaml")[1:]
+        if "mcp_servers:" in block
+    )
 
     assert "    supports_parallel_tool_calls: false\n" in snippet
     assert "    tools:\n      include:\n" in snippet

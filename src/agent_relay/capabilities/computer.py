@@ -453,7 +453,7 @@ class ComputerCapability:
             self._closing = False
             phase_reporter = (
                 asyncio.create_task(self._report_startup_phase())
-                if os.environ.get("AGENT_RELAY_NATIVE_DEBUG") == "1"
+                if os.environ.get("RELAY_NATIVE_DEBUG") == "1"
                 else None
             )
             try:

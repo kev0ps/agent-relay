@@ -114,9 +114,9 @@ values equivalent to:
 $env:RELAY_URL = "ws://<LAN-IP>:8000/ws/agent"
 $env:RELAY_AGENT_WORKSPACE = Join-Path $env:USERPROFILE "agent-relay-workspace"
 $env:RELAY_AGENT_TOKEN_FILE = Join-Path $env:USERPROFILE ".agent-relay\agent.token"
-$env:RELAY_AGENT_ID = "windows-laptop-1"
+$env:RELAY_AGENT_ID = "00000000-0000-4000-8000-000000000001"
 $env:RELAY_ALLOW_INSECURE_WS = "true"
-uv run agent-relay client run
+uv run agent-relay agent
 ```
 
 Replace `<LAN-IP>` and the paths with the private deployment values. The
@@ -130,7 +130,7 @@ Agent URL policy false or unset:
 ```powershell
 $env:RELAY_URL = "wss://<TLS endpoint>/ws/agent"
 # RELAY_ALLOW_INSECURE_WS is not needed for wss://
-uv run agent-relay client run
+uv run agent-relay agent
 ```
 
 `RELAY_ALLOW_INSECURE_WS=true` permits both `ws://` and `wss://` URLs. With
