@@ -51,6 +51,17 @@ def test_mcp_client_module_exposes_call_tool_and_explicit_tools_list() -> None:
     assert hasattr(client.MCPClientSession, "list_tools")
 
 
+def test_mcp_client_accepts_ordered_announced_tool_subsets() -> None:
+    client = _load_mcp_client()
+    expected = client.EXPECTED_MCP_TOOLS
+
+    assert client._valid_tool_inventory(client.SERVER_MCP_TOOLS)
+    assert client._valid_tool_inventory(expected[:3])
+    assert client._valid_tool_inventory(expected)
+    assert not client._valid_tool_inventory(tuple(reversed(expected)))
+    assert not client._valid_tool_inventory((*expected, "relay_unexpected_tool"))
+
+
 def test_mcp_client_exposes_contract_error() -> None:
     client = _load_mcp_client()
     assert hasattr(client, "MCPContractError")

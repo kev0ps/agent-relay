@@ -85,7 +85,7 @@ class _ComputerScenarioSession:
         return None
 
     async def list_tools(self) -> tuple[str, ...]:
-        return _scenarios().EXPECTED_MCP_TOOLS
+        return _scenarios().COMPUTER_MCP_TOOLS
 
     async def call(
         self,
@@ -323,7 +323,7 @@ def test_core_scenario_accepts_harness_workspace_pwd(
             return None
 
         async def list_tools(self) -> tuple[str, ...]:
-            return scenarios.EXPECTED_MCP_TOOLS
+            return scenarios.CORE_MCP_TOOLS
 
         async def call(self, _tool_name: str, arguments: dict[str, str]) -> object:
             return object()
@@ -452,7 +452,7 @@ def test_computer_scenario_checks_tools_before_device_status(
     class InventorySession(_ComputerScenarioSession):
         async def list_tools(self) -> tuple[str, ...]:
             operations.append("tools-list")
-            return scenarios.EXPECTED_MCP_TOOLS
+            return scenarios.COMPUTER_MCP_TOOLS
 
         async def call(
             self,

@@ -42,6 +42,26 @@ except ModuleNotFoundError as error:
     _oracles = _load_sibling("oracles")
 
 EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = _mcp.EXPECTED_MCP_TOOLS
+CORE_MCP_TOOLS: Final[tuple[str, ...]] = (
+    "relay_device_status",
+    "relay_system_ping",
+    "relay_terminal_exec",
+)
+BROWSER_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
+    "relay_browser_list_tabs",
+    "relay_browser_navigate",
+    "relay_browser_snapshot",
+    "relay_browser_fill",
+    "relay_browser_click",
+    "relay_browser_scroll",
+    "relay_browser_type",
+    "relay_browser_back",
+)
+COMPUTER_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
+    "relay_computer_capture",
+    "relay_computer_click",
+    "relay_computer_type",
+)
 TOOL_ORDER: Final[tuple[str, ...]] = (
     "system.ping",
     "terminal.exec",
@@ -88,6 +108,12 @@ def _mark(phase: list[str] | None, value: str) -> None:
 
 def _fixture_path(runtime: RuntimeConfig, filename: str) -> Path:
     return Path(runtime.fixtures_root) / filename
+
+
+def _require_tools(discovered: tuple[str, ...], required: tuple[str, ...]) -> None:
+    """Ensure the scenario received exactly its announced tool contract."""
+    if discovered != required:
+        raise ValueError("unexpected MCP tools")
 
 
 def _portable_phase(
@@ -152,8 +178,7 @@ async def _run_core_scenario_async(
         runtime.control_token,
     ) as client:
         _mark(phase, "tools-list")
-        if await client.list_tools() != EXPECTED_MCP_TOOLS:
-            raise ValueError("unexpected MCP tools")
+        _require_tools(await client.list_tools(), CORE_MCP_TOOLS)
         _mark(phase, "device-status")
         _oracles.validate_status(
             await client.call("relay_device_status", {}),
@@ -218,8 +243,7 @@ async def _run_browser_scenario_async(
         runtime.control_token,
     ) as client:
         _mark(phase, "tools-list")
-        if await client.list_tools() != EXPECTED_MCP_TOOLS:
-            raise ValueError("unexpected MCP tools")
+        _require_tools(await client.list_tools(), BROWSER_MCP_TOOLS)
         _mark(phase, "device-status")
         _oracles.validate_status(
             await client.call("relay_device_status", {}),
@@ -399,8 +423,7 @@ async def _run_computer_scenario_async(
         runtime.control_token,
     ) as client:
         _mark(phase, "tools-list")
-        if await client.list_tools() != EXPECTED_MCP_TOOLS:
-            raise ValueError("unexpected MCP tools")
+        _require_tools(await client.list_tools(), COMPUTER_MCP_TOOLS)
         _mark(phase, "device-status")
         _oracles.validate_status(
             await client.call("relay_device_status", {}),

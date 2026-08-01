@@ -12,7 +12,7 @@ The portable client:
 * accepts only ``dict`` arguments (closed authority surface);
 * runs the official Streamable HTTP client with a bounded timeout;
 * raises ``MCPContractError`` if the server returns a different tool
-  inventory than expected;
+  inventory than the expected pre-registration or fully registered state;
 * raises ``ConnectionError`` on any transport / SDK failure so the
   harness can classify offline / busy / unsupported paths.
 """
@@ -52,6 +52,18 @@ EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = (
     "relay_computer_click",
     "relay_computer_type",
 )
+SERVER_MCP_TOOLS: Final[tuple[str, ...]] = ("relay_device_status",)
+
+
+def _valid_tool_inventory(discovered: tuple[str, ...]) -> bool:
+    """Accept the ordered subset announced by the connected Agent."""
+    if not discovered or discovered[0] != SERVER_MCP_TOOLS[0]:
+        return False
+    if len(discovered) != len(set(discovered)):
+        return False
+    if any(name not in EXPECTED_MCP_TOOLS for name in discovered):
+        return False
+    return discovered == tuple(name for name in EXPECTED_MCP_TOOLS if name in discovered)
 
 
 class StrictCallToolResult(CallToolResult):
@@ -193,7 +205,7 @@ class MCPClientSession:
                 )
             ).tools
         )
-        if discovered != EXPECTED_MCP_TOOLS:
+        if not _valid_tool_inventory(discovered):
             raise MCPContractError("unexpected MCP tools")
         return discovered
 
