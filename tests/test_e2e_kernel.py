@@ -284,13 +284,14 @@ def test_portable_kernel_exposes_shared_core_browser_and_computer_scenarios() ->
     "script_name",
     ["linux_browser_e2e.py", "windows_browser_e2e.py"],
 )
-def test_browser_adapters_share_the_portable_cdp_protocol(script_name: str) -> None:
+def test_browser_adapters_delegate_launch_to_playwright_persistent_context(script_name: str) -> None:
     source = (E2E_DIR.parents[1] / "scripts" / script_name).read_text(encoding="utf-8")
 
-    assert "portable_browser_cdp.fixture_page_socket" in source
-    assert "portable_browser_cdp.capture_png" in source
-    assert "portable_browser_cdp.validate_screenshot_png" in source
-    assert "websockets.connect(" not in source
+    assert "RELAY_AGENT_BROWSER_USER_DATA_DIR" in source
+    assert "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS" in source
+    assert "connect_over_cdp" not in source
+    assert "remote-debugging" not in source
+    assert "portable_browser_cdp" not in source
 
 
 def test_computer_scenario_requires_harness_fixture_identity() -> None:

@@ -25,6 +25,7 @@ MAX_RESULT_NODES = 4096
 MAX_BROWSER_URL_LENGTH = 2048
 MAX_BROWSER_ELEMENT_ID_LENGTH = 128
 MAX_BROWSER_FILL_VALUE_LENGTH = 4096
+MAX_BROWSER_TYPE_TEXT_LENGTH = 4096
 MAX_BROWSER_TAB_ID_LENGTH = 128
 MAX_BROWSER_TITLE_LENGTH = 256
 MAX_BROWSER_PAGE_TEXT_LENGTH = 4096
@@ -66,13 +67,15 @@ DeviceId = Annotated[
 CommandId = Literal["pwd", "whoami", "python_version", "git_status", "git_branch"]
 ToolName = Literal[
     "system.ping", "terminal.exec", "browser.list_tabs", "browser.navigate",
-    "browser.read_page", "browser.fill", "browser.click", "computer.capture",
-    "computer.click", "computer.type",
+    "browser.snapshot", "browser.fill", "browser.click", "browser.scroll",
+    "browser.type", "browser.back", "computer.capture", "computer.click",
+    "computer.type",
 ]
 TOOL_ORDER: tuple[ToolName, ...] = (
     "system.ping", "terminal.exec", "browser.list_tabs", "browser.navigate",
-    "browser.read_page", "browser.fill", "browser.click", "computer.capture",
-    "computer.click", "computer.type",
+    "browser.snapshot", "browser.fill", "browser.click", "browser.scroll",
+    "browser.type", "browser.back", "computer.capture", "computer.click",
+    "computer.type",
 )
 
 
@@ -98,9 +101,12 @@ class Capabilities(Message):
             "terminal.exec",
             "browser.list_tabs",
             "browser.navigate",
-            "browser.read_page",
+            "browser.snapshot",
             "browser.fill",
             "browser.click",
+            "browser.scroll",
+            "browser.type",
+            "browser.back",
             "computer.capture",
             "computer.click",
             "computer.type",
@@ -203,10 +209,10 @@ class BrowserNavigateInvoke(Message):
     url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)]
 
 
-class BrowserReadPageInvoke(Message):
+class BrowserSnapshotInvoke(Message):
     type: Literal["invoke"]
     request_id: RequestId
-    tool: Literal["browser.read_page"]
+    tool: Literal["browser.snapshot"]
 
 
 class BrowserFillInvoke(Message):
@@ -226,6 +232,32 @@ class BrowserClickInvoke(Message):
     element_id: Annotated[
         str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
     ]
+
+
+BrowserScrollDirection = Literal["up", "down"]
+
+
+class BrowserScrollInvoke(Message):
+    type: Literal["invoke"]
+    request_id: RequestId
+    tool: Literal["browser.scroll"]
+    direction: BrowserScrollDirection
+
+
+class BrowserTypeInvoke(Message):
+    type: Literal["invoke"]
+    request_id: RequestId
+    tool: Literal["browser.type"]
+    element_id: Annotated[
+        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
+    ]
+    text: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)]
+
+
+class BrowserBackInvoke(Message):
+    type: Literal["invoke"]
+    request_id: RequestId
+    tool: Literal["browser.back"]
 
 
 class ComputerCaptureInvoke(Message):
@@ -258,9 +290,12 @@ InvokeMessage = (
     | TerminalExecInvoke
     | BrowserListTabsInvoke
     | BrowserNavigateInvoke
-    | BrowserReadPageInvoke
+    | BrowserSnapshotInvoke
     | BrowserFillInvoke
     | BrowserClickInvoke
+    | BrowserScrollInvoke
+    | BrowserTypeInvoke
+    | BrowserBackInvoke
     | ComputerCaptureInvoke
     | ComputerClickInvoke
     | ComputerTypeInvoke
@@ -299,9 +334,12 @@ def parse_server_message(value: object) -> ServerMessage:
             "terminal.exec": TerminalExecInvoke,
             "browser.list_tabs": BrowserListTabsInvoke,
             "browser.navigate": BrowserNavigateInvoke,
-            "browser.read_page": BrowserReadPageInvoke,
+            "browser.snapshot": BrowserSnapshotInvoke,
             "browser.fill": BrowserFillInvoke,
             "browser.click": BrowserClickInvoke,
+            "browser.scroll": BrowserScrollInvoke,
+            "browser.type": BrowserTypeInvoke,
+            "browser.back": BrowserBackInvoke,
             "computer.capture": ComputerCaptureInvoke,
             "computer.click": ComputerClickInvoke,
             "computer.type": ComputerTypeInvoke,

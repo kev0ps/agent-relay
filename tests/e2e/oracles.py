@@ -34,11 +34,14 @@ from typing import Any
 # the portable oracle must therefore validate the actual wire order rather
 # than the scenario execution order.
 _CONNECTED_CAPABILITIES: tuple[str, ...] = (
+    "browser.back",
     "browser.click",
     "browser.fill",
     "browser.list_tabs",
     "browser.navigate",
-    "browser.read_page",
+    "browser.scroll",
+    "browser.snapshot",
+    "browser.type",
     "computer.capture",
     "computer.click",
     "computer.type",
@@ -469,24 +472,24 @@ def validate_computer_action(
         raise ValueError(f"invalid {tool_name} response schema")
 
 
-# --- Read page oracle -------------------------------------------------------
+# --- Snapshot oracle --------------------------------------------------------
 
-_READ_PAGE_KEYS: frozenset[str] = frozenset(
+_SNAPSHOT_KEYS: frozenset[str] = frozenset(
     {"tab_id", "url", "title", "text", "elements"}
 )
-_READ_PAGE_ELEMENT_KEYS: frozenset[str] = frozenset(
+_SNAPSHOT_ELEMENT_KEYS: frozenset[str] = frozenset(
     {"element_id", "role", "name", "value", "editable", "enabled"}
 )
-_READ_PAGE_TEXT_REQUIRED_MARKERS: tuple[str, ...] = (
+_SNAPSHOT_TEXT_REQUIRED_MARKERS: tuple[str, ...] = (
     "Relay Browser Fixture",
     "Name",
     "Submit",
 )
-_READ_PAGE_MAX_TEXT_LEN: int = 4096
-_READ_PAGE_MAX_ELEMENTS: int = 12
+_SNAPSHOT_MAX_TEXT_LEN: int = 4096
+_SNAPSHOT_MAX_ELEMENTS: int = 12
 
 
-def validate_read_page(
+def validate_snapshot(
     result: Any,
     *,
     tab_id: str,
@@ -494,45 +497,45 @@ def validate_read_page(
     fixture_title: str,
     diagnostic_phase: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Validate a ``relay_browser_read_page`` ``CallToolResult``.
+    """Validate a ``relay_browser_snapshot`` ``CallToolResult``.
 
     Returns ``(textbox_element_id, button_element_id)``. The page
     must come from the fixture origin, its text must contain the
     required markers (``title``, ``Name``, ``Submit``), and there must
     be exactly one editable textbox and exactly one enabled button.
     """
-    _mark(diagnostic_phase, "read-page-structured")
-    payload = _structured(result, "relay_browser_read_page")
-    _mark(diagnostic_phase, "read-page-top-level")
-    if set(payload) != set(_READ_PAGE_KEYS):
-        raise ValueError("invalid relay_browser_read_page response schema")
-    _mark(diagnostic_phase, "read-page-identity")
+    _mark(diagnostic_phase, "snapshot-structured")
+    payload = _structured(result, "relay_browser_snapshot")
+    _mark(diagnostic_phase, "snapshot-top-level")
+    if set(payload) != set(_SNAPSHOT_KEYS):
+        raise ValueError("invalid relay_browser_snapshot response schema")
+    _mark(diagnostic_phase, "snapshot-identity")
     if (
         type(payload["tab_id"]) is not str
         or payload["tab_id"] != tab_id
         or payload["url"] != fixture_url
         or payload["title"] != fixture_title
     ):
-        raise ValueError("invalid relay_browser_read_page response schema")
-    _mark(diagnostic_phase, "read-page-text")
+        raise ValueError("invalid relay_browser_snapshot response schema")
+    _mark(diagnostic_phase, "snapshot-text")
     text = payload["text"]
     if (
         type(text) is not str
-        or len(text) > _READ_PAGE_MAX_TEXT_LEN
-        or any(marker not in text for marker in _READ_PAGE_TEXT_REQUIRED_MARKERS)
+        or len(text) > _SNAPSHOT_MAX_TEXT_LEN
+        or any(marker not in text for marker in _SNAPSHOT_TEXT_REQUIRED_MARKERS)
     ):
-        raise ValueError("invalid relay_browser_read_page response schema")
-    _mark(diagnostic_phase, "read-page-elements")
+        raise ValueError("invalid relay_browser_snapshot response schema")
+    _mark(diagnostic_phase, "snapshot-elements")
     elements = payload["elements"]
-    if type(elements) is not list or len(elements) > _READ_PAGE_MAX_ELEMENTS:
-        raise ValueError("invalid relay_browser_read_page response schema")
+    if type(elements) is not list or len(elements) > _SNAPSHOT_MAX_ELEMENTS:
+        raise ValueError("invalid relay_browser_snapshot response schema")
     textbox_ids: list[str] = []
     button_ids: list[str] = []
     for index, element in enumerate(elements):
-        _mark(diagnostic_phase, f"read-page-element-{index}")
+        _mark(diagnostic_phase, f"snapshot-element-{index}")
         if (
             type(element) is not dict
-            or set(element) != set(_READ_PAGE_ELEMENT_KEYS)
+            or set(element) != set(_SNAPSHOT_ELEMENT_KEYS)
             or not _exact_str(element["element_id"], nonempty=True, maximum=128)
             or not _exact_str(element["role"], nonempty=True, maximum=64)
             or not _exact_str(element["name"], maximum=128)
@@ -543,8 +546,8 @@ def validate_read_page(
             or type(element["editable"]) is not bool
             or type(element["enabled"]) is not bool
         ):
-            _mark(diagnostic_phase, "read-page-element-schema")
-            raise ValueError("invalid relay_browser_read_page response schema")
+            _mark(diagnostic_phase, "snapshot-element-schema")
+            raise ValueError("invalid relay_browser_snapshot response schema")
         if (
             element["role"] == "textbox"
             and element["name"] == "Name"
@@ -559,46 +562,46 @@ def validate_read_page(
             and not element["editable"]
         ):
             button_ids.append(element["element_id"])
-    _mark(diagnostic_phase, "read-page-controls")
+    _mark(diagnostic_phase, "snapshot-controls")
     if len(textbox_ids) != 1:
         if len(textbox_ids) > 1:
-            _mark(diagnostic_phase, "read-page-textbox-ambiguous")
+            _mark(diagnostic_phase, "snapshot-textbox-ambiguous")
         elif not any(
             type(element) is dict
             and element.get("role") == "textbox"
             for element in elements
         ):
-            _mark(diagnostic_phase, "read-page-textbox-role")
+            _mark(diagnostic_phase, "snapshot-textbox-role")
         elif not any(
             type(element) is dict
             and element.get("role") == "textbox"
             and element.get("name") == "Name"
             for element in elements
         ):
-            _mark(diagnostic_phase, "read-page-textbox-name")
+            _mark(diagnostic_phase, "snapshot-textbox-name")
         else:
-            _mark(diagnostic_phase, "read-page-textbox-state")
-        raise ValueError("invalid relay_browser_read_page controls")
+            _mark(diagnostic_phase, "snapshot-textbox-state")
+        raise ValueError("invalid relay_browser_snapshot controls")
     if len(button_ids) != 1:
         if len(button_ids) > 1:
-            _mark(diagnostic_phase, "read-page-button-ambiguous")
+            _mark(diagnostic_phase, "snapshot-button-ambiguous")
         elif not any(
             type(element) is dict
             and element.get("role") == "button"
             for element in elements
         ):
-            _mark(diagnostic_phase, "read-page-button-role")
+            _mark(diagnostic_phase, "snapshot-button-role")
         elif not any(
             type(element) is dict
             and element.get("role") == "button"
             and element.get("name") == "Submit"
             for element in elements
         ):
-            _mark(diagnostic_phase, "read-page-button-name")
+            _mark(diagnostic_phase, "snapshot-button-name")
         else:
-            _mark(diagnostic_phase, "read-page-button-state")
-        raise ValueError("invalid relay_browser_read_page controls")
-    _mark(diagnostic_phase, "read-page-success")
+            _mark(diagnostic_phase, "snapshot-button-state")
+        raise ValueError("invalid relay_browser_snapshot controls")
+    _mark(diagnostic_phase, "snapshot-success")
     return textbox_ids[0], button_ids[0]
 
 

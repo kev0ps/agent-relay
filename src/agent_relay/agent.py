@@ -36,6 +36,7 @@ from .capabilities.base import (
     InvokeMessage,
     LocalCapability,
 )
+from .capabilities.browser import BrowserStartupError
 from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
 from .protocol import (
@@ -81,9 +82,10 @@ class AgentSettings(BaseModel):
     command_timeout_seconds: float = Field(default=30, gt=0, le=3600)
     stdout_limit: int = Field(default=24 * 1024, ge=0, le=48 * 1024)
     stderr_limit: int = Field(default=24 * 1024, ge=0, le=48 * 1024)
-    browser_cdp_url: str | None = None
+    browser_user_data_dir: Path | None = None
     browser_allowed_origins: tuple[str, ...] = ()
-    browser_connect_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    browser_headless: bool = False
+    browser_startup_timeout_seconds: float = Field(default=30, gt=0, le=60)
     browser_action_timeout_seconds: float = Field(default=10, gt=0, le=30)
     computer_driver_path: Path | None = None
     computer_allowed_app_name: str | None = Field(default=None, min_length=1, max_length=128)
@@ -143,6 +145,18 @@ class AgentSettings(BaseModel):
             raise ValueError("workspace must be an absolute existing non-symlink directory")
         return value.resolve(strict=True)
 
+    @field_validator("browser_user_data_dir")
+    @classmethod
+    def local_browser_user_data_dir(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        value = value.expanduser()
+        if not value.is_absolute():
+            raise ValueError("browser user data directory must be absolute")
+        if value.exists() and (value.is_symlink() or not value.is_dir()):
+            raise ValueError("browser user data directory must be a directory")
+        return value
+
     @model_validator(mode="after")
     def secure_url_and_ranges(self) -> AgentSettings:
         if self.agent_id is None:
@@ -158,10 +172,9 @@ class AgentSettings(BaseModel):
         result_budget = min(MAX_RESULT_JSON_BYTES, self.max_ws_message_bytes) - 2048
         if self.stdout_limit + self.stderr_limit > result_budget:
             raise ValueError("combined output limits exceed the protocol message budget")
-        if bool(self.browser_cdp_url) != bool(self.browser_allowed_origins):
+        if (self.browser_user_data_dir is not None) != bool(self.browser_allowed_origins):
             raise ValueError("partial browser configuration")
-        if self.browser_cdp_url:
-            _validate_cdp_url(self.browser_cdp_url)
+        if self.browser_user_data_dir is not None:
             from .capabilities.browser import normalize_origin
             self.browser_allowed_origins = tuple(
                 dict.fromkeys(normalize_origin(origin) for origin in self.browser_allowed_origins)
@@ -207,7 +220,8 @@ _AGENT_OPTION_FIELDS = (
     "command_timeout_seconds",
     "stdout_limit",
     "stderr_limit",
-    "browser_connect_timeout_seconds",
+    "browser_headless",
+    "browser_startup_timeout_seconds",
     "browser_action_timeout_seconds",
     "computer_startup_timeout_seconds",
     "computer_action_timeout_seconds",
@@ -223,6 +237,13 @@ def _environment_option(env: Mapping[str, str], field: str) -> str | None:
     if canonical in env:
         return env[canonical]
     return env.get(legacy)
+
+
+def _strict_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise ValueError("invalid boolean option")
+    return normalized == "true"
 
 
 def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
@@ -257,7 +278,8 @@ def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> N
         "command_timeout_seconds": float,
         "stdout_limit": int,
         "stderr_limit": int,
-        "browser_connect_timeout_seconds": float,
+        "browser_headless": _strict_bool,
+        "browser_startup_timeout_seconds": float,
         "browser_action_timeout_seconds": float,
         "computer_startup_timeout_seconds": float,
         "computer_action_timeout_seconds": float,
@@ -269,9 +291,9 @@ def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> N
         if raw is not None:
             values[field] = converters[field](raw)
 
-    browser_cdp_url = _environment_option(env, "browser_cdp_url")
-    if browser_cdp_url is not None:
-        values["browser_cdp_url"] = browser_cdp_url
+    browser_user_data_dir = _environment_option(env, "browser_user_data_dir")
+    if browser_user_data_dir is not None:
+        values["browser_user_data_dir"] = Path(browser_user_data_dir)
     browser_origins = _environment_option(env, "browser_allowed_origins")
     if browser_origins is not None:
         values["browser_allowed_origins"] = tuple(
@@ -466,20 +488,6 @@ def _is_explicit_loopback(hostname: str) -> bool:
         return False
 
 
-def _validate_cdp_url(value: str) -> None:
-    try:
-        parsed = urlparse(value)
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("invalid browser endpoint") from exc
-    if parsed.scheme != "http" or not parsed.hostname or port is None or port == 0:
-        raise ValueError("invalid browser endpoint")
-    if not _is_explicit_loopback(parsed.hostname) or parsed.hostname in {"0.0.0.0", "::"}:
-        raise ValueError("invalid browser endpoint")
-    if parsed.username is not None or parsed.password is not None or parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
-        raise ValueError("invalid browser endpoint")
-
-
 def _read_token_file(path: Path) -> str:
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     fd = os.open(path, flags)
@@ -552,9 +560,17 @@ class RelayAgent:
                 shutdown_timeout_seconds=settings.computer_shutdown_timeout_seconds,
                 max_elements=settings.computer_max_elements,
             ))
-        if capabilities is None and settings.browser_cdp_url:
+        if capabilities is None and settings.browser_user_data_dir is not None:
             from .capabilities.browser import BrowserCapability
-            configured_capabilities.append(BrowserCapability(settings.browser_cdp_url, settings.browser_allowed_origins, connect_timeout_seconds=settings.browser_connect_timeout_seconds, action_timeout_seconds=settings.browser_action_timeout_seconds))
+            configured_capabilities.append(
+                BrowserCapability(
+                    settings.browser_user_data_dir,
+                    settings.browser_allowed_origins,
+                    headless=settings.browser_headless,
+                    startup_timeout_seconds=settings.browser_startup_timeout_seconds,
+                    action_timeout_seconds=settings.browser_action_timeout_seconds,
+                )
+            )
         self._capabilities = self._index_capabilities(configured_capabilities)
         self._unique_capabilities = tuple(dict.fromkeys(map(id, configured_capabilities)))
         self._capability_objects = {id(item): item for item in configured_capabilities}
@@ -606,6 +622,10 @@ class RelayAgent:
                         **self._connection_options(),
                     ) as socket:
                         await self.run_session(socket)
+                except BrowserStartupError:
+                    if os.environ.get("AGENT_RELAY_NATIVE_DEBUG") == "1":
+                        print("agent browser startup failed", file=sys.stderr, flush=True)
+                    raise
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -827,7 +847,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         settings = AgentSettings.from_environment()
     except ConfigurationError:
         parser.error("invalid agent configuration")
-    asyncio.run(_run_with_signal_handlers(RelayAgent(settings)))
+    try:
+        asyncio.run(_run_with_signal_handlers(RelayAgent(settings)))
+    except BrowserStartupError:
+        parser.exit(1, "agent browser startup failed\n")
 
 
 def config_main(

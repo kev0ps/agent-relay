@@ -32,16 +32,20 @@ from .output_models import (
 from .protocol import (
     MAX_BROWSER_ELEMENT_ID_LENGTH,
     MAX_BROWSER_FILL_VALUE_LENGTH,
+    MAX_BROWSER_TYPE_TEXT_LENGTH,
     MAX_BROWSER_URL_LENGTH,
     MAX_COMPUTER_ELEMENT_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     AgentError,
     AgentResult,
+    BrowserBackInvoke,
     BrowserClickInvoke,
     BrowserFillInvoke,
     BrowserListTabsInvoke,
     BrowserNavigateInvoke,
-    BrowserReadPageInvoke,
+    BrowserScrollInvoke,
+    BrowserSnapshotInvoke,
+    BrowserTypeInvoke,
     Capabilities,
     CommandId,
     ComputerCaptureInvoke,
@@ -276,8 +280,8 @@ class BrowserNavigateRequest(_InvokeRequest):
     url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)]
 
 
-class BrowserReadPageRequest(_InvokeRequest):
-    tool: Literal["browser.read_page"]
+class BrowserSnapshotRequest(_InvokeRequest):
+    tool: Literal["browser.snapshot"]
 
 
 class BrowserFillRequest(_InvokeRequest):
@@ -293,6 +297,23 @@ class BrowserClickRequest(_InvokeRequest):
     element_id: Annotated[
         str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
     ]
+
+
+class BrowserScrollRequest(_InvokeRequest):
+    tool: Literal["browser.scroll"]
+    direction: Literal["up", "down"]
+
+
+class BrowserTypeRequest(_InvokeRequest):
+    tool: Literal["browser.type"]
+    element_id: Annotated[
+        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
+    ]
+    text: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)]
+
+
+class BrowserBackRequest(_InvokeRequest):
+    tool: Literal["browser.back"]
 
 
 class ComputerCaptureRequest(_InvokeRequest):
@@ -328,9 +349,12 @@ InvokeRequest = Annotated[
     | TerminalExecRequest
     | BrowserListTabsRequest
     | BrowserNavigateRequest
-    | BrowserReadPageRequest
+    | BrowserSnapshotRequest
     | BrowserFillRequest
     | BrowserClickRequest
+    | BrowserScrollRequest
+    | BrowserTypeRequest
+    | BrowserBackRequest
     | ComputerCaptureRequest
     | ComputerClickRequest
     | ComputerTypeRequest,
@@ -493,12 +517,12 @@ def create_app(settings: RelaySettings) -> FastAPI:
                 tool="browser.navigate",
                 url=body.url,
             )
-        elif isinstance(body, BrowserReadPageRequest):
-            message = BrowserReadPageInvoke(
+        elif isinstance(body, BrowserSnapshotRequest):
+            message = BrowserSnapshotInvoke(
                 version=1,
                 type="invoke",
                 request_id=request_id,
-                tool="browser.read_page",
+                tool="browser.snapshot",
             )
         elif isinstance(body, BrowserFillRequest):
             message = BrowserFillInvoke(
@@ -516,6 +540,30 @@ def create_app(settings: RelaySettings) -> FastAPI:
                 request_id=request_id,
                 tool="browser.click",
                 element_id=body.element_id,
+            )
+        elif isinstance(body, BrowserScrollRequest):
+            message = BrowserScrollInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.scroll",
+                direction=body.direction,
+            )
+        elif isinstance(body, BrowserTypeRequest):
+            message = BrowserTypeInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.type",
+                element_id=body.element_id,
+                text=body.text,
+            )
+        elif isinstance(body, BrowserBackRequest):
+            message = BrowserBackInvoke(
+                version=1,
+                type="invoke",
+                request_id=request_id,
+                tool="browser.back",
             )
         elif isinstance(body, ComputerCaptureRequest):
             message = ComputerCaptureInvoke(

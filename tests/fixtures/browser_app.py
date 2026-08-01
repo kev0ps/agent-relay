@@ -72,7 +72,7 @@ def make_handler(artifacts: Path, run_id: str) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(body)
 
         def do_GET(self) -> None:
-            if self.path == "/":
+            if self.path.split("?", 1)[0] in {"/", "/second"}:
                 self._reply(200, PAGE, "text/html; charset=utf-8")
             elif self.path == "/health":
                 self._reply(200, HEALTH, "application/json")

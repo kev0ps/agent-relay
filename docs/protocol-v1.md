@@ -52,20 +52,25 @@ The Browser invoke messages are exactly:
 ```json
 {"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.list_tabs"}
 {"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.navigate","url":"https://example.test/"}
-{"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.read_page"}
+{"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.snapshot"}
 {"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.fill","element_id":"opaque-id","value":"text"}
 {"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.click","element_id":"opaque-id"}
+{"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.scroll","direction":"down"}
+{"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.type","element_id":"opaque-id","text":"text"}
+{"version":1,"type":"invoke","request_id":"[REDACTED]","tool":"browser.back"}
 ```
 
-URLs are 1–2,048 characters, opaque element IDs are 1–128, and fill values are
-1–4,096. Browser results are closed semantic objects. `browser.list_tabs`
+URLs are 1–2,048 characters, opaque element IDs are 1–128, and fill/type text is
+1–4,096. `browser.scroll` accepts only `up` or `down`. Browser results are closed
+semantic objects. `browser.list_tabs`
 returns a `tabs` wrapper containing at most 6 closed tabs (`tab_id` 1–128,
-`title` 0–256, `url` 1–2,048). `browser.read_page` returns those tab fields,
+`title` 0–256, `url` 1–2,048). `browser.snapshot` returns those tab fields,
 `text` (0–4,096), and at most 12 elements. Each element contains only an opaque
 `element_id`, `role` (1–64), `name` (0–128), optional `value` (0–256),
-`editable`, and `enabled`. Navigate, fill, and click return `tab_id`, optional
-`element_id` (`null` for navigate), `url`, `title`, and `success`. These limits
-keep worst-case UTF-8 serialized outputs below the 64 KiB result budget.
+`editable`, and `enabled`. Navigate, fill, click, scroll, type, and back return
+`tab_id`, optional `element_id` (`null` for navigation-only actions), `url`,
+`title`, and `success`. These limits keep worst-case UTF-8 serialized outputs
+below the 64 KiB result budget.
 
 There is no Browser operation for arbitrary CDP, JavaScript, generic commands
 or action/arguments dictionaries, headers, cookies, filesystem paths or access,

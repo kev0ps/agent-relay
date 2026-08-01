@@ -1,4 +1,4 @@
-"""Constrained, operator-enabled Chromium capability over loopback CDP."""
+"""Constrained, operator-enabled Chromium capability using a Playwright profile."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import re
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -20,11 +21,14 @@ from ..protocol import (
     MAX_BROWSER_ROLE_LENGTH,
     MAX_BROWSER_TITLE_LENGTH,
     MAX_BROWSER_URL_LENGTH,
+    BrowserBackInvoke,
     BrowserClickInvoke,
     BrowserFillInvoke,
     BrowserListTabsInvoke,
     BrowserNavigateInvoke,
-    BrowserReadPageInvoke,
+    BrowserScrollInvoke,
+    BrowserSnapshotInvoke,
+    BrowserTypeInvoke,
     InvokeMessage,
     ToolName,
 )
@@ -36,6 +40,10 @@ class LocalActionError(RuntimeError):
 
 class BrowserUnavailableError(LocalActionError):
     """The owned browser context is no longer safe to use."""
+
+
+class BrowserStartupError(BrowserUnavailableError):
+    """The configured persistent browser could not be launched safely."""
 
 
 async def _await_shared_cleanup(task: asyncio.Task[None]) -> None:
@@ -78,7 +86,10 @@ class BrowserSession(Protocol):
     async def snapshot(self) -> BrowserSnapshot: ...
     async def navigate(self, url: str) -> None: ...
     async def fill(self, handle: BrowserHandle, value: str) -> None: ...
+    async def type(self, handle: BrowserHandle, text: str) -> None: ...
     async def click(self, handle: BrowserHandle) -> None: ...
+    async def scroll(self, direction: str) -> None: ...
+    async def back(self) -> bool: ...
     async def state(self, handle: BrowserHandle) -> tuple[bool, bool, bool, bool, str]: ...
     async def dispose(self, handle: BrowserHandle) -> None: ...
     async def reset(self) -> None: ...
@@ -121,21 +132,37 @@ def origin_of_url(value: str) -> str:
 
 
 class BrowserCapability:
-    tools: frozenset[ToolName] = frozenset({
-        "browser.list_tabs", "browser.navigate", "browser.read_page",
-        "browser.fill", "browser.click",
-    })
+    tools: frozenset[ToolName] = frozenset(
+        {
+            "browser.list_tabs",
+            "browser.navigate",
+            "browser.snapshot",
+            "browser.fill",
+            "browser.click",
+            "browser.scroll",
+            "browser.type",
+            "browser.back",
+        }
+    )
 
     def __init__(
-        self, cdp_url: str, allowed_origins: tuple[str, ...], *,
-        connect_timeout_seconds: float = 5, action_timeout_seconds: float = 10,
+        self,
+        user_data_dir: Path,
+        allowed_origins: tuple[str, ...],
+        *,
+        headless: bool = False,
+        startup_timeout_seconds: float = 15,
+        action_timeout_seconds: float = 10,
         adapter_factory: Callable[..., BrowserSession | Awaitable[BrowserSession]] | None = None,
     ) -> None:
-        self._cdp_url = cdp_url
+        if not isinstance(user_data_dir, Path) or not user_data_dir.is_absolute():
+            raise ValueError("browser user data directory must be absolute")
+        self._user_data_dir = user_data_dir
         self._origins = frozenset(normalize_origin(item) for item in allowed_origins)
         if not self._origins:
             raise ValueError("allowed origins required")
-        self._connect_timeout = connect_timeout_seconds
+        self._headless = headless
+        self._startup_timeout = startup_timeout_seconds
         self._action_timeout = action_timeout_seconds
         self._factory = adapter_factory or _RealSession.create
         self._session: BrowserSession | None = None
@@ -156,8 +183,23 @@ class BrowserCapability:
             await self._drain_teardowns()
             if self._closed:
                 raise BrowserUnavailableError()
-            made = self._factory(self._cdp_url, self._origins, self._connect_timeout, self._action_timeout)
-            self._session = await asyncio.wait_for(made, self._connect_timeout) if inspect.isawaitable(made) else made
+            try:
+                made = self._factory(
+                    self._user_data_dir,
+                    self._origins,
+                    self._headless,
+                    self._startup_timeout,
+                    self._action_timeout,
+                )
+                self._session = (
+                    await asyncio.wait_for(made, self._startup_timeout)
+                    if inspect.isawaitable(made)
+                    else made
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise BrowserStartupError() from None
 
     def _ready(self, *, allow_blank: bool = False) -> BrowserSession:
         if self._session is None:
@@ -176,14 +218,20 @@ class BrowserCapability:
                 result = {"tabs": [self._tab(session, allow_blank=True)]}
                 self._ready(allow_blank=True)
                 return result
-            if isinstance(message, BrowserReadPageInvoke):
-                return await self._read()
+            if isinstance(message, BrowserSnapshotInvoke):
+                return await self._snapshot()
             if isinstance(message, BrowserNavigateInvoke):
                 return await self._navigate(message.url)
             if isinstance(message, BrowserFillInvoke):
                 return await self._fill(message.element_id, message.value)
             if isinstance(message, BrowserClickInvoke):
                 return await self._click(message.element_id)
+            if isinstance(message, BrowserScrollInvoke):
+                return await self._scroll(message.direction)
+            if isinstance(message, BrowserTypeInvoke):
+                return await self._type(message.element_id, message.text)
+            if isinstance(message, BrowserBackInvoke):
+                return await self._back()
             raise LocalActionError()
         except asyncio.CancelledError:
             records, self._records = self._records, {}
@@ -211,7 +259,7 @@ class BrowserCapability:
         if not allowed:
             raise LocalActionError()
 
-    async def _read(self) -> dict[str, object]:
+    async def _snapshot(self) -> dict[str, object]:
         session = self._ready()
         self._check_origin(session.url)
         await self._invalidate()
@@ -261,6 +309,39 @@ class BrowserCapability:
         self._ready()
         self._check_origin(session.url)
         return self._action(element_id)
+
+    async def _type(self, element_id: str, text: str) -> dict[str, object]:
+        record = self._records.get(element_id)
+        if record is None or not record.editable:
+            raise LocalActionError()
+        session = self._ready()
+        visible, enabled, editable, _, input_type = await session.state(record.handle)
+        if not (visible and enabled and editable) or input_type in {"password", "file"}:
+            raise LocalActionError()
+        await asyncio.wait_for(session.type(record.handle, text), self._action_timeout)
+        self._ready()
+        self._check_origin(session.url)
+        return self._action(element_id)
+
+    async def _scroll(self, direction: str) -> dict[str, object]:
+        if direction not in {"up", "down"}:
+            raise LocalActionError()
+        await self._invalidate()
+        session = self._ready()
+        await asyncio.wait_for(session.scroll(direction), self._action_timeout)
+        self._ready()
+        self._check_origin(session.url)
+        return self._action(None)
+
+    async def _back(self) -> dict[str, object]:
+        await self._invalidate()
+        session = self._ready()
+        moved = await asyncio.wait_for(session.back(), self._action_timeout)
+        if not moved:
+            raise LocalActionError()
+        self._ready()
+        self._check_origin(session.url)
+        return self._action(None)
 
     async def _click(self, element_id: str) -> dict[str, object]:
         record = self._records.pop(element_id, None)
@@ -366,7 +447,7 @@ class BrowserCapability:
         try:
             await asyncio.wait_for(
                 asyncio.gather(close, return_exceptions=True),
-                max(self._connect_timeout, self._action_timeout * 6),
+                max(self._startup_timeout, self._action_timeout * 6),
             )
         except TimeoutError:
             pass
@@ -393,29 +474,39 @@ class _RealSession:
     """Lazy Playwright adapter; importing the base package never imports Playwright."""
 
     @classmethod
-    async def create(cls, cdp_url: str, origins: frozenset[str], connect: float, action: float) -> _RealSession:
+    async def create(
+        cls,
+        user_data_dir: Path,
+        origins: frozenset[str],
+        headless: bool,
+        startup: float,
+        action: float,
+    ) -> _RealSession:
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
             raise BrowserUnavailableError() from exc
         pw = await async_playwright().start()
-        browser = None
+        context = None
         try:
-            browser = await pw.chromium.connect_over_cdp(cdp_url, timeout=connect * 1000)
-            if not browser.is_connected():
-                raise BrowserUnavailableError()
-            context = await browser.new_context(accept_downloads=False, service_workers="block")
-            obj = cls(pw, browser, context, origins, action)
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(user_data_dir),
+                headless=headless,
+                accept_downloads=False,
+                service_workers="block",
+            )
+            obj = cls(pw, context, origins, action)
             await obj._arm()
-            obj.page = await context.new_page()
+            pages = getattr(context, "pages", [])
+            obj.page = pages[0] if pages else await context.new_page()
             obj._bind_page(obj.page)
             obj.url = obj.page.url
             obj.title = ""
             return obj
         except BaseException:
-            if browser:
+            if context is not None:
                 try:
-                    await browser.close()
+                    await context.close()
                 except BaseException:
                     pass
             try:
@@ -424,8 +515,14 @@ class _RealSession:
                 pass
             raise
 
-    def __init__(self, pw: object, browser: object, context: object, origins: frozenset[str], action: float) -> None:
-        self.pw, self.browser, self.context = pw, browser, context
+    def __init__(
+        self,
+        pw: object,
+        context: object,
+        origins: frozenset[str],
+        action: float,
+    ) -> None:
+        self.pw, self.context = pw, context
         self.origins, self.action = origins, action
         self.page = None
         self.url, self.title = "about:blank", ""
@@ -465,7 +562,11 @@ class _RealSession:
         self._arm_browser_events()
 
     def _arm_browser_events(self) -> None:
-        self.browser.on("disconnected", lambda _browser: self.unavailable.set())
+        if hasattr(self.context, "on"):
+            self.context.on("close", lambda _context: self.unavailable.set())
+        browser = getattr(self.context, "browser", None)
+        if browser is not None and hasattr(browser, "on"):
+            browser.on("disconnected", lambda _browser: self.unavailable.set())
 
     def _spawn(self, awaitable: Awaitable[object]) -> None:
         task = asyncio.create_task(awaitable)
@@ -521,10 +622,14 @@ class _RealSession:
         self._ensure()
 
     def _ensure(self) -> None:
+        context_is_closed = False
+        is_closed = getattr(self.context, "is_closed", None)
+        if callable(is_closed):
+            context_is_closed = bool(is_closed())
         if (
             self._closed
             or self.unavailable.is_set()
-            or not self.browser.is_connected()
+            or context_is_closed
             or self.page is None
             or self.page.is_closed()
             or len(self.page.frames) != 1
@@ -619,9 +724,25 @@ class _RealSession:
         await handle.fill(value, timeout=self.action * 1000)
         await self._refresh()
 
+    async def type(self, handle: object, text: str) -> None:
+        await handle.type(text, timeout=self.action * 1000)
+        await self._refresh()
+
     async def click(self, handle: object) -> None:
         await handle.click(timeout=self.action * 1000)
         await self._refresh()
+
+    async def scroll(self, direction: str) -> None:
+        await self.page.evaluate(
+            "direction => window.scrollBy(0, direction === 'down' ? window.innerHeight : -window.innerHeight)",
+            direction,
+        )
+        await self._refresh()
+
+    async def back(self) -> bool:
+        response = await self.page.go_back(timeout=self.action * 1000)
+        await self._refresh()
+        return response is not None
 
     async def state(self, handle: Any) -> tuple[bool, bool, bool, bool, str]:
         if not await handle.evaluate("node => node.isConnected"):
@@ -678,7 +799,7 @@ class _RealSession:
         stages = []
         if self.page and not self.page.is_closed():
             stages.append(self.page.close)
-        stages.extend((self.context.close, self.browser.close, self.pw.stop))
+        stages.extend((self.context.close, self.pw.stop))
         for close in stages:
             stage = asyncio.create_task(close())
             try:

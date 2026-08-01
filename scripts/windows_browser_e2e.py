@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Run the bounded native Windows Browser/CDP Agent Relay smoke scenario."""
+"""Run the bounded native Windows Browser persistent-context smoke scenario."""
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import os
 import secrets
 import sys
@@ -35,16 +34,12 @@ def _load_module(name: str, path: Path) -> Any:
 
 windows = _load_module("windows_e2e", Path(__file__).with_name("windows_e2e.py"))
 try:
-    from tests.e2e import browser_cdp as portable_browser_cdp
     from tests.e2e import mcp_client as portable_mcp
     from tests.e2e import oracles as portable_oracles
     from tests.e2e import scenarios as portable_scenarios
 except ModuleNotFoundError as error:
     if error.name not in {"tests", "tests.e2e"}:
         raise
-    portable_browser_cdp = _load_module(
-        "browser_cdp", ROOT / "tests" / "e2e" / "browser_cdp.py"
-    )
     portable_mcp = _load_module("mcp_client", ROOT / "tests" / "e2e" / "mcp_client.py")
     portable_oracles = _load_module("oracles", ROOT / "tests" / "e2e" / "oracles.py")
     portable_scenarios = _load_module("scenarios", ROOT / "tests" / "e2e" / "scenarios.py")
@@ -52,57 +47,25 @@ except ModuleNotFoundError as error:
 
 DEVICE_ID = "windows-browser-e2e-agent"
 BROWSER_CAPABILITIES = (
+    "browser.back",
     "browser.click",
     "browser.fill",
     "browser.list_tabs",
     "browser.navigate",
-    "browser.read_page",
+    "browser.scroll",
+    "browser.snapshot",
+    "browser.type",
     "system.ping",
     "terminal.exec",
 )
-POLL_INTERVAL_SECONDS = 0.1
-SERVER_READY_TIMEOUT_SECONDS = 15.0
 FIXTURE_READY_TIMEOUT_SECONDS = 15.0
-CHROMIUM_READY_TIMEOUT_SECONDS = 30.0
-AGENT_READY_TIMEOUT_SECONDS = 30.0
-CDP_SCREENSHOT_TIMEOUT_SECONDS = 15.0
-MAX_CDP_FRAME_BYTES = 1024 * 1024
-MAX_SCREENSHOT_BYTES = 512 * 1024
-MAX_SCREENSHOT_DIMENSION = 4096
-
+AGENT_READY_TIMEOUT_SECONDS = 45.0
 
 WindowsBrowserE2EError = windows.WindowsE2EError
 
 
 def choose_loopback_port() -> int:
     return windows.choose_loopback_port()
-
-
-def chromium_command(
-    executable: Path, cdp_port: int, profile: Path
-) -> list[str]:
-    """Return the fixed headless Chromium command used by the smoke."""
-    windows._validate_port(cdp_port)
-    if not isinstance(executable, Path) or not isinstance(profile, Path):
-        raise ValueError("Chromium executable and profile must be Paths")
-    if not profile.is_absolute():
-        raise ValueError("Chromium profile must be absolute")
-    return [
-        str(executable),
-        "--headless=new",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--disable-extensions",
-        "--window-size=1280,800",
-        "--remote-debugging-address=127.0.0.1",
-        f"--remote-debugging-port={cdp_port}",
-        f"--user-data-dir={profile}",
-        "about:blank",
-    ]
 
 
 def fixture_command(port: int, run_id: str) -> list[str]:
@@ -122,123 +85,14 @@ def fixture_command(port: int, run_id: str) -> list[str]:
     ]
 
 
-def resolve_chromium_executable(explicit: Path | None = None) -> Path:
-    """Resolve a Playwright-installed or explicitly pinned Chromium executable."""
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(explicit)
-    environment_path = os.environ.get("AGENT_RELAY_CHROMIUM_PATH")
-    if environment_path:
-        candidates.append(Path(environment_path))
-
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            candidates.append(Path(playwright.chromium.executable_path))
-    except (ImportError, OSError, RuntimeError):
-        pass
-
-    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
-        root = os.environ.get(variable)
-        if root:
-            candidates.append(Path(root) / "Google/Chrome/Application/chrome.exe")
+def _playwright_browsers_path() -> str:
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured:
+        return configured
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        candidates.append(
-            Path(local_app_data) / "Google/Chrome/Application/chrome.exe"
-        )
-
-    for candidate in candidates:
-        if candidate.is_file() and not candidate.is_symlink():
-            return candidate
-    raise WindowsBrowserE2EError("Chromium executable is unavailable")
-
-
-def _url_json(url: str) -> object:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=2) as response:
-        return json.loads(response.read(MAX_CDP_FRAME_BYTES + 1))
-
-
-def _cdp_ready(cdp_url: str) -> bool:
-    try:
-        payload = _url_json(f"{cdp_url}/json/version")
-    except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError):
-        return False
-    return (
-        isinstance(payload, dict)
-        and isinstance(payload.get("Browser"), str)
-        and isinstance(payload.get("webSocketDebuggerUrl"), str)
-    )
-
-
-def _fixture_page_socket(cdp_url: str, fixture_url: str) -> str:
-    try:
-        return portable_browser_cdp.fixture_page_socket(
-            cdp_url,
-            fixture_url,
-            fetch_json=_url_json,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise WindowsBrowserE2EError(str(error)) from error
-
-
-async def _capture_png(ws_url: str) -> bytes:
-    try:
-        return await portable_browser_cdp.capture_png(
-            ws_url,
-            max_cdp_frame_bytes=MAX_CDP_FRAME_BYTES,
-            max_screenshot_bytes=MAX_SCREENSHOT_BYTES,
-            max_screenshot_dimension=MAX_SCREENSHOT_DIMENSION,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise WindowsBrowserE2EError(str(error)) from error
-
-
-def validate_screenshot_png(payload: bytes) -> tuple[int, int]:
-    """Validate a bounded PNG signature, IHDR, and non-zero dimensions."""
-    try:
-        return portable_browser_cdp.validate_screenshot_png(
-            payload,
-            max_screenshot_bytes=MAX_SCREENSHOT_BYTES,
-            max_screenshot_dimension=MAX_SCREENSHOT_DIMENSION,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise WindowsBrowserE2EError(str(error)) from error
-
-
-def write_screenshot(evidence_dir: Path, payload: bytes) -> None:
-    """Write one bounded PNG without following a reparse point."""
-    validate_screenshot_png(payload)
-    windows._reject_reparse_ancestors(evidence_dir)
-    evidence_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    windows._reject_reparse_ancestors(evidence_dir)
-    target = evidence_dir / "screenshot.png"
-    windows._reject_reparse_ancestors(target)
-    try:
-        with target.open("xb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except FileExistsError:
-        raise WindowsBrowserE2EError("screenshot artifact already exists") from None
-
-
-def capture_screenshot(cdp_url: str, fixture_url: str, evidence_dir: Path | None) -> None:
-    """Capture the exact fixture target through raw CDP and validate its PNG."""
-    try:
-        image = portable_browser_cdp.capture_fixture_png(
-            cdp_url,
-            fixture_url,
-            fixture_page_socket=_fixture_page_socket,
-            capture_png=_capture_png,
-            timeout_seconds=CDP_SCREENSHOT_TIMEOUT_SECONDS,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise WindowsBrowserE2EError(str(error)) from error
-    if evidence_dir is not None:
-        write_screenshot(evidence_dir, image)
+        return str(Path(local_app_data) / "ms-playwright")
+    return str(Path.home() / "AppData" / "Local" / "ms-playwright")
 
 
 def _runtime(
@@ -291,14 +145,13 @@ def run_scenario(
     *,
     output_file: Path | None = None,
 ) -> None:
-    """Run the native Windows Browser/CDP scenario with bounded cleanup."""
+    """Run the native Windows Browser persistent-context scenario."""
     if os.name != "nt":
         raise WindowsBrowserE2EError("native Windows Browser harness requires Windows")
 
     agent_token, control_token = windows.generate_credentials()
     server_port = choose_loopback_port()
     fixture_port = choose_loopback_port()
-    cdp_port = choose_loopback_port()
     run_id = f"windows-browser-{secrets.token_hex(12)}"
     value = f"relay-gh-browser-{run_id}"
     phase = "setup"
@@ -307,6 +160,7 @@ def run_scenario(
     scenario_error: BaseException | None = None
     cleanup_error: BaseException | None = None
     diagnostics: Path | None = None
+    server = fixture = agent = None
 
     try:
         lifecycle.install_signal_handlers()
@@ -325,18 +179,16 @@ def run_scenario(
         local_artifacts.mkdir(parents=True, exist_ok=True)
 
         def report_diagnostics() -> None:
-            for label in ("server", "fixture", "chromium", "agent"):
+            for label in ("server", "fixture", "agent"):
                 path = diagnostics / f"{label}.stderr.log"
                 if path.exists():
                     print(
-                        f"Windows Browser E2E {label} diagnostics: {windows._diagnostic_category(path)}.",
+                        f"Windows Browser E2E {label} diagnostics: "
+                        f"{windows._diagnostic_category(path)}.",
                         file=sys.stderr,
                     )
 
-        lifecycle.add_cleanup(
-            report_diagnostics,
-            label="diagnostic-classification",
-        )
+        lifecycle.add_cleanup(report_diagnostics, label="diagnostic-classification")
         lifecycle.job = windows.WindowsJob()
         lifecycle.add_cleanup(lifecycle.wait_for_diagnostics, label="diagnostics")
         lifecycle.add_cleanup(
@@ -350,7 +202,6 @@ def run_scenario(
         repository = ROOT
         fixture_url = f"http://127.0.0.1:{fixture_port}/"
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
-        chromium = resolve_chromium_executable()
 
         server_environment = windows.minimal_environment(
             home,
@@ -371,15 +222,17 @@ def run_scenario(
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_BROWSER_CDP_URL": f"http://127.0.0.1:{cdp_port}",
+                "AGENT_RELAY_NATIVE_DEBUG": "1",
+                "RELAY_AGENT_BROWSER_USER_DATA_DIR": str(profile),
+                "RELAY_AGENT_BROWSER_HEADLESS": "true",
+                "RELAY_AGENT_BROWSER_STARTUP_TIMEOUT_SECONDS": "30",
+                "PLAYWRIGHT_BROWSERS_PATH": _playwright_browsers_path(),
                 "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS": f"http://127.0.0.1:{fixture_port}",
             },
         )
         fixture_environment = windows.minimal_environment(
-            home,
-            {"ARTIFACTS_DIR": str(local_artifacts)},
+            home, {"ARTIFACTS_DIR": str(local_artifacts)}
         )
-        chromium_environment = windows.minimal_environment(home, {})
         runtime = _runtime(
             mcp_url=mcp_url,
             control_token=control_token,
@@ -423,22 +276,6 @@ def run_scenario(
         if fixture.poll() is not None:
             raise WindowsBrowserE2EError("Windows Browser fixture exited during startup")
 
-        phase = "chromium-start"
-        browser = windows._spawn(
-            chromium_command(chromium, cdp_port, profile),
-            environment=chromium_environment,
-            cwd=repository,
-            lifecycle=lifecycle,
-            diagnostic_file=diagnostics / "chromium.stderr.log",
-        )
-        windows._wait_for(
-            "Windows Chromium CDP",
-            lambda: _cdp_ready(f"http://127.0.0.1:{cdp_port}"),
-            timeout=CHROMIUM_READY_TIMEOUT_SECONDS,
-        )
-        if browser.poll() is not None:
-            raise WindowsBrowserE2EError("Windows Chromium exited during startup")
-
         phase = "agent-start"
         agent = windows._spawn(
             windows.agent_command(server_port, workspace),
@@ -449,7 +286,7 @@ def run_scenario(
         )
 
         def agent_ready() -> bool:
-            if agent.poll() is not None:
+            if agent is None or agent.poll() is not None:
                 raise WindowsBrowserE2EError("Windows Browser Agent exited during startup")
             _status(mcp_url, control_token, connected=True)
             return True
@@ -469,13 +306,10 @@ def run_scenario(
             scenario_phase,
             expected_capabilities=BROWSER_CAPABILITIES,
         )
-        phase = "cdp-screenshot"
-        capture_screenshot(
-            f"http://127.0.0.1:{cdp_port}",
-            fixture_url,
-            evidence_dir,
-        )
-        if server.poll() is not None or fixture.poll() is not None or browser.poll() is not None:
+        if any(
+            process is not None and process.poll() is not None
+            for process in (server, fixture, agent)
+        ):
             raise WindowsBrowserE2EError("Windows Browser owned process exited unexpectedly")
     except BaseException as error:
         scenario_error = error
@@ -487,10 +321,7 @@ def run_scenario(
             cleanup_error = error
             lifecycle.cleanup_error = error
             for label in lifecycle.cleanup_failures:
-                print(
-                    f"Windows Browser E2E cleanup phase: {label}.",
-                    file=sys.stderr,
-                )
+                print(f"Windows Browser E2E cleanup phase: {label}.", file=sys.stderr)
 
     primary_error = scenario_error or cleanup_error
     if primary_error is None:
@@ -520,7 +351,9 @@ def run_scenario(
             print("Windows Browser E2E cleanup failed.", file=sys.stderr)
         if output_file is not None:
             try:
-                windows.write_artifact(output_file.parent, output_file.name, (line + "\n").encode("ascii"))
+                windows.write_artifact(
+                    output_file.parent, output_file.name, (line + "\n").encode("ascii")
+                )
             except BaseException:
                 print("Windows Browser E2E artifact write failed.", file=sys.stderr)
         raise primary_error

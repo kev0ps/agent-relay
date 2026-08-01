@@ -25,12 +25,16 @@ from .output_models import (
 from .protocol import (
     MAX_BROWSER_ELEMENT_ID_LENGTH,
     MAX_BROWSER_FILL_VALUE_LENGTH,
+    MAX_BROWSER_TYPE_TEXT_LENGTH,
     MAX_BROWSER_URL_LENGTH,
+    BrowserBackInvoke,
     BrowserClickInvoke,
     BrowserFillInvoke,
     BrowserListTabsInvoke,
     BrowserNavigateInvoke,
-    BrowserReadPageInvoke,
+    BrowserScrollInvoke,
+    BrowserSnapshotInvoke,
+    BrowserTypeInvoke,
     CommandId,
     ComputerCaptureInvoke,
     ComputerClickInvoke,
@@ -168,13 +172,13 @@ def create_mcp_facade(
         )
 
     @mcp.tool(structured_output=True)
-    async def relay_browser_read_page() -> BrowserPageOutput:
-        """Read bounded semantic content from the active browser page."""
-        message = BrowserReadPageInvoke(
+    async def relay_browser_snapshot() -> BrowserPageOutput:
+        """Return bounded semantic content from the active browser page."""
+        message = BrowserSnapshotInvoke(
             version=1,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.read_page",
+            tool="browser.snapshot",
         )
         return _validate_output(
             BrowserPageOutput,
@@ -217,6 +221,58 @@ def create_mcp_facade(
             request_id=uuid.uuid4().hex,
             tool="browser.click",
             element_id=element_id,
+        )
+        return _validate_output(
+            BrowserActionOutput,
+            await _invoke(registry, device_id, message, timeout_seconds),
+        )
+
+    @mcp.tool(structured_output=True)
+    async def relay_browser_scroll(direction: Literal["up", "down"]) -> BrowserActionOutput:
+        """Scroll the active browser page by one viewport in a bounded direction."""
+        message = BrowserScrollInvoke(
+            version=1,
+            type="invoke",
+            request_id=uuid.uuid4().hex,
+            tool="browser.scroll",
+            direction=direction,
+        )
+        return _validate_output(
+            BrowserActionOutput,
+            await _invoke(registry, device_id, message, timeout_seconds),
+        )
+
+    @mcp.tool(structured_output=True)
+    async def relay_browser_type(
+        element_id: Annotated[
+            str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
+        ],
+        text: Annotated[
+            str, Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)
+        ],
+    ) -> BrowserActionOutput:
+        """Type bounded text into one opaque semantic browser element."""
+        message = BrowserTypeInvoke(
+            version=1,
+            type="invoke",
+            request_id=uuid.uuid4().hex,
+            tool="browser.type",
+            element_id=element_id,
+            text=text,
+        )
+        return _validate_output(
+            BrowserActionOutput,
+            await _invoke(registry, device_id, message, timeout_seconds),
+        )
+
+    @mcp.tool(structured_output=True)
+    async def relay_browser_back() -> BrowserActionOutput:
+        """Navigate the active browser tab one step back in its history."""
+        message = BrowserBackInvoke(
+            version=1,
+            type="invoke",
+            request_id=uuid.uuid4().hex,
+            tool="browser.back",
         )
         return _validate_output(
             BrowserActionOutput,

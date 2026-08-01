@@ -114,8 +114,10 @@ class ComputerActionOutput(Output):
 OUTPUT_BY_TOOL: dict[ToolName, type[Output]] = {
     "system.ping": PingOutput, "terminal.exec": TerminalExecOutput,
     "browser.list_tabs": BrowserTabsOutput, "browser.navigate": BrowserActionOutput,
-    "browser.read_page": BrowserPageOutput, "browser.fill": BrowserActionOutput,
-    "browser.click": BrowserActionOutput, "computer.capture": ComputerCaptureOutput,
+    "browser.snapshot": BrowserPageOutput, "browser.fill": BrowserActionOutput,
+    "browser.click": BrowserActionOutput, "browser.scroll": BrowserActionOutput,
+    "browser.type": BrowserActionOutput, "browser.back": BrowserActionOutput,
+    "computer.capture": ComputerCaptureOutput,
     "computer.click": ComputerActionOutput, "computer.type": ComputerActionOutput,
 }
 

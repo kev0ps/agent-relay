@@ -4,6 +4,7 @@ import asyncio
 import sys
 import types
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from agent_relay.capabilities.browser import (
     BrowserCapability,
     BrowserElement,
     BrowserSnapshot,
+    BrowserStartupError,
     BrowserUnavailableError,
     LocalActionError,
     _parse_root_aria_name,
@@ -21,11 +23,14 @@ from agent_relay.protocol import (
     MAX_BROWSER_ELEMENTS,
     MAX_BROWSER_NAME_LENGTH,
     MAX_BROWSER_PAGE_TEXT_LENGTH,
+    BrowserBackInvoke,
     BrowserClickInvoke,
     BrowserFillInvoke,
     BrowserListTabsInvoke,
     BrowserNavigateInvoke,
-    BrowserReadPageInvoke,
+    BrowserScrollInvoke,
+    BrowserSnapshotInvoke,
+    BrowserTypeInvoke,
 )
 
 
@@ -50,7 +55,10 @@ class FakeSession:
         ]
         self.navigate_to: str | None = None
         self.filled: list[tuple[Handle, str]] = []
+        self.typed: list[tuple[Handle, str]] = []
         self.clicked: list[Handle] = []
+        self.scrolled: list[str] = []
+        self.back_calls = 0
         self.closed = 0
         self.unavailable = asyncio.Event()
 
@@ -72,8 +80,18 @@ class FakeSession:
     async def fill(self, handle: Handle, value: str) -> None:
         self.filled.append((handle, value))
 
+    async def type(self, handle: Handle, text: str) -> None:
+        self.typed.append((handle, text))
+
     async def click(self, handle: Handle) -> None:
         self.clicked.append(handle)
+
+    async def scroll(self, direction: str) -> None:
+        self.scrolled.append(direction)
+
+    async def back(self) -> bool:
+        self.back_calls += 1
+        return True
 
     async def state(self, handle: Handle) -> tuple[bool, bool, bool, bool, str]:
         return handle.visible, handle.enabled, handle.editable, handle.clickable, handle.input_type
@@ -99,35 +117,64 @@ def msg(kind: str, **values: str):
     classes = {
         "list": (BrowserListTabsInvoke, "browser.list_tabs"),
         "navigate": (BrowserNavigateInvoke, "browser.navigate"),
-        "read": (BrowserReadPageInvoke, "browser.read_page"),
+        "snapshot": (BrowserSnapshotInvoke, "browser.snapshot"),
         "fill": (BrowserFillInvoke, "browser.fill"),
         "click": (BrowserClickInvoke, "browser.click"),
+        "scroll": (BrowserScrollInvoke, "browser.scroll"),
+        "type": (BrowserTypeInvoke, "browser.type"),
+        "back": (BrowserBackInvoke, "browser.back"),
     }
     cls, tool = classes[kind]
     return cls(version=1, type="invoke", request_id="r", tool=tool, **values)
+
+
+def test_browser_startup_failures_are_terminal_and_sanitized() -> None:
+    async def fail(*_args: object) -> FakeSession:
+        raise RuntimeError("profile lock: /personal/path")
+
+    async def scenario() -> None:
+        capability = BrowserCapability(
+            Path.cwd() / "browser-profile",
+            ("http://127.0.0.1:8899",),
+            adapter_factory=fail,
+        )
+        with pytest.raises(BrowserStartupError) as error:
+            await capability.start()
+        assert str(error.value) == ""
+
+    asyncio.run(scenario())
+
 
 
 def test_browser_bounds_random_handles_and_exact_pinned_actions() -> None:
     async def scenario() -> None:
         session = FakeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
         tabs = await capability.invoke(msg("list"))
         assert len(tabs["tabs"]) == 1
-        first = await capability.invoke(msg("read"))
+        first = await capability.invoke(msg("snapshot"))
         assert len(first["text"]) == MAX_BROWSER_PAGE_TEXT_LENGTH
         assert len(first["elements"]) == MAX_BROWSER_ELEMENTS
         old_id = first["elements"][0]["element_id"]
-        second = await capability.invoke(msg("read"))
+        second = await capability.invoke(msg("snapshot"))
         assert old_id not in {item["element_id"] for item in second["elements"]}
         editable_id = second["elements"][0]["element_id"]
         button_id = second["elements"][1]["element_id"]
         await capability.invoke(msg("fill", element_id=editable_id, value="hello"))
+        await capability.invoke(msg("type", element_id=editable_id, text="typed"))
+        await capability.invoke(msg("scroll", direction="down"))
+        await capability.invoke(msg("back"))
+        refreshed = await capability.invoke(msg("snapshot"))
+        button_id = refreshed["elements"][1]["element_id"]
         await capability.invoke(msg("click", element_id=button_id))
         assert session.filled == [(session.handles[0], "hello")]
+        assert session.typed == [(session.handles[0], "typed")]
+        assert session.scrolled == ["down"]
+        assert session.back_calls == 1
         assert session.clicked == [session.handles[1]]
         with pytest.raises(LocalActionError):
             await capability.invoke(msg("click", element_id=button_id))
@@ -142,12 +189,12 @@ def test_click_revalidation_rejects_element_that_is_no_longer_clickable() -> Non
     async def scenario() -> None:
         session = FakeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         button_id = page["elements"][1]["element_id"]
         button = session.handles[1]
         button.clickable = False
@@ -165,11 +212,11 @@ def test_navigation_origin_and_stale_or_forbidden_elements_are_rejected() -> Non
     async def scenario() -> None:
         session = FakeSession()
         capability = BrowserCapability(
-            "http://[::1]:9222", ("HTTP://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("HTTP://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         editable_id = page["elements"][0]["element_id"]
         password_id = page["elements"][2]["element_id"]
         with pytest.raises(LocalActionError):
@@ -192,7 +239,7 @@ def test_final_navigation_origin_and_cancellation_reset_are_enforced() -> None:
 
         session.navigate = redirected  # type: ignore[method-assign]
         capability = BrowserCapability(
-            "http://localhost:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
@@ -221,7 +268,7 @@ def test_fresh_about_blank_tab_can_be_listed_but_not_read() -> None:
         session.url = "about:blank"
         session.title = ""
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
@@ -230,7 +277,7 @@ def test_fresh_about_blank_tab_can_be_listed_but_not_read() -> None:
             "tabs": [{"tab_id": capability._tab_id, "title": "", "url": "about:blank"}]
         }
         with pytest.raises(LocalActionError):
-            await capability.invoke(msg("read"))
+            await capability.invoke(msg("snapshot"))
 
     asyncio.run(scenario())
 
@@ -241,7 +288,7 @@ def test_fresh_about_blank_tab_can_navigate_to_allowed_origin() -> None:
         session.url = "about:blank"
         session.title = ""
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
@@ -273,7 +320,7 @@ def test_cancelled_first_navigation_from_blank_resets_and_preserves_cancellation
         session.navigate = navigate  # type: ignore[method-assign]
         session.reset = reset  # type: ignore[method-assign]
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
@@ -325,11 +372,11 @@ def test_cancelled_invoke_defers_repeated_cancellation_until_owned_cleanup() -> 
     async def scenario() -> None:
         session = BlockingDisposeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             action_timeout_seconds=1, adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         records = list(capability._records.values())
         task = asyncio.create_task(capability.invoke(
             msg("fill", element_id=page["elements"][0]["element_id"], value="hello")
@@ -376,11 +423,11 @@ def test_invalidate_defers_cancellation_until_detached_records_are_disposed() ->
     async def scenario() -> None:
         session = BlockingDisposeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             action_timeout_seconds=1, adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         records = [capability._records[item["element_id"]] for item in page["elements"]]
         task = asyncio.create_task(capability._invalidate())
         await session.dispose_started.wait()
@@ -401,13 +448,13 @@ def test_consumed_click_handle_is_disposed_on_every_exit(failure: str) -> None:
     async def scenario() -> None:
         session = FakeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             action_timeout_seconds=0.01,
             adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         element_id = page["elements"][1]["element_id"]
         handle = session.handles[1]
         blocker = asyncio.Event()
@@ -439,12 +486,12 @@ def test_non_clickable_semantic_element_consumes_id_and_disposes_handle() -> Non
     async def scenario() -> None:
         session = FakeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         element_id = page["elements"][0]["element_id"]
         handle = session.handles[0]
         with pytest.raises(LocalActionError):
@@ -472,7 +519,8 @@ def test_playwright_object_event_callback_signatures_mark_unavailable() -> None:
     class Page(Emitter):
         pass
 
-    session = _RealSession(object(), Emitter(), object(), frozenset(), 0.1)
+    context = Emitter()
+    session = _RealSession(object(), context, frozenset(), 0.1)
     page = Page()
     session._bind_page(page)
     page.emit("crash", page)
@@ -480,7 +528,7 @@ def test_playwright_object_event_callback_signatures_mark_unavailable() -> None:
 
     session.unavailable.clear()
     session._arm_browser_events()
-    session.browser.emit("disconnected", session.browser)
+    context.emit("close", context)
     assert session.unavailable.is_set()
 
 
@@ -503,7 +551,7 @@ def test_page_policy_events_mark_fatal_before_cleanup(event: str) -> None:
 
     async def scenario() -> None:
         nonlocal session
-        session = _RealSession(object(), Emitter(), object(), frozenset(), 0.1)
+        session = _RealSession(object(), object(), frozenset(), 0.1)
         page = Page()
         session._bind_page(page)
         page.emit(event, EventObject())
@@ -543,12 +591,11 @@ def test_real_session_close_is_concurrent_idempotent_and_continues_after_failure
     async def scenario() -> None:
         page = Page(fail=True)
         context = Stage(fail=True)
-        browser = Browser(fail=True)
         pw = Playwright()
-        session = _RealSession(pw, browser, context, frozenset(), 0.1)
+        session = _RealSession(pw, context, frozenset(), 0.1)
         session.page = page
         await asyncio.gather(session.aclose(), session.aclose())
-        assert (page.calls, context.calls, browser.calls, pw.calls) == (1, 1, 1, 1)
+        assert (page.calls, context.calls, pw.calls) == (1, 1, 1)
 
     asyncio.run(scenario())
 
@@ -576,11 +623,11 @@ def test_real_session_close_continues_after_stage_timeout() -> None:
             self.calls += 1
 
     async def scenario() -> None:
-        page, context, browser, pw = Page(True), Stage(), Stage(), Playwright()
-        session = _RealSession(pw, browser, context, frozenset(), 0.01)
+        page, context, pw = Page(True), Stage(), Playwright()
+        session = _RealSession(pw, context, frozenset(), 0.01)
         session.page = page
         await session.aclose()
-        assert (page.calls, context.calls, browser.calls, pw.calls) == (1, 1, 1, 1)
+        assert (page.calls, context.calls, pw.calls) == (1, 1, 1)
 
     asyncio.run(scenario())
 
@@ -612,7 +659,7 @@ def test_real_session_close_defers_external_cancellation_until_cleanup_finishes(
             async def stop(self) -> None:
                 return None
 
-        page, context, browser = Page(), Stage(), Stage()
+        page, context = Page(), Stage()
         pw = Playwright()
         pw.calls = 0
         original_stop = pw.stop
@@ -622,7 +669,7 @@ def test_real_session_close_defers_external_cancellation_until_cleanup_finishes(
             await original_stop()
 
         pw.stop = counted_stop  # type: ignore[method-assign]
-        session = _RealSession(pw, browser, context, frozenset(), 1)
+        session = _RealSession(pw, context, frozenset(), 1)
         session.page = page
         first = asyncio.create_task(session.aclose())
         await page.started.wait()
@@ -636,7 +683,7 @@ def test_real_session_close_defers_external_cancellation_until_cleanup_finishes(
             await first
         await second
         await session.aclose()
-        assert (page.calls, context.calls, browser.calls, pw.calls) == (1, 1, 1, 1)
+        assert (page.calls, context.calls, pw.calls) == (1, 1, 1)
         assert session._close_task is not None and session._close_task.done()
 
     asyncio.run(scenario())
@@ -646,7 +693,7 @@ def test_wait_unavailable_and_close_detach_same_session_once() -> None:
     async def scenario() -> None:
         session = FakeSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
@@ -676,7 +723,7 @@ def test_wait_unavailable_returns_before_close_and_reconnect_drains_once() -> No
         second = FakeSession()
         sessions = iter((first, second))
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: next(sessions),
         )
@@ -723,11 +770,11 @@ def test_cancelled_reconnect_does_not_cancel_owned_loss_teardown() -> None:
     async def scenario() -> None:
         session = BlockingTeardownSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             action_timeout_seconds=1, adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         records = [capability._records[item["element_id"]] for item in page["elements"]]
         session.unavailable.set()
         await capability.wait_unavailable()
@@ -770,7 +817,7 @@ def test_final_close_prevents_reconnect_waiting_on_old_session_teardown() -> Non
             return first if factory_calls == 1 else FakeSession()
 
         capability = BrowserCapability(
-            "http://127.0.0.1:9222",
+            Path.cwd() / "browser-profile",
             ("http://127.0.0.1:8899",),
             adapter_factory=factory,
         )
@@ -807,11 +854,11 @@ def test_loss_disposes_all_pinned_handles_before_blocked_session_close() -> None
     async def scenario() -> None:
         session = BlockingCloseSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
-        page = await capability.invoke(msg("read"))
+        page = await capability.invoke(msg("snapshot"))
         pinned = [capability._records[item["element_id"]].handle for item in page["elements"]]
         session.unavailable.set()
         await asyncio.wait_for(capability.wait_unavailable(), 0.1)
@@ -844,7 +891,7 @@ def test_browser_close_defers_cancellation_and_shares_owned_teardown() -> None:
     async def scenario() -> None:
         session = BlockingCloseSession()
         capability = BrowserCapability(
-            "http://127.0.0.1:9222", ("http://127.0.0.1:8899",),
+            Path.cwd() / "browser-profile", ("http://127.0.0.1:8899",),
             adapter_factory=lambda *_: session,
         )
         await capability.start()
@@ -956,7 +1003,7 @@ def test_real_snapshot_uses_native_aria_names_bounds_values_and_skips_bad_snapsh
             fallback_name="Submit",
             value_error=True,
         )
-        session = _RealSession(object(), object(), object(), frozenset(), 1)
+        session = _RealSession(object(), object(), frozenset(), 1)
         session.page = Page([labelledby, label, bounded, malformed, recovered_button])
         session._refresh = lambda: asyncio.sleep(0)  # type: ignore[method-assign]
         session.url, session.title = session.page.url, "fixture"
@@ -1009,7 +1056,7 @@ def test_real_state_uses_supported_element_handle_api(
 
     async def scenario() -> None:
         handle = NativeHandle()
-        session = _RealSession(object(), object(), object(), frozenset(), 1)
+        session = _RealSession(object(), object(), frozenset(), 1)
         assert await session.state(handle) == (
             True, True, editable, expected_clickable, input_type,
         )
@@ -1030,7 +1077,7 @@ def test_real_state_detached_handle_stops_before_later_state_calls() -> None:
             raise AssertionError(f"detached state called {name}")
 
     async def scenario() -> None:
-        session = _RealSession(object(), object(), object(), frozenset(), 1)
+        session = _RealSession(object(), object(), frozenset(), 1)
         assert await session.state(DetachedHandle()) == (False, False, False, False, "")
 
     asyncio.run(scenario())
@@ -1082,10 +1129,12 @@ def test_real_adapter_creates_isolated_context_and_arms_policy_before_page(
         def is_closed(self) -> bool:
             return False
 
-    class Context:
+    class Context(Emitter):
         def __init__(self) -> None:
+            super().__init__()
             self.order: list[str] = []
             self.websocket_handler: object | None = None
+            self.pages: list[Page] = []
 
         async def route(self, pattern: str, handler: object) -> None:
             assert pattern == "**/*"
@@ -1098,30 +1147,25 @@ def test_real_adapter_creates_isolated_context_and_arms_policy_before_page(
 
         async def new_page(self) -> Page:
             self.order.append("page")
-            return Page()
+            page = Page()
+            self.pages.append(page)
+            return page
 
-    class Browser(Emitter):
+        def is_closed(self) -> bool:
+            return False
+
+    class Chromium:
         def __init__(self) -> None:
-            super().__init__()
             self.context = Context()
             self.options: dict[str, object] = {}
 
-        @property
-        def contexts(self) -> object:
-            raise AssertionError("default contexts must not be enumerated")
-
-        def is_connected(self) -> bool:
-            return True
-
-        async def new_context(self, **options: object) -> Context:
+        async def launch_persistent_context(
+            self, user_data_dir: str, *, headless: bool, **options: object
+        ) -> Context:
+            assert user_data_dir == str(Path.cwd() / "browser-profile")
+            assert headless is False
             self.options = options
             return self.context
-
-    class Chromium:
-        async def connect_over_cdp(self, url: str, *, timeout: float) -> Browser:
-            assert url == "http://127.0.0.1:9222"
-            assert timeout == 100
-            return browser
 
     class Playwright:
         chromium = Chromium()
@@ -1145,11 +1189,15 @@ def test_real_adapter_creates_isolated_context_and_arms_policy_before_page(
     package.__path__ = []  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "playwright", package)
     monkeypatch.setitem(sys.modules, "playwright.async_api", async_api)
-    browser = Browser()
+    browser = Playwright.chromium
 
     async def scenario() -> None:
         session = await _RealSession.create(
-            "http://127.0.0.1:9222", frozenset({"http://127.0.0.1:8899"}), 0.1, 0.1
+            Path.cwd() / "browser-profile",
+            frozenset({"http://127.0.0.1:8899"}),
+            False,
+            0.1,
+            0.1,
         )
         assert browser.options == {"accept_downloads": False, "service_workers": "block"}
         assert browser.context.order == ["route", "websocket", "page"]

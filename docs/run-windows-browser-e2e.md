@@ -2,16 +2,20 @@
 
 ## Scope
 
-This gate validates the Windows Browser capability on the hosted `windows-2025` runner
-through the public Agent Relay MCP surface. It is deliberately headless and uses
-Chromium over a loopback CDP endpoint.
+This gate validates the Windows Browser capability on the hosted `windows-2025`
+runner through the public Agent Relay MCP surface. It runs headless Chromium
+through Playwright's persistent-context API. The Agent, not the harness, owns the
+Chromium lifecycle.
 
-The scenario owns four native processes in one Windows Job Object:
+The scenario owns three native processes in one Windows Job Object:
 
 - Relay Server on a loopback HTTP/WebSocket port;
 - the loopback Browser fixture and its independent JSONL oracle;
-- Chromium with a temporary profile and loopback-only remote debugging;
-- Relay Agent configured with Browser CDP and one allowlisted fixture origin.
+- Relay Agent, which launches Chromium with an ephemeral persistent User Data Dir.
+
+The harness does not start Chromium separately, use `connect_over_cdp()`, open a
+remote-debugging port, or attach to an existing browser. A profile lock or a
+Playwright startup error is a failure; the harness never kills a user's browser.
 
 ## Evidence
 
@@ -20,30 +24,24 @@ The smoke calls the public Browser tools in one MCP session:
 1. `relay_device_status`;
 2. `relay_browser_list_tabs`;
 3. `relay_browser_navigate`;
-4. `relay_browser_read_page`;
+4. `relay_browser_snapshot`;
 5. rejection of a disallowed origin without echoing the rejected URL;
 6. invalidation of a stale Browser element after navigation;
-7. a fresh `relay_browser_read_page`;
-8. `relay_browser_fill`;
-9. absence of an event before the click;
-10. `relay_browser_click`;
-11. exactly one independent fixture event.
-
-After the MCP scenario, the harness uses a bounded raw CDP
-`Page.captureScreenshot` probe because the current public Browser MCP inventory does
-not expose a Browser screenshot tool. The probe must find exactly the allowlisted
-fixture page and produce a valid PNG no larger than 512 KiB, with a non-zero
-width and height bounded to 4096 pixels.
+7. `relay_browser_back` to the fixture page;
+8. a fresh `relay_browser_snapshot`;
+9. `relay_browser_type` and `relay_browser_fill`;
+10. `relay_browser_scroll` in both directions;
+11. a fresh snapshot followed by `relay_browser_click`;
+12. exactly one independent fixture event.
 
 Artifacts are bounded and limited to:
 
 - `output.log`;
 - `success.json`;
-- `browser-events.jsonl`;
-- `screenshot.png`.
+- `browser-events.jsonl`.
 
-The workflow validates the exact oracle schema, at-most-once event count, generated
-run/value shapes, PNG signature, reparse-point rejection and cleanup-safe artifact
+The workflow validates the exact oracle schema, at-most-once event count,
+generated run/value shapes, reparse-point rejection, and cleanup-safe artifact
 bounds.
 
 ## Local Windows invocation
@@ -56,9 +54,10 @@ uv run --frozen python scripts/windows_browser_e2e.py `
   --output-file browser-evidence/output.log
 ```
 
-The harness rejects non-Windows hosts. It does not accept arbitrary browser paths or
-origins from the Relay protocol; an optional `AGENT_RELAY_CHROMIUM_PATH` is only a
-local runner override for resolving the executable.
+The harness rejects non-Windows hosts. It creates a temporary profile and passes
+that path to the Agent as `RELAY_AGENT_BROWSER_USER_DATA_DIR`. Local configuration
+can instead point the Agent at an explicitly selected Chromium User Data Dir;
+that directory must not already be locked by another Chromium instance.
 
 ## Explicit non-goals
 
@@ -68,4 +67,4 @@ This gate does not validate:
 - Computer Use/UI Automation;
 - a personal interactive desktop session;
 - a mixed Linux Server / Windows Agent deployment;
-- external origins or unrestricted CDP access.
+- external origins, arbitrary JavaScript, or unrestricted CDP access.

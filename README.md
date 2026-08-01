@@ -157,9 +157,12 @@ mcp_servers:
         - relay_terminal_exec
         - relay_browser_list_tabs
         - relay_browser_navigate
-        - relay_browser_read_page
+        - relay_browser_snapshot
         - relay_browser_fill
         - relay_browser_click
+        - relay_browser_scroll
+        - relay_browser_type
+        - relay_browser_back
         - relay_computer_capture
         - relay_computer_click
         - relay_computer_type
@@ -242,7 +245,7 @@ Still outside the validated product boundary:
 | [Protocol v1](docs/protocol-v1.md) | Relay WebSocket messages and validation rules |
 | [Capability contracts](docs/e2e-client-capabilities.md) | MCP tools, fixture contracts and black-box guarantees |
 | [Windows Terminal E2E](docs/run-windows-e2e.md) | Native Windows core/MCP gate and its boundaries |
-| [Windows Browser E2E](docs/run-windows-browser-e2e.md) | Headless Chromium/CDP gate and independent evidence |
+| [Windows Browser E2E](docs/run-windows-browser-e2e.md) | Headless Playwright persistent-context gate and independent evidence |
 | [Windows Computer Use E2E](docs/run-windows-computer-e2e.md) | Experimental full Agent Relay/MCP/UIA candidate gate |
 | [Roadmap](docs/ROADMAP.md) | Current priorities, product direction and exit criteria |
 | [Contributing](CONTRIBUTING.md) | Development setup, checks and pull-request expectations |

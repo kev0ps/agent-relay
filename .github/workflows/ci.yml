@@ -276,7 +276,7 @@ jobs:
           evidence_dir="$GITHUB_WORKSPACE/linux-browser-evidence"
           test -d "$evidence_dir"
           test ! -L "$evidence_dir"
-          allowed='output.log success.json browser-events.jsonl screenshot.png'
+          allowed='output.log success.json browser-events.jsonl'
           for path in "$evidence_dir"/* "$evidence_dir"/.[!.]* "$evidence_dir"/..?*; do
             if test ! -e "$path" && test ! -L "$path"; then
               continue
@@ -296,7 +296,6 @@ jobs:
           output="$(cat "$evidence_dir/output.log")"
           if test "$output" = 'Linux Browser smoke scenario passed.'; then
             test -f "$evidence_dir/browser-events.jsonl"
-            test -f "$evidence_dir/screenshot.png"
             test -f "$evidence_dir/success.json"
             test "$(cat "$evidence_dir/success.json")" = '{"status":"passed"}'
           else
@@ -304,9 +303,6 @@ jobs:
           fi
           if test -e "$evidence_dir/browser-events.jsonl"; then
             uv run --frozen python -c 'import json, pathlib, re; path=pathlib.Path("linux-browser-evidence/browser-events.jsonl"); lines=path.read_text().splitlines(); assert len(lines)==1; event=json.loads(lines[0]); assert set(event)=={"event","run_id","value"}; assert event["event"]=="submitted"; assert re.fullmatch(r"linux-browser-[0-9a-f]{24}", event["run_id"]); assert re.fullmatch(r"relay-gh-browser-linux-browser-[0-9a-f]{24}", event["value"])'
-          fi
-          if test -e "$evidence_dir/screenshot.png"; then
-            uv run --frozen python -c 'import pathlib, struct; png=pathlib.Path("linux-browser-evidence/screenshot.png").read_bytes(); assert png[:8]==b"\x89PNG\r\n\x1a\n" and png[12:16]==b"IHDR"; width,height=struct.unpack(">II", png[16:24]); assert 1<=width<=4096 and 1<=height<=4096'
           fi
 
       - name: Upload bounded Linux Browser evidence
@@ -832,7 +828,7 @@ jobs:
             throw "Browser evidence directory is a reparse point"
           }
 
-          $allowed = @("output.log", "success.json", "browser-events.jsonl", "screenshot.png")
+          $allowed = @("output.log", "success.json", "browser-events.jsonl")
           foreach ($entry in Get-ChildItem -LiteralPath $evidenceDir -Force) {
             if ($entry.Name -notin $allowed) {
               throw "Unexpected Browser evidence file"
@@ -847,7 +843,6 @@ jobs:
 
           $outputPath = Join-Path $evidenceDir "output.log"
           $eventPath = Join-Path $evidenceDir "browser-events.jsonl"
-          $screenshotPath = Join-Path $evidenceDir "screenshot.png"
           $successPath = Join-Path $evidenceDir "success.json"
           if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
             throw "Browser output evidence is missing"
@@ -867,9 +862,6 @@ jobs:
           if ($output -eq "Windows Browser smoke scenario passed.") {
             if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
               throw "Browser oracle evidence is missing"
-            }
-            if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf)) {
-              throw "Browser screenshot evidence is missing"
             }
             if (-not (Test-Path -LiteralPath $successPath -PathType Leaf)) {
               throw "Browser success marker is missing"
@@ -900,30 +892,6 @@ jobs:
             }
             if ($event.value -cnotmatch '^relay-gh-browser-windows-browser-[0-9a-f]{24}$') {
               throw "Browser oracle value is invalid"
-            }
-          }
-
-          if (Test-Path -LiteralPath $screenshotPath -PathType Leaf) {
-            $png = [IO.File]::ReadAllBytes($screenshotPath)
-            $signature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
-            if ($png.Length -lt 8) {
-              throw "Browser screenshot is too small"
-            }
-            for ($index = 0; $index -lt $signature.Length; $index++) {
-              if ($png[$index] -ne $signature[$index]) {
-                throw "Browser screenshot is not PNG"
-              }
-            }
-            if ($png.Length -lt 24) {
-              throw "Browser screenshot IHDR is missing"
-            }
-            if ($png[12] -ne 73 -or $png[13] -ne 72 -or $png[14] -ne 68 -or $png[15] -ne 82) {
-              throw "Browser screenshot IHDR is invalid"
-            }
-            $width = ([uint32]$png[16] -shl 24) -bor ([uint32]$png[17] -shl 16) -bor ([uint32]$png[18] -shl 8) -bor [uint32]$png[19]
-            $height = ([uint32]$png[20] -shl 24) -bor ([uint32]$png[21] -shl 16) -bor ([uint32]$png[22] -shl 8) -bor [uint32]$png[23]
-            if ($width -lt 1 -or $width -gt 4096 -or $height -lt 1 -or $height -gt 4096) {
-              throw "Browser screenshot dimensions are invalid"
             }
           }
 

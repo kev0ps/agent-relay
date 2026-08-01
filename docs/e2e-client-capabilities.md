@@ -77,9 +77,10 @@ The native Linux Browser product E2E proof is the GitHub Actions job
 MCP Browser scenario as the Windows Browser gate, with Relay Server, Relay Agent,
 Chromium, and the loopback fixture as native processes on `ubuntu-24.04`.
 
-The gate uses a fresh Playwright Chromium profile, loopback-only CDP, the
+The gate uses a fresh Playwright Chromium persistent User Data Dir, the
 allowlisted fixture origin, structured Browser results, an independently written
-fixture event, and a bounded PNG screenshot oracle. It does not use Docker,
+fixture event, and bounded lifecycle cleanup. The Agent launches Chromium; the
+harness does not expose or attach to a CDP endpoint. It does not use Docker,
 personal profiles, headed desktop automation, or Computer Use.
 
 ## Native Linux Computer Use gate
@@ -152,10 +153,16 @@ path, or arbitrary executable input.
   each record contains `tab_id`, `title`, and `url`.
 - `relay_browser_navigate(url)` returns an action record containing `tab_id`,
   `element_id` (null for navigation), `url`, `title`, and `success`.
-- `relay_browser_read_page()` returns `tab_id`, `title`, `url`, bounded `text`,
+- `relay_browser_snapshot()` returns `tab_id`, `title`, `url`, bounded `text`,
   and a bounded `elements` collection of typed browser element records.
 - `relay_browser_fill(element_id, value)` returns the Browser action record.
 - `relay_browser_click(element_id)` returns the Browser action record.
+- `relay_browser_scroll(direction)` accepts only `up` or `down` and returns the
+  Browser action record.
+- `relay_browser_type(element_id, text)` types through the Playwright element
+  handle and returns the Browser action record.
+- `relay_browser_back()` returns the Browser action record after going back one
+  history entry.
 
 Element IDs are opaque and valid only for their captured page generation. URLs
 are restricted to the allowlisted local fixture origin. Browser tools accept no

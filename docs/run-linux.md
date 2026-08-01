@@ -106,15 +106,20 @@ mcp_servers:
         - relay_terminal_exec
         - relay_browser_list_tabs
         - relay_browser_navigate
-        - relay_browser_read_page
+        - relay_browser_snapshot
         - relay_browser_fill
         - relay_browser_click
+        - relay_browser_scroll
+        - relay_browser_type
+        - relay_browser_back
 ```
 
 The allowlist matches the current MCP facade. Terminal execution accepts only
 `pwd`, `whoami`, `python_version`, `git_status`, or `git_branch`. Browser calls
-are advertised by the agent only when its optional CDP URL and allowed origins
-are configured as shown in `.env.example`; otherwise they fail as unsupported.
+are advertised by the Agent only when its persistent User Data Dir and allowed
+origins are configured as shown in `.env.example`; the Agent then launches the
+Playwright-managed Chromium instance itself. It does not attach to an external
+browser or expose a CDP endpoint.
 Parallel calls are disabled because the configured single device supports only
 one invocation at a time.
 

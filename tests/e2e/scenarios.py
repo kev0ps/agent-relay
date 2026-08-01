@@ -47,9 +47,12 @@ TOOL_ORDER: Final[tuple[str, ...]] = (
     "terminal.exec",
     "browser.list_tabs",
     "browser.navigate",
-    "browser.read_page",
+    "browser.snapshot",
     "browser.fill",
     "browser.click",
+    "browser.scroll",
+    "browser.type",
+    "browser.back",
     "computer.capture",
     "computer.click",
     "computer.type",
@@ -96,8 +99,8 @@ def _portable_phase(
     if phase is None:
         return
     marker = markers[-1] if markers else fallback
-    if marker.startswith("read-page-element-"):
-        marker = "read-page-element-schema"
+    if marker.startswith("snapshot-element-"):
+        marker = "snapshot-element-schema"
     elif marker.startswith("capture-element-"):
         marker = "capture-element-shape"
     elif marker in {"capture-duplicate-id", "capture-decoy-detected"}:
@@ -111,8 +114,8 @@ def _portable_phase(
         "capture-controls-button-mismatch",
     }:
         marker = "capture-controls"
-    elif marker == "read-page-success":
-        marker = "read-page-controls"
+    elif marker == "snapshot-success":
+        marker = "snapshot-controls"
     _mark(phase, marker)
 
 
@@ -209,6 +212,7 @@ async def _run_browser_scenario_async(
 ) -> None:
     """Exercise Browser Use through one official MCP session and one oracle."""
     artifact = _fixture_path(runtime, EVENT_FILE)
+    secondary_url = runtime.fixture_url.rstrip("/") + "/second"
     async with _mcp.MCPClientSession(
         runtime.mcp_url,
         runtime.control_token,
@@ -236,11 +240,11 @@ async def _run_browser_scenario_async(
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
-        _mark(phase, "read-page-call")
-        result = await client.call("relay_browser_read_page", {})
+        _mark(phase, "snapshot")
+        result = await client.call("relay_browser_snapshot", {})
         markers: list[str] = []
         try:
-            textbox, button = _oracles.validate_read_page(
+            textbox, button = _oracles.validate_snapshot(
                 result,
                 tab_id=tab_id,
                 fixture_url=runtime.fixture_url,
@@ -248,7 +252,7 @@ async def _run_browser_scenario_async(
                 diagnostic_phase=markers,
             )
         except ValueError:
-            _portable_phase(phase, markers, "read-page-validation")
+            _portable_phase(phase, markers, "snapshot-validation")
             raise
         _mark(phase, "disallowed-origin")
         forbidden_url = "https://example.invalid/"
@@ -260,11 +264,11 @@ async def _run_browser_scenario_async(
             raise ValueError("disallowed Browser origin was not safely rejected")
         _mark(phase, "stale-element")
         _oracles.validate_action(
-            await client.call("relay_browser_navigate", {"url": runtime.fixture_url}),
+            await client.call("relay_browser_navigate", {"url": secondary_url}),
             tool_name="relay_browser_navigate",
             tab_id=tab_id,
             element_id=None,
-            fixture_url=runtime.fixture_url,
+            fixture_url=secondary_url,
             fixture_title=FIXTURE_TITLE,
         )
         stale = await client.call(
@@ -273,14 +277,35 @@ async def _run_browser_scenario_async(
         )
         if stale.isError is not True or textbox in str(stale):
             raise ValueError("stale Browser element was not safely rejected")
-        _mark(phase, "refresh-page")
-        refreshed = _oracles.validate_read_page(
-            await client.call("relay_browser_read_page", {}),
+        _mark(phase, "back")
+        _oracles.validate_action(
+            await client.call("relay_browser_back", {}),
+            tool_name="relay_browser_back",
+            tab_id=tab_id,
+            element_id=None,
+            fixture_url=runtime.fixture_url,
+            fixture_title=FIXTURE_TITLE,
+        )
+        _mark(phase, "refresh-snapshot")
+        refreshed = _oracles.validate_snapshot(
+            await client.call("relay_browser_snapshot", {}),
             tab_id=tab_id,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         textbox, button = refreshed
+        _mark(phase, "type")
+        _oracles.validate_action(
+            await client.call(
+                "relay_browser_type",
+                {"element_id": textbox, "text": value},
+            ),
+            tool_name="relay_browser_type",
+            tab_id=tab_id,
+            element_id=textbox,
+            fixture_url=runtime.fixture_url,
+            fixture_title=FIXTURE_TITLE,
+        )
         _mark(phase, "fill")
         _oracles.validate_action(
             await client.call(
@@ -290,6 +315,30 @@ async def _run_browser_scenario_async(
             tool_name="relay_browser_fill",
             tab_id=tab_id,
             element_id=textbox,
+            fixture_url=runtime.fixture_url,
+            fixture_title=FIXTURE_TITLE,
+        )
+        _mark(phase, "scroll-down")
+        _oracles.validate_action(
+            await client.call("relay_browser_scroll", {"direction": "down"}),
+            tool_name="relay_browser_scroll",
+            tab_id=tab_id,
+            element_id=None,
+            fixture_url=runtime.fixture_url,
+            fixture_title=FIXTURE_TITLE,
+        )
+        _mark(phase, "scroll-up")
+        _oracles.validate_action(
+            await client.call("relay_browser_scroll", {"direction": "up"}),
+            tool_name="relay_browser_scroll",
+            tab_id=tab_id,
+            element_id=None,
+            fixture_url=runtime.fixture_url,
+            fixture_title=FIXTURE_TITLE,
+        )
+        textbox, button = _oracles.validate_snapshot(
+            await client.call("relay_browser_snapshot", {}),
+            tab_id=tab_id,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )

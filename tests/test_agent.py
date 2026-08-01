@@ -204,7 +204,7 @@ def test_computer_starts_before_browser_when_both_use_the_desktop(
             device_id="d",
             agent_token="secret",
             workspace=tmp_path,
-            browser_cdp_url="http://127.0.0.1:9222",
+            browser_user_data_dir=tmp_path / "browser-profile",
             browser_allowed_origins=("http://127.0.0.1:8899",),
             computer_driver_path=driver,
             computer_allowed_app_name="relay-desktop-fixture",
@@ -281,23 +281,9 @@ def test_configuration_failures_never_echo_agent_token(tmp_path: Path) -> None:
     assert secret not in str(error.value)
 
 
-@pytest.mark.parametrize(
-    "cdp_url",
-    [
-        "ws://127.0.0.1:9222",
-        "http://0.0.0.0:9222",
-        "http://[::]:9222",
-        "http://example.com:9222",
-        "http://user@127.0.0.1:9222",
-        "http://127.0.0.1",
-        "http://127.0.0.1:0",
-        "http://127.0.0.1:9222/json",
-        "http://127.0.0.1:9222/?secret=x",
-        "http://127.0.0.1:9222/#fragment",
-    ],
-)
-def test_browser_configuration_requires_safe_explicit_loopback_cdp(
-    tmp_path: Path, cdp_url: str
+@pytest.mark.parametrize("profile_path", [Path("relative/profile"), Path(""), Path(".")])
+def test_browser_configuration_requires_absolute_profile_path(
+    tmp_path: Path, profile_path: Path
 ) -> None:
     with pytest.raises(ConfigurationError) as error:
         AgentSettings(
@@ -305,10 +291,24 @@ def test_browser_configuration_requires_safe_explicit_loopback_cdp(
             device_id="d",
             agent_token="secret",
             workspace=tmp_path,
-            browser_cdp_url=cdp_url,
+            browser_user_data_dir=profile_path,
             browser_allowed_origins=("http://127.0.0.1:8899",),
         )
     assert str(error.value) == "invalid agent configuration"
+
+
+def test_browser_configuration_rejects_existing_profile_file(tmp_path: Path) -> None:
+    profile_file = tmp_path / "profile-file"
+    profile_file.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ConfigurationError):
+        AgentSettings(
+            server_url="ws://localhost/ws/agent",
+            device_id="d",
+            agent_token="secret",
+            workspace=tmp_path,
+            browser_user_data_dir=profile_file,
+            browser_allowed_origins=("http://127.0.0.1:8899",),
+        )
 
 
 @pytest.mark.parametrize(
@@ -333,11 +333,11 @@ def test_browser_allowed_origins_are_exact_and_partial_config_is_rejected(
         workspace=tmp_path,
     )
     with pytest.raises(ConfigurationError):
-        AgentSettings(**base, browser_cdp_url="http://127.0.0.1:9222")
+        AgentSettings(**base, browser_user_data_dir=tmp_path / "browser-profile")
     with pytest.raises(ConfigurationError):
         AgentSettings(
             **base,
-            browser_cdp_url="http://127.0.0.1:9222",
+            browser_user_data_dir=tmp_path / "browser-profile",
             browser_allowed_origins=(origin,),
         )
 
@@ -747,8 +747,8 @@ def test_browser_advertisement_is_canonical_and_only_after_start(tmp_path: Path)
         def __init__(self) -> None:
             super().__init__("browser.list_tabs")
             self.tools = frozenset({
-                "browser.list_tabs", "browser.navigate", "browser.read_page",
-                "browser.fill", "browser.click",
+                "browser.list_tabs", "browser.navigate", "browser.snapshot",
+                                    "browser.fill", "browser.click", "browser.scroll", "browser.type", "browser.back",
             })
             self.started = False
 
@@ -774,8 +774,8 @@ def test_browser_advertisement_is_canonical_and_only_after_start(tmp_path: Path)
         agent.stop()
         await task
         assert socket.sent[1]["tools"] == [
-            "browser.list_tabs", "browser.navigate", "browser.read_page",
-            "browser.fill", "browser.click",
+            "browser.list_tabs", "browser.navigate", "browser.snapshot",
+                                "browser.fill", "browser.click", "browser.scroll", "browser.type", "browser.back",
         ]
 
     asyncio.run(scenario())

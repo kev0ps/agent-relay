@@ -45,11 +45,14 @@ from agent_relay.protocol import (
     MAX_COMPUTER_ROLE_LENGTH,
     MAX_RESULT_JSON_BYTES,
     AgentResult,
+    BrowserBackInvoke,
     BrowserClickInvoke,
     BrowserFillInvoke,
     BrowserListTabsInvoke,
     BrowserNavigateInvoke,
-    BrowserReadPageInvoke,
+    BrowserScrollInvoke,
+    BrowserSnapshotInvoke,
+    BrowserTypeInvoke,
     Capabilities,
     ComputerCaptureInvoke,
     ComputerClickInvoke,
@@ -119,9 +122,12 @@ def test_tool_discovery_is_exact_and_closed() -> None:
             "relay_terminal_exec",
             "relay_browser_list_tabs",
             "relay_browser_navigate",
-            "relay_browser_read_page",
+            "relay_browser_snapshot",
             "relay_browser_fill",
             "relay_browser_click",
+            "relay_browser_scroll",
+            "relay_browser_type",
+            "relay_browser_back",
             "relay_computer_capture",
             "relay_computer_click",
             "relay_computer_type",
@@ -150,7 +156,7 @@ def test_tool_discovery_is_exact_and_closed() -> None:
             by_name["relay_terminal_exec"].outputSchema["additionalProperties"] is False
         )
 
-        for name in ("relay_browser_list_tabs", "relay_browser_read_page"):
+        for name in ("relay_browser_list_tabs", "relay_browser_snapshot"):
             assert by_name[name].inputSchema == {
                 "type": "object",
                 "properties": {},
@@ -160,19 +166,28 @@ def test_tool_discovery_is_exact_and_closed() -> None:
             "relay_browser_navigate": {"url"},
             "relay_browser_fill": {"element_id", "value"},
             "relay_browser_click": {"element_id"},
+            "relay_browser_scroll": {"direction"},
+            "relay_browser_type": {"element_id", "text"},
+            "relay_browser_back": set(),
         }
         for name, fields in expected_fields.items():
             schema = by_name[name].inputSchema
             assert schema["additionalProperties"] is False
             assert set(schema["properties"]) == fields
-            assert set(schema["required"]) == fields
+            if fields:
+                assert set(schema["required"]) == fields
+            else:
+                assert "required" not in schema or schema["required"] == []
             for field in fields:
-                assert schema["properties"][field]["minLength"] == 1
-                assert schema["properties"][field]["maxLength"] > 1
+                if field == "direction":
+                    assert schema["properties"][field]["enum"] == ["up", "down"]
+                else:
+                    assert schema["properties"][field]["minLength"] == 1
+                    assert schema["properties"][field]["maxLength"] > 1
 
         for name in set(expected_fields) | {
             "relay_browser_list_tabs",
-            "relay_browser_read_page",
+            "relay_browser_snapshot",
         }:
             output = by_name[name].outputSchema
             assert output is not None
@@ -182,7 +197,7 @@ def test_tool_discovery_is_exact_and_closed() -> None:
         assert tabs["type"] == "object" and tabs["required"] == ["tabs"]
         assert tabs["properties"]["tabs"]["maxItems"] > 0
         assert tabs["$defs"]["BrowserTabOutput"]["additionalProperties"] is False
-        page = by_name["relay_browser_read_page"].outputSchema
+        page = by_name["relay_browser_snapshot"].outputSchema
         assert page["properties"]["text"]["maxLength"] > 0
         assert page["properties"]["elements"]["maxItems"] > 0
         assert page["$defs"]["BrowserElementOutput"]["additionalProperties"] is False
@@ -488,7 +503,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
             BrowserNavigateInvoke,
         ),
         (
-            "relay_browser_read_page",
+            "relay_browser_snapshot",
             {},
             {
                 "tab_id": "tab-1",
@@ -497,7 +512,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "text": "Hello",
                 "elements": [],
             },
-            BrowserReadPageInvoke,
+            BrowserSnapshotInvoke,
         ),
         (
             "relay_browser_fill",
@@ -522,6 +537,42 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "success": True,
             },
             BrowserClickInvoke,
+        ),
+        (
+            "relay_browser_scroll",
+            {"direction": "down"},
+            {
+                "tab_id": "tab-1",
+                "element_id": None,
+                "url": "https://example.test",
+                "title": "Example",
+                "success": True,
+            },
+            BrowserScrollInvoke,
+        ),
+        (
+            "relay_browser_type",
+            {"element_id": "field-1", "text": "hello"},
+            {
+                "tab_id": "tab-1",
+                "element_id": "field-1",
+                "url": "https://example.test",
+                "title": "Example",
+                "success": True,
+            },
+            BrowserTypeInvoke,
+        ),
+        (
+            "relay_browser_back",
+            {},
+            {
+                "tab_id": "tab-1",
+                "element_id": None,
+                "url": "https://example.test",
+                "title": "Example",
+                "success": True,
+            },
+            BrowserBackInvoke,
         ),
     ],
 )
@@ -886,9 +937,12 @@ def test_official_streamable_http_client_uses_authenticated_canonical_mcp_url() 
             "relay_terminal_exec",
             "relay_browser_list_tabs",
             "relay_browser_navigate",
-            "relay_browser_read_page",
+            "relay_browser_snapshot",
             "relay_browser_fill",
             "relay_browser_click",
+            "relay_browser_scroll",
+            "relay_browser_type",
+            "relay_browser_back",
             "relay_computer_capture",
             "relay_computer_click",
             "relay_computer_type",

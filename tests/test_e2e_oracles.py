@@ -81,9 +81,12 @@ def _good_status_payload(device_id: str, *, connected: bool) -> dict[str, Any]:
                     "terminal.exec",
                     "browser.list_tabs",
                     "browser.navigate",
-                    "browser.read_page",
+                    "browser.snapshot",
                     "browser.fill",
                     "browser.click",
+                    "browser.scroll",
+                    "browser.type",
+                    "browser.back",
                     "computer.capture",
                     "computer.click",
                     "computer.type",
@@ -789,15 +792,15 @@ def test_validate_computer_action_rejects_extra_keys() -> None:
         )
 
 
-# --- Read page oracle -------------------------------------------------------
+# --- Snapshot oracle --------------------------------------------------------
 
 
-def test_oracles_module_exposes_validate_read_page() -> None:
+def test_oracles_module_exposes_validate_snapshot() -> None:
     oracles = _oracles()
-    assert hasattr(oracles, "validate_read_page")
+    assert hasattr(oracles, "validate_snapshot")
 
 
-def _good_read_page_payload(tab_id: str) -> dict[str, Any]:
+def _good_snapshot_payload(tab_id: str) -> dict[str, Any]:
     return {
         "tab_id": tab_id,
         "url": "http://127.0.0.1:8899/",
@@ -824,65 +827,65 @@ def _good_read_page_payload(tab_id: str) -> dict[str, Any]:
     }
 
 
-def test_validate_read_page_returns_textbox_and_button_ids() -> None:
+def test_validate_snapshot_returns_textbox_and_button_ids() -> None:
     oracles = _oracles()
-    result = _make_call_tool_result(_good_read_page_payload("tab-1"))
-    textbox_id, button_id = oracles.validate_read_page(
+    result = _make_call_tool_result(_good_snapshot_payload("tab-1"))
+    textbox_id, button_id = oracles.validate_snapshot(
         result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
     )
     assert textbox_id == "field-1"
     assert button_id == "btn-1"
 
 
-def test_validate_read_page_rejects_tab_id_mismatch() -> None:
+def test_validate_snapshot_rejects_tab_id_mismatch() -> None:
     oracles = _oracles()
-    result = _make_call_tool_result(_good_read_page_payload("tab-1"))
+    result = _make_call_tool_result(_good_snapshot_payload("tab-1"))
     with pytest.raises(ValueError):
-        oracles.validate_read_page(
+        oracles.validate_snapshot(
             result, tab_id="tab-other", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
         )
 
 
-def test_validate_read_page_rejects_text_missing_required_markers() -> None:
+def test_validate_snapshot_rejects_text_missing_required_markers() -> None:
     oracles = _oracles()
-    payload = _good_read_page_payload("tab-1")
+    payload = _good_snapshot_payload("tab-1")
     payload["text"] = "Some other text"
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_read_page(
+        oracles.validate_snapshot(
             result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
         )
 
 
-def test_validate_read_page_rejects_oversized_text() -> None:
+def test_validate_snapshot_rejects_oversized_text() -> None:
     oracles = _oracles()
-    payload = _good_read_page_payload("tab-1")
+    payload = _good_snapshot_payload("tab-1")
     payload["text"] = "Name Submit " + ("x" * 5000)
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_read_page(
+        oracles.validate_snapshot(
             result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
         )
 
 
-def test_validate_read_page_rejects_missing_textbox() -> None:
+def test_validate_snapshot_rejects_missing_textbox() -> None:
     oracles = _oracles()
-    payload = _good_read_page_payload("tab-1")
+    payload = _good_snapshot_payload("tab-1")
     payload["elements"] = [payload["elements"][1]]  # only button
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_read_page(
+        oracles.validate_snapshot(
             result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
         )
 
 
-def test_validate_read_page_rejects_element_with_wrong_shape() -> None:
+def test_validate_snapshot_rejects_element_with_wrong_shape() -> None:
     oracles = _oracles()
-    payload = _good_read_page_payload("tab-1")
+    payload = _good_snapshot_payload("tab-1")
     payload["elements"][0]["bogus"] = True
     result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_read_page(
+        oracles.validate_snapshot(
             result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
         )
 
@@ -1043,9 +1046,12 @@ def test_validate_status_accepts_connected_status_payload_shape() -> None:
                 "terminal.exec",
                 "browser.list_tabs",
                 "browser.navigate",
-                "browser.read_page",
+                "browser.snapshot",
                 "browser.fill",
                 "browser.click",
+                "browser.scroll",
+                "browser.type",
+                "browser.back",
                 "computer.capture",
                 "computer.click",
                 "computer.type",

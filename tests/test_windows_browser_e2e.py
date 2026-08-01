@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import inspect
 import os
@@ -20,24 +19,20 @@ def _load_harness():
     spec = importlib.util.spec_from_file_location("windows_browser_e2e", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def test_browser_command_is_headless_and_loopback_only(tmp_path: Path) -> None:
-    harness = _load_harness()
-    executable = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-    command = harness.chromium_command(executable, 23456, tmp_path / "profile")
-
-    assert command[0] == str(executable)
-    assert "--headless=new" in command
-    assert "--no-first-run" in command
-    assert "--no-default-browser-check" in command
-    assert "--remote-debugging-address=127.0.0.1" in command
-    assert "--remote-debugging-port=23456" in command
-    assert f"--user-data-dir={tmp_path / 'profile'}" in command
-    assert "--remote-debugging-address=0.0.0.0" not in command
-    assert "--disable-web-security" not in command
+def test_windows_browser_is_launched_by_agent_persistent_context() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "RELAY_AGENT_BROWSER_USER_DATA_DIR" in source
+    assert "RELAY_AGENT_BROWSER_HEADLESS" in source
+    assert "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS" in source
+    assert "chromium_command" not in source
+    assert "remote-debugging" not in source
+    assert "browser_cdp" not in source
+    assert "screenshot" not in source.lower()
 
 
 def test_fixture_command_uses_the_bounded_loopback_fixture() -> None:
@@ -56,15 +51,18 @@ def test_fixture_command_uses_the_bounded_loopback_fixture() -> None:
     ]
 
 
-def test_browser_capabilities_exclude_computer_use() -> None:
+def test_browser_capabilities_cover_requested_tools_and_exclude_computer_use() -> None:
     harness = _load_harness()
 
     assert harness.BROWSER_CAPABILITIES == (
+        "browser.back",
         "browser.click",
         "browser.fill",
         "browser.list_tabs",
         "browser.navigate",
-        "browser.read_page",
+        "browser.scroll",
+        "browser.snapshot",
+        "browser.type",
         "system.ping",
         "terminal.exec",
     )
@@ -91,48 +89,15 @@ def test_shared_browser_scenario_accepts_expected_capabilities() -> None:
     assert signature.parameters["expected_capabilities"].default is None
 
 
-def test_browser_scenario_contains_negative_origin_and_stale_element_gates() -> None:
+def test_browser_scenario_contains_negative_origin_stale_and_navigation_gates() -> None:
     source = SCENARIOS.read_text(encoding="utf-8")
 
     assert '"disallowed-origin"' in source
     assert '"stale-element"' in source
+    assert '"back"' in source
+    assert '"scroll-down"' in source
     assert "disallowed Browser origin was not safely rejected" in source
     assert "stale Browser element was not safely rejected" in source
-
-
-def test_screenshot_validation_requires_bounded_nonzero_dimensions() -> None:
-    harness = _load_harness()
-    signature = b"\x89PNG\r\n\x1a\n"
-
-    valid = signature + b"\x00\x00\x00\x0dIHDR" + (1280).to_bytes(4, "big") + (800).to_bytes(4, "big")
-    assert harness.validate_screenshot_png(valid) == (1280, 800)
-
-    zero_width = signature + b"\x00\x00\x00\x0dIHDR" + (0).to_bytes(4, "big") + (800).to_bytes(4, "big")
-    with pytest.raises(harness.WindowsBrowserE2EError, match="dimensions"):
-        harness.validate_screenshot_png(zero_width)
-
-    oversized = signature + b"\x00\x00\x00\x0dIHDR" + (4097).to_bytes(4, "big") + (800).to_bytes(4, "big")
-    with pytest.raises(harness.WindowsBrowserE2EError, match="dimensions"):
-        harness.validate_screenshot_png(oversized)
-
-
-def test_screenshot_capture_has_a_global_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    harness = _load_harness()
-
-    async def never_returns(_ws_url: str) -> bytes:
-        await asyncio.sleep(60)
-        return b""
-
-    monkeypatch.setattr(harness, "_fixture_page_socket", lambda *_: "ws://127.0.0.1/ws")
-    monkeypatch.setattr(harness, "_capture_png", never_returns)
-    monkeypatch.setattr(harness, "CDP_SCREENSHOT_TIMEOUT_SECONDS", 0.01)
-
-    with pytest.raises(harness.WindowsBrowserE2EError, match="timed out"):
-        harness.capture_screenshot(
-            "http://127.0.0.1:9222",
-            "http://127.0.0.1:8000/",
-            None,
-        )
 
 
 def test_windows_browser_waits_for_diagnostics_before_removing_temp_root() -> None:
@@ -151,7 +116,7 @@ def test_windows_browser_waits_for_diagnostics_before_removing_temp_root() -> No
     assert temporary_cleanup < diagnostic_report < diagnostics_cleanup < streams_cleanup < job_cleanup
 
 
-def test_windows_browser_ci_job_is_headless_and_bounded() -> None:
+def test_windows_browser_ci_job_is_persistent_context_and_bounded() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "  e2e-windows-browser:" in workflow
     job = workflow.split("  e2e-windows-browser:", 1)[1]
@@ -165,13 +130,13 @@ def test_windows_browser_ci_job_is_headless_and_bounded() -> None:
     assert "uv run --frozen python scripts/windows_browser_e2e.py" in job
     assert "success.json" in job
     assert "browser-events.jsonl" in job
-    assert "screenshot.png" in job
+    assert "screenshot.png" not in job
+    assert "remote-debugging" not in job
     assert "docker" not in job.lower()
     assert "computer" not in job.lower()
     assert "headed" not in job.lower()
-    assert "remote-debugging-address=0.0.0.0" not in job
     assert "id: validate-windows-browser-evidence" in job
-    assert "Browser screenshot dimensions are invalid" in job
+    assert "Browser screenshot" not in job
     assert "if: always()" in job
 
 
@@ -185,11 +150,7 @@ def test_windows_browser_failure_evidence_does_not_require_success_payloads() ->
     required_event = job.index(
         'if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf))'
     )
-    required_screenshot = job.index(
-        'if (-not (Test-Path -LiteralPath $screenshotPath -PathType Leaf))'
-    )
 
     assert success_branch < required_event
-    assert success_branch < required_screenshot
     assert 'if (Test-Path -LiteralPath $eventPath -PathType Leaf)' in job
-    assert 'if (Test-Path -LiteralPath $screenshotPath -PathType Leaf)' in job
+    assert "screenshot.png" not in job

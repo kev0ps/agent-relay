@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Run the bounded native Linux Browser/CDP Agent Relay smoke scenario."""
+"""Run the bounded native Linux Browser persistent-context smoke scenario."""
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import os
 import re
 import secrets
-import stat
 import sys
 import tempfile
 import urllib.error
@@ -37,16 +35,12 @@ def _load_module(name: str, path: Path) -> Any:
 
 native = _load_module("native_e2e", Path(__file__).with_name("native_e2e.py"))
 try:
-    from tests.e2e import browser_cdp as portable_browser_cdp
     from tests.e2e import mcp_client as portable_mcp
     from tests.e2e import oracles as portable_oracles
     from tests.e2e import scenarios as portable_scenarios
 except ModuleNotFoundError as error:
     if error.name not in {"tests", "tests.e2e"}:
         raise
-    portable_browser_cdp = _load_module(
-        "browser_cdp", ROOT / "tests" / "e2e" / "browser_cdp.py"
-    )
     portable_mcp = _load_module("mcp_client", ROOT / "tests" / "e2e" / "mcp_client.py")
     portable_oracles = _load_module("oracles", ROOT / "tests" / "e2e" / "oracles.py")
     portable_scenarios = _load_module("scenarios", ROOT / "tests" / "e2e" / "scenarios.py")
@@ -54,52 +48,21 @@ except ModuleNotFoundError as error:
 
 DEVICE_ID = "linux-browser-e2e-agent"
 BROWSER_CAPABILITIES = (
+    "browser.back",
     "browser.click",
     "browser.fill",
     "browser.list_tabs",
     "browser.navigate",
-    "browser.read_page",
+    "browser.scroll",
+    "browser.snapshot",
+    "browser.type",
     "system.ping",
     "terminal.exec",
 )
 FIXTURE_READY_TIMEOUT_SECONDS = 15.0
-CHROMIUM_READY_TIMEOUT_SECONDS = 30.0
-AGENT_READY_TIMEOUT_SECONDS = 30.0
-CDP_SCREENSHOT_TIMEOUT_SECONDS = 15.0
-MAX_CDP_FRAME_BYTES = 1024 * 1024
-MAX_SCREENSHOT_BYTES = 512 * 1024
-MAX_SCREENSHOT_DIMENSION = 4096
+AGENT_READY_TIMEOUT_SECONDS = 45.0
 
 LinuxBrowserE2EError = native.NativeE2EError
-
-
-def chromium_command(executable: Path, cdp_port: int, profile: Path) -> list[str]:
-    """Return the fixed headless Chromium command used by the smoke."""
-    native._validate_port(cdp_port)
-    if not isinstance(executable, Path) or not isinstance(profile, Path):
-        raise ValueError("Chromium executable and profile must be Paths")
-    if not executable.is_absolute() or not profile.is_absolute():
-        raise ValueError("Chromium executable and profile must be absolute")
-    return [
-        str(executable),
-        "--headless=new",
-        # GitHub-hosted Ubuntu disables Chromium's unprivileged user namespace
-        # sandbox; this process only visits the loopback fixture in an ephemeral job.
-        "--no-sandbox",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--disable-extensions",
-        "--window-size=1280,800",
-        "--remote-debugging-address=127.0.0.1",
-        f"--remote-debugging-port={cdp_port}",
-        f"--user-data-dir={profile}",
-        "about:blank",
-    ]
 
 
 def fixture_command(port: int, run_id: str) -> list[str]:
@@ -119,121 +82,16 @@ def fixture_command(port: int, run_id: str) -> list[str]:
     ]
 
 
-def resolve_chromium_executable(explicit: Path | None = None) -> Path:
-    """Resolve the pinned Playwright Chromium executable or a fixed Linux path."""
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(explicit)
-    environment_path = os.environ.get("AGENT_RELAY_CHROMIUM_PATH")
-    if environment_path:
-        candidates.append(Path(environment_path))
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            candidates.append(Path(playwright.chromium.executable_path))
-    except (ImportError, OSError, RuntimeError):
-        pass
-    candidates.extend(
-        Path(path)
-        for path in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome")
-    )
-    for candidate in candidates:
-        if candidate.is_file() and not candidate.is_symlink() and os.access(candidate, os.X_OK):
-            return candidate.resolve()
-    raise LinuxBrowserE2EError("Chromium executable is unavailable")
+def _playwright_browsers_path() -> str:
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured:
+        return configured
+    return str(Path.home() / ".cache" / "ms-playwright")
 
 
-def _url_json(url: str) -> object:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=2) as response:
-        return json.loads(response.read(MAX_CDP_FRAME_BYTES + 1))
-
-
-def _cdp_ready(cdp_url: str) -> bool:
-    try:
-        payload = _url_json(f"{cdp_url}/json/version")
-    except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError):
-        return False
-    return (
-        isinstance(payload, dict)
-        and isinstance(payload.get("Browser"), str)
-        and isinstance(payload.get("webSocketDebuggerUrl"), str)
-    )
-
-
-def _fixture_page_socket(cdp_url: str, fixture_url: str) -> str:
-    try:
-        return portable_browser_cdp.fixture_page_socket(
-            cdp_url,
-            fixture_url,
-            fetch_json=_url_json,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise LinuxBrowserE2EError(str(error)) from error
-
-
-async def _capture_png(ws_url: str) -> bytes:
-    try:
-        return await portable_browser_cdp.capture_png(
-            ws_url,
-            max_cdp_frame_bytes=MAX_CDP_FRAME_BYTES,
-            max_screenshot_bytes=MAX_SCREENSHOT_BYTES,
-            max_screenshot_dimension=MAX_SCREENSHOT_DIMENSION,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise LinuxBrowserE2EError(str(error)) from error
-
-
-def validate_screenshot_png(payload: bytes) -> tuple[int, int]:
-    try:
-        return portable_browser_cdp.validate_screenshot_png(
-            payload,
-            max_screenshot_bytes=MAX_SCREENSHOT_BYTES,
-            max_screenshot_dimension=MAX_SCREENSHOT_DIMENSION,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise LinuxBrowserE2EError(str(error)) from error
-
-
-def _write_screenshot(evidence_dir: Path, payload: bytes) -> None:
-    validate_screenshot_png(payload)
-    if evidence_dir.is_symlink():
-        raise LinuxBrowserE2EError("unsafe evidence directory")
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    target = evidence_dir / "screenshot.png"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
-    try:
-        descriptor = os.open(target, flags, 0o600)
-    except FileExistsError:
-        raise LinuxBrowserE2EError("screenshot artifact already exists") from None
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise LinuxBrowserE2EError("unsafe screenshot artifact")
-        written = 0
-        while written < len(payload):
-            written += os.write(descriptor, payload[written:])
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def capture_screenshot(cdp_url: str, fixture_url: str, evidence_dir: Path | None) -> None:
-    try:
-        image = portable_browser_cdp.capture_fixture_png(
-            cdp_url,
-            fixture_url,
-            fixture_page_socket=_fixture_page_socket,
-            capture_png=_capture_png,
-            timeout_seconds=CDP_SCREENSHOT_TIMEOUT_SECONDS,
-        )
-    except portable_browser_cdp.BrowserCDPError as error:
-        raise LinuxBrowserE2EError(str(error)) from error
-    if evidence_dir is not None:
-        _write_screenshot(evidence_dir, image)
-
-
-def _runtime(*, mcp_url: str, control_token: str, run_id: str, fixtures_root: Path, fixture_url: str) -> Any:
+def _runtime(
+    *, mcp_url: str, control_token: str, run_id: str, fixtures_root: Path, fixture_url: str
+) -> Any:
     return portable_scenarios.RuntimeConfig(
         mcp_url=mcp_url,
         control_token=control_token,
@@ -277,7 +135,7 @@ def _fixture_ready(url: str) -> bool:
 
 
 def _stderr_hint(path: Path) -> str | None:
-    """Return a short, redacted diagnostic line without exposing child logs."""
+    """Return one bounded, redacted diagnostic line."""
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -285,7 +143,7 @@ def _stderr_hint(path: Path) -> str | None:
     candidates = [
         line
         for line in lines
-        if any(marker in line.lower() for marker in ("error", "fatal", "sandbox", "exception"))
+        if any(marker in line.lower() for marker in ("error", "fatal", "exception"))
     ]
     for line in reversed(candidates or lines):
         compact = " ".join(line.split())
@@ -300,14 +158,13 @@ def _stderr_hint(path: Path) -> str | None:
 
 
 def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None = None) -> None:
-    """Run the native Linux Browser/CDP scenario with bounded cleanup."""
+    """Run the native Linux Browser persistent-context scenario."""
     if sys.platform != "linux":
         raise LinuxBrowserE2EError("native Linux Browser harness requires Linux")
 
     agent_token, control_token = native.generate_credentials()
     server_port = native.choose_loopback_port()
     fixture_port = native.choose_loopback_port()
-    cdp_port = native.choose_loopback_port()
     run_id = f"linux-browser-{secrets.token_hex(12)}"
     value = f"relay-gh-browser-{run_id}"
     phase = "setup"
@@ -316,6 +173,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
     scenario_error: BaseException | None = None
     cleanup_error: BaseException | None = None
     diagnostics: dict[str, Path] = {}
+    server = fixture = agent = None
 
     try:
         lifecycle.install_signal_handlers()
@@ -326,13 +184,13 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         workspace = root / "workspace"
         profile = root / "chromium-profile"
         local_artifacts = evidence_dir or (root / "browser-evidence")
-        diagnostics["Chromium"] = root / "chromium.stderr.log"
+        diagnostics["Agent"] = root / "agent.stderr.log"
         for path in (home, workspace, profile, local_artifacts):
             path.mkdir(parents=True, exist_ok=True)
+
         repository = ROOT
         fixture_url = f"http://127.0.0.1:{fixture_port}/"
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
-        chromium = resolve_chromium_executable()
         server_environment = native._minimal_environment(
             home,
             {
@@ -353,12 +211,16 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
                 "AGENT_RELAY_NATIVE_DEBUG": "1",
-                "RELAY_AGENT_BROWSER_CDP_URL": f"http://127.0.0.1:{cdp_port}",
+                "RELAY_AGENT_BROWSER_USER_DATA_DIR": str(profile),
+                "RELAY_AGENT_BROWSER_HEADLESS": "true",
+                "RELAY_AGENT_BROWSER_STARTUP_TIMEOUT_SECONDS": "30",
+                "PLAYWRIGHT_BROWSERS_PATH": _playwright_browsers_path(),
                 "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS": f"http://127.0.0.1:{fixture_port}",
             },
         )
-        fixture_environment = native._minimal_environment(home, {"ARTIFACTS_DIR": str(local_artifacts)})
-        chromium_environment = native._minimal_environment(home, {})
+        fixture_environment = native._minimal_environment(
+            home, {"ARTIFACTS_DIR": str(local_artifacts)}
+        )
         runtime = _runtime(
             mcp_url=mcp_url,
             control_token=control_token,
@@ -368,7 +230,12 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         )
 
         phase = "server-start"
-        server = native._spawn(native.server_command(server_port), environment=server_environment, cwd=repository, lifecycle=lifecycle)
+        server = native._spawn(
+            native.server_command(server_port),
+            environment=server_environment,
+            cwd=repository,
+            lifecycle=lifecycle,
+        )
         native._wait_for(
             "Linux Browser server",
             lambda: _status(
@@ -381,41 +248,52 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             raise LinuxBrowserE2EError("Linux Browser server exited during startup")
 
         phase = "fixture-start"
-        fixture = native._spawn(fixture_command(fixture_port, run_id), environment=fixture_environment, cwd=repository, lifecycle=lifecycle)
-        native._wait_for("Linux Browser fixture", lambda: _fixture_ready(fixture_url), timeout=FIXTURE_READY_TIMEOUT_SECONDS)
+        fixture = native._spawn(
+            fixture_command(fixture_port, run_id),
+            environment=fixture_environment,
+            cwd=repository,
+            lifecycle=lifecycle,
+        )
+        native._wait_for(
+            "Linux Browser fixture",
+            lambda: _fixture_ready(fixture_url),
+            timeout=FIXTURE_READY_TIMEOUT_SECONDS,
+        )
         if fixture.poll() is not None:
             raise LinuxBrowserE2EError("Linux Browser fixture exited during startup")
 
-        phase = "chromium-start"
-        browser = native._spawn(
-            chromium_command(chromium, cdp_port, profile),
-            environment=chromium_environment,
+        phase = "agent-start"
+        agent = native._spawn(
+            native.agent_command(server_port, workspace),
+            environment=agent_environment,
             cwd=repository,
             lifecycle=lifecycle,
-            stderr_path=diagnostics["Chromium"],
+            stderr_path=diagnostics["Agent"],
         )
-        native._wait_for("Linux Chromium CDP", lambda: _cdp_ready(f"http://127.0.0.1:{cdp_port}"), timeout=CHROMIUM_READY_TIMEOUT_SECONDS)
-        if browser.poll() is not None:
-            raise LinuxBrowserE2EError("Linux Chromium exited during startup")
-
-        phase = "agent-start"
-        agent = native._spawn(native.agent_command(server_port, workspace), environment=agent_environment, cwd=repository, lifecycle=lifecycle)
 
         def agent_ready() -> bool:
-            if agent.poll() is not None:
+            if agent is None or agent.poll() is not None:
                 raise LinuxBrowserE2EError("Linux Browser Agent exited during startup")
             _status(mcp_url, control_token, connected=True)
             return True
 
-        native._wait_for("Linux Browser Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
+        native._wait_for(
+            "Linux Browser Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS
+        )
         if agent.poll() is not None:
             raise LinuxBrowserE2EError("Linux Browser Agent exited after registration")
 
         phase = "browser-scenario"
-        portable_scenarios.run_browser_scenario(runtime, value, scenario_phase, expected_capabilities=BROWSER_CAPABILITIES)
-        phase = "cdp-screenshot"
-        capture_screenshot(f"http://127.0.0.1:{cdp_port}", fixture_url, evidence_dir)
-        if any(process.poll() is not None for process in (server, fixture, browser, agent)):
+        portable_scenarios.run_browser_scenario(
+            runtime,
+            value,
+            scenario_phase,
+            expected_capabilities=BROWSER_CAPABILITIES,
+        )
+        if any(
+            process is not None and process.poll() is not None
+            for process in (server, fixture, agent)
+        ):
             raise LinuxBrowserE2EError("Linux Browser owned process exited unexpectedly")
     except BaseException as error:
         scenario_error = error
@@ -423,25 +301,32 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             if (hint := _stderr_hint(path)) is not None:
                 print(f"Linux Browser {label} diagnostic: {hint}", file=sys.stderr)
 
-    primary_error: BaseException | None = scenario_error
     if not lifecycle._cleaned:
         try:
             lifecycle.cleanup()
         except BaseException as error:
             cleanup_error = error
 
-    primary_error = scenario_error or cleanup_error
+    primary_error: BaseException | None = scenario_error or cleanup_error
     if primary_error is None:
         try:
             if output_file is not None:
-                native._write_artifact(output_file.parent, output_file.name, b"Linux Browser smoke scenario passed.\n")
+                native._write_artifact(
+                    output_file.parent,
+                    output_file.name,
+                    b"Linux Browser smoke scenario passed.\n",
+                )
             if evidence_dir is not None:
                 native._write_success(evidence_dir)
         except BaseException as error:
             primary_error = error
 
     if primary_error is not None:
-        detail = f": {primary_error}" if isinstance(primary_error, LinuxBrowserE2EError) else f": {type(primary_error).__name__}"
+        detail = (
+            f": {primary_error}"
+            if isinstance(primary_error, LinuxBrowserE2EError)
+            else f": {type(primary_error).__name__}"
+        )
         if scenario_phase:
             detail += f" (phase-{scenario_phase[-1]})"
         line = f"Linux Browser E2E failed at scenario-{phase}{detail}."
@@ -450,7 +335,9 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             print("Linux Browser E2E cleanup failed.", file=sys.stderr)
         if output_file is not None:
             try:
-                native._write_artifact(output_file.parent, output_file.name, (line + "\n").encode("ascii"))
+                native._write_artifact(
+                    output_file.parent, output_file.name, (line + "\n").encode("ascii")
+                )
             except BaseException:
                 print("Linux Browser E2E artifact write failed.", file=sys.stderr)
         raise primary_error
