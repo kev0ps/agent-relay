@@ -199,6 +199,7 @@ class BrowserCapability:
                     self._headless,
                     self._startup_timeout,
                     self._action_timeout,
+                    self._origin_policy,
                 )
                 self._session = (
                     await asyncio.wait_for(made, self._startup_timeout)
@@ -491,6 +492,7 @@ class _RealSession:
         headless: bool,
         startup: float,
         action: float,
+        origin_policy: BrowserOriginPolicy = "allowlist",
     ) -> _RealSession:
         try:
             from playwright.async_api import async_playwright
@@ -505,7 +507,7 @@ class _RealSession:
                 accept_downloads=False,
                 service_workers="block",
             )
-            obj = cls(pw, context, origins, action)
+            obj = cls(pw, context, origins, action, origin_policy)
             await obj._arm()
             pages = getattr(context, "pages", [])
             obj.page = pages[0] if pages else await context.new_page()
@@ -531,9 +533,10 @@ class _RealSession:
         context: object,
         origins: frozenset[str],
         action: float,
+        origin_policy: BrowserOriginPolicy = "allowlist",
     ) -> None:
         self.pw, self.context = pw, context
-        self.origins, self.action = origins, action
+        self.origins, self.action, self.origin_policy = origins, action, origin_policy
         self.page = None
         self.url, self.title = "about:blank", ""
         self.unavailable = asyncio.Event()
@@ -542,10 +545,17 @@ class _RealSession:
         self._close_task: asyncio.Task[None] | None = None
         self._closed = False
 
+    def _origin_allowed(self, url: str) -> bool:
+        try:
+            origin = origin_of_url(url)
+        except ValueError:
+            return False
+        return self.origin_policy == "any" or origin in self.origins
+
     async def _arm(self) -> None:
         async def route_handler(route: object) -> None:
             try:
-                if origin_of_url(route.request.url) in self.origins:
+                if self._origin_allowed(route.request.url):
                     await route.continue_()
                 else:
                     self.unavailable.set()
@@ -608,7 +618,7 @@ class _RealSession:
 
         def check_frame(frame: object) -> None:
             try:
-                if frame.parent_frame is not None or origin_of_url(frame.url) not in self.origins:
+                if frame.parent_frame is not None or not self._origin_allowed(frame.url):
                     self.unavailable.set()
             except ValueError:
                 if frame.url != "about:blank":
@@ -647,7 +657,7 @@ class _RealSession:
             self.unavailable.set()
             raise BrowserUnavailableError()
         self_url = self.page.url
-        if self_url != "about:blank" and origin_of_url(self_url) not in self.origins:
+        if self_url != "about:blank" and not self._origin_allowed(self_url):
             self.unavailable.set()
             raise BrowserUnavailableError()
 

@@ -1184,12 +1184,14 @@ def test_real_adapter_creates_isolated_context_and_arms_policy_before_page(
         def __init__(self) -> None:
             super().__init__()
             self.order: list[str] = []
+            self.route_handler: object | None = None
             self.websocket_handler: object | None = None
             self.pages: list[Page] = []
 
         async def route(self, pattern: str, handler: object) -> None:
             assert pattern == "**/*"
             self.order.append("route")
+            self.route_handler = handler
 
         async def route_web_socket(self, pattern: str, handler: object) -> None:
             assert pattern == "**"
@@ -1243,15 +1245,42 @@ def test_real_adapter_creates_isolated_context_and_arms_policy_before_page(
     browser = Playwright.chromium
 
     async def scenario() -> None:
+        class Route:
+            def __init__(self, url: str) -> None:
+                self.request = types.SimpleNamespace(url=url)
+                self.continued = False
+                self.aborted = False
+
+            async def continue_(self) -> None:
+                self.continued = True
+
+            async def abort(self) -> None:
+                self.aborted = True
+
         session = await _RealSession.create(
             Path.cwd() / "browser-profile",
-            frozenset({"http://127.0.0.1:8899"}),
+            frozenset(),
             False,
             0.1,
             0.1,
+            origin_policy="any",
         )
         assert browser.options == {"accept_downloads": False, "service_workers": "block"}
         assert browser.context.order == ["route", "websocket", "page"]
+        assert session.page is not None
+        page = session.page
+        assert browser.context.route_handler is not None
+        web_route = Route("https://example.test/resource")
+        await browser.context.route_handler(web_route)  # type: ignore[operator]
+        assert web_route.continued is True
+        page.url = "https://example.test/"
+        session.ensure()
+        blocked_route = Route("file:///tmp/page.html")
+        await browser.context.route_handler(blocked_route)  # type: ignore[operator]
+        assert blocked_route.aborted is True
+        page.url = "file:///tmp/page.html"
+        with pytest.raises(BrowserUnavailableError):
+            session.ensure()
         websocket = WebSocket()
         assert browser.context.websocket_handler is not None
         browser.context.websocket_handler(websocket)  # type: ignore[operator]
