@@ -130,3 +130,17 @@ def test_readme_and_linux_guide_do_not_promote_container_ui_e2e() -> None:
     assert "Docker image CI validation" in linux_guide
     assert "do not run Browser or" in linux_guide
     assert "CI-only two-container topology" not in linux_guide
+
+
+def test_readme_and_linux_guide_document_shared_agent_token_flow() -> None:
+    root = Path(__file__).parents[1]
+    for relative_path in ("README.md", "docs/run-linux.md"):
+        text = (root / relative_path).read_text()
+        assert "config init server" in text
+        assert "config init agent --stdin --no-tools" in text
+        assert "secrets/server/agent_token" in text
+
+    readme = (root / "README.md").read_text()
+    assert ".agent-relay-state/mcp.token" not in readme
+    assert "uv run --frozen agent-relay server" in readme
+    assert "uv run --frozen agent-relay agent" in readme

@@ -16,10 +16,15 @@ absolute non-symlink workspace with a reduced environment. Output, timeouts,
 messages, and results are bounded; cancellation and process trees are handled
 best-effort.
 
-The Agent token is preferably stored in a regular non-symlink file owned by the
-user and mode `0600`; configuration diagnostics do not display it. The MCP token
-is distinct and is used by the local MCP client at `/mcp`. The code offers no
-arbitrary shell.
+The default YAML configuration stores the Server secrets at
+`~/.agent-relay/secrets/server/mcp_token` and
+`~/.agent-relay/secrets/server/agent_token`, and the Agent secret at
+`~/.agent-relay/secrets/agent/agent_token`. These token files must remain regular,
+non-symlink files with mode `0600`. The MCP token is distinct and is used by the
+local MCP client at `/mcp`. Canonical `RELAY_*` environment values override YAML
+and secret files when explicitly provided. Configuration output redacts sensitive
+values, and legacy `AGENT_RELAY_*` variables are not supported. The code offers
+no arbitrary shell.
 
 ## Honest limitations
 
@@ -66,6 +71,9 @@ boundary.
 ## Manual rotation
 
 Stop the Agent and Server, generate distinct new MCP and Agent tokens, replace
-the Agent `0600` file and the Server variables, then restart both. Invalidate or
-delete old files according to your local policy. Rotation necessarily
-terminates the current session.
+the corresponding private secret files (or the explicit `RELAY_*` environment
+overrides), then restart both. For the YAML-first layout, rotate
+`secrets/server/mcp_token`, `secrets/server/agent_token`, and the matching Agent
+token file while preserving mode `0600` and the shared Agent token value.
+Invalidate or delete old values according to your local policy. Rotation
+necessarily terminates the current session.

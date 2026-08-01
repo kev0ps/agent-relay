@@ -79,41 +79,49 @@ token values in YAML.
 ```sh
 git clone https://github.com/kev0ps/agent-relay.git
 cd agent-relay
-uv sync --group dev
-uv run agent-relay config init server
+uv sync --locked --group dev
+uv run --frozen agent-relay config init server
 
-# Paste the generated Server agent token at the hidden prompt, or use --stdin
-# in automation. The Agent starts with zero enabled tools.
-uv run agent-relay config init agent
-uv run agent-relay config validate server
-uv run agent-relay config validate agent
-uv run agent-relay tools list
+# Reuse the Server's Agent token without printing it or putting it in history.
+# The Agent still starts with zero enabled tools.
+uv run --frozen agent-relay config init agent --stdin --no-tools \
+  < "$HOME/.agent-relay/secrets/server/agent_token"
+uv run --frozen agent-relay config validate server
+uv run --frozen agent-relay config validate agent
+uv run --frozen agent-relay tools list
 ```
+
+`config init agent` can also be run without `--no-tools` for interactive tool
+selection; submitting an empty selection is valid. The shared YAML file is
+`~/.agent-relay/config.yaml` by default. Relative workspace and secret paths are
+resolved from that file, and secret values remain in separate private files.
+Canonical `RELAY_*` environment variables override YAML values when both are
+present; legacy `AGENT_RELAY_*` variables are not supported.
 
 Start the Server in the first terminal:
 
 ```sh
-uv run agent-relay server
+uv run --frozen agent-relay server
 ```
 
 Start the outbound Agent in a second terminal:
 
 ```sh
-uv run agent-relay agent
+uv run --frozen agent-relay agent
 ```
 
 Enable only the tools the local operator wants to expose:
 
 ```bash
-agent-relay tools enable relay_system_ping
-agent-relay tools enable relay_terminal_exec
-agent-relay config validate agent
+uv run --frozen agent-relay tools enable relay_system_ping
+uv run --frozen agent-relay tools enable relay_terminal_exec
+uv run --frozen agent-relay config validate agent
 ```
 
 `config get server` and `config get agent` print YAML with sensitive values
 redacted. `doctor` performs the combined offline audit. The complete setup
-guide covers token checks, direct local control calls, diagnostics and
-shutdown. Optional capability settings are part of the Agent YAML section.
+guide covers token checks, direct local control calls, diagnostics and shutdown.
+Optional capability settings are part of the Agent YAML section.
 
 **[Run Agent Relay on Linux →](docs/run-linux.md)**
 
@@ -123,14 +131,17 @@ For a Linux Server container with a native Windows Agent, see the
 ## Connect Hermes
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. In the shell that launches
-Hermes, load the distinct MCP token without printing it or placing its value in
-shell history:
+Hermes, load the distinct MCP token from the private Server secret file without
+printing it or placing its value in shell history:
 
 ```sh
-STATE_DIR="$PWD/.agent-relay-state"
-export RELAY_MCP_TOKEN="$(cat "$STATE_DIR/mcp.token")"
+export RELAY_MCP_TOKEN="$(
+  cat "$HOME/.agent-relay/secrets/server/mcp_token"
+)"
 ```
 
+If you initialized a custom configuration with `--config`, read the matching
+`secrets/server/mcp_token` path relative to that configuration instead.
 Reference that environment variable from the Hermes configuration rather than
 writing a literal token into YAML.
 
@@ -169,7 +180,9 @@ access:
 - the canonical Server has one listener on `RELAY_SERVER_HOST:RELAY_SERVER_PORT`,
   defaulting to `0.0.0.0:8000`, for both `/mcp` and `/ws/agent`;
 - the Agent opens the WebSocket connection and hosts no listener;
-- `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN` are separate credentials;
+- `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN` are separate credentials; normal YAML
+  deployments store them in private `0600` secret files and canonical environment
+  overrides take precedence;
 - messages, outputs, timeouts and collections are typed and bounded;
 - terminal commands come from a fixed allowlist and run without a shell;
 - browser access uses an exact origin allowlist by default; the optional

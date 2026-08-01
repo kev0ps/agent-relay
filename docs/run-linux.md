@@ -9,30 +9,30 @@ no listener and connects outbound to the Server.
 From the repository root, install `uv` according to its documentation, then:
 
 ```sh
-uv sync --group dev
-agent-relay config init server
-agent-relay config init agent
+uv sync --locked --group dev
+uv run --frozen agent-relay config init server
+
+# Reuse the Server's Agent token without printing it or putting it in history.
+# The Agent starts with zero enabled tools.
+uv run --frozen agent-relay config init agent --stdin --no-tools \
+  < "$HOME/.agent-relay/secrets/server/agent_token"
 ```
 
-`config init server` creates the YAML section and two private Server secret
+`config init server` creates the shared YAML file and two private Server secret
 files. `config init agent` creates or reuses the persistent Agent identity,
-creates `./workspace` relative to the configuration file, and prompts for the
-Agent token without echoing it. In automation, pipe the token through stdin:
-
-```sh
-printf '%s\n' "$RELAY_AGENT_TOKEN" | \
-  agent-relay config init agent --stdin
-```
+creates `./workspace` relative to the configuration file, and consumes the same
+Agent token through stdin without echoing it. To select tools interactively,
+omit `--no-tools`; submitting an empty selection is valid.
 
 The initial Agent tool allowlist is empty. Select tools interactively during
 initialization or enable them explicitly:
 
 ```sh
-agent-relay tools enable relay_system_ping
-agent-relay tools enable relay_terminal_exec
-agent-relay config validate server
-agent-relay config validate agent
-agent-relay doctor
+uv run --frozen agent-relay tools enable relay_system_ping
+uv run --frozen agent-relay tools enable relay_terminal_exec
+uv run --frozen agent-relay config validate server
+uv run --frozen agent-relay config validate agent
+uv run --frozen agent-relay doctor
 ```
 
 Tokens are neither displayed nor placed in the repository. They are separate
@@ -43,7 +43,7 @@ the same value but are physically distinct files.
 Use `--config PATH` when the default path is not appropriate:
 
 ```sh
-agent-relay --config /etc/agent-relay/config.yaml config validate server
+uv run --frozen agent-relay --config /etc/agent-relay/config.yaml config validate server
 ```
 
 ## Start
@@ -51,13 +51,13 @@ agent-relay --config /etc/agent-relay/config.yaml config validate server
 In a first terminal, run the Server:
 
 ```sh
-agent-relay server
+uv run --frozen agent-relay server
 ```
 
 In a second terminal, run the outbound Agent:
 
 ```sh
-agent-relay agent
+uv run --frozen agent-relay agent
 ```
 
 The `relay_url` value is a generic `ws://` or `wss://` URL. The configuration
@@ -104,7 +104,10 @@ It still rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
 ## Control invocations
 
 The MCP endpoint is hosted by the Relay Server at `http://127.0.0.1:8000/mcp`.
-Use `agent-relay tools list` to see the complete inventory. The server-local
+```sh
+uv run --frozen agent-relay tools list
+```
+
 `relay_device_status` entry is always available from the facade but cannot be
 selected in the Agent allowlist. Agent-executed tools are advertised only after
 the Agent announces them over the authenticated connection.
@@ -136,9 +139,9 @@ Send `Ctrl-C` to the Server and Agent. Before startup, `doctor` performs the
 combined offline audit without connecting to the network:
 
 ```sh
-agent-relay doctor
-agent-relay config get server
-agent-relay config get agent
+uv run --frozen agent-relay doctor
+uv run --frozen agent-relay config get server
+uv run --frozen agent-relay config get agent
 ```
 
 `config get` prints YAML with secret values redacted. Do not use `set -x`, and
@@ -152,11 +155,11 @@ For a trusted LAN/test connection, set the Server policy and the Agent URL in
 YAML or with canonical environment overrides:
 
 ```sh
-agent-relay config set server host 0.0.0.0
-agent-relay config set server allow_insecure_ws true
-agent-relay config set agent relay_url ws://192.168.1.10:8000/ws/agent
-agent-relay config validate server
-agent-relay config validate agent
+uv run --frozen agent-relay config set server host 0.0.0.0
+uv run --frozen agent-relay config set server allow_insecure_ws true
+uv run --frozen agent-relay config set agent relay_url ws://192.168.1.10:8000/ws/agent
+uv run --frozen agent-relay config validate server
+uv run --frozen agent-relay config validate agent
 ```
 
 Keep port `8000` LAN-firewalled. Plaintext tokens are acceptable only on that
@@ -164,7 +167,7 @@ trusted LAN/test network. For WSS, use an externally provided TLS endpoint;
 the application does not implement TLS:
 
 ```sh
-agent-relay config set agent relay_url wss://tls.example.test/relay
+uv run --frozen agent-relay config set agent relay_url wss://tls.example.test/relay
 ```
 
 ## Docker image CI validation

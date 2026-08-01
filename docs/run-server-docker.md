@@ -10,6 +10,14 @@ TCP listener on port `8000`; that listener serves both `/mcp` and `/ws/agent`.
 This recipe does not configure TLS termination, labels, or an additional network
 component.
 
+The normal CLI workflow stores configuration in `~/.agent-relay/config.yaml`.
+This Docker recipe intentionally uses canonical `RELAY_*` environment overrides
+so Compose can inject the two tokens without mounting a YAML file into the
+container. Environment values take precedence over YAML values, and legacy
+`AGENT_RELAY_*` variables are not supported. The Windows Agent example below
+uses the same override mode; the YAML-first workflow is documented in
+[`run-linux.md`](run-linux.md).
+
 ## Topology
 
 ```text
@@ -59,10 +67,12 @@ sudo git -C /opt/agent-relay pull --ff-only origin main
 Run the remaining commands from `/opt/agent-relay`, or replace that path with
 the directory used by the server administrator.
 
-## Create the server environment
+## Create the Server environment override
 
 Run this on the Linux server from the repository root. Keep the generated file
-private; `.env` is ignored by Git.
+private; `.env` is ignored by Git. These canonical variables override the
+container's YAML configuration (or provide the Server configuration when the
+container has no mounted YAML file).
 
 ```bash
 umask 077
@@ -115,9 +125,14 @@ $env:RELAY_URL = "ws://<LAN-IP>:8000/ws/agent"
 $env:RELAY_AGENT_WORKSPACE = Join-Path $env:USERPROFILE "agent-relay-workspace"
 $env:RELAY_AGENT_TOKEN_FILE = Join-Path $env:USERPROFILE ".agent-relay\agent.token"
 $env:RELAY_AGENT_ID = "00000000-0000-4000-8000-000000000001"
+$env:RELAY_AGENT_TOOLS = "relay_system_ping,relay_terminal_exec"
 $env:RELAY_ALLOW_INSECURE_WS = "true"
-uv run agent-relay agent
+uv run --frozen agent-relay agent
 ```
+
+The `RELAY_AGENT_TOOLS` line is optional; omit it to keep all Agent-executed
+tools disabled. `relay_device_status` is always Server-local and cannot be added
+to this allowlist.
 
 Replace `<LAN-IP>` and the paths with the private deployment values. The
 explicit `RELAY_AGENT_ID` is optional; when omitted, the Agent persists a stable
@@ -130,7 +145,7 @@ Agent URL policy false or unset:
 ```powershell
 $env:RELAY_URL = "wss://<TLS endpoint>/ws/agent"
 # RELAY_ALLOW_INSECURE_WS is not needed for wss://
-uv run agent-relay agent
+uv run --frozen agent-relay agent
 ```
 
 `RELAY_ALLOW_INSECURE_WS=true` permits both `ws://` and `wss://` URLs. With
