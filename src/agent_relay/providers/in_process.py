@@ -20,6 +20,7 @@ from .base import (
     bounded_result,
     drain_pending_tasks,
     run_bounded,
+    validate_provider_arguments,
     validate_timeout,
 )
 
@@ -55,6 +56,7 @@ class InProcessProviderToolClient:
         )
         self._closed = False
         self._available = True
+        self._unavailable = asyncio.Event()
         self._close_lock = asyncio.Lock()
         self._pending_tasks: set[asyncio.Task[object]] = set()
 
@@ -62,14 +64,22 @@ class InProcessProviderToolClient:
         self._require_available()
         return self._descriptors
 
+    async def wait_unavailable(self) -> None:
+        await self._unavailable.wait()
+
     async def call_tool(
         self, tool_name: str, arguments: Mapping[str, JsonValue]
     ) -> ProviderToolResult:
         self._require_available()
+        descriptor = next(
+            (tool for tool in self._descriptors if tool.tool_name == tool_name),
+            None,
+        )
         handler = self._handlers.get(tool_name)
-        if handler is None:
+        if descriptor is None or handler is None:
             raise UnknownProviderToolError("unknown provider tool")
         bounded_arguments(arguments)
+        validate_provider_arguments(descriptor, arguments)
         try:
             raw_result = await run_bounded(
                 lambda: handler(arguments),
@@ -77,10 +87,10 @@ class InProcessProviderToolClient:
                 self._pending_tasks,
             )
         except _ProviderDeadlineExceeded:
-            self._available = False
+            self._mark_unavailable()
             raise
         except asyncio.CancelledError:
-            self._available = False
+            self._mark_unavailable()
             raise
         except Exception:
             call_failed = True
@@ -94,7 +104,7 @@ class InProcessProviderToolClient:
         async with self._close_lock:
             if self._closed:
                 return
-            self._available = False
+            self._mark_unavailable()
             loop = asyncio.get_running_loop()
             deadline = loop.time() + self._close_timeout_seconds
             try:
@@ -128,6 +138,10 @@ class InProcessProviderToolClient:
     def _require_available(self) -> None:
         if not self._available:
             raise ProviderToolError("provider client unavailable")
+
+    def _mark_unavailable(self) -> None:
+        self._available = False
+        self._unavailable.set()
 
 
 __all__ = ["InProcessProviderToolClient"]

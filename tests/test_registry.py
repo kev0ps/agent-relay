@@ -14,6 +14,7 @@ from agent_relay.protocol import (
     Progress,
     Register,
 )
+from agent_relay.provider_tools import ProviderToolDescriptor
 from agent_relay.registry import (
     AuthenticationError,
     DeviceAlreadyConnectedError,
@@ -110,6 +111,44 @@ def declare_ping(registry: RelayRegistry, socket: FakeSocket) -> None:
     )
 
 
+def test_registry_retains_selected_provider_descriptors() -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="custom",
+        tool_name="echo",
+        public_name="relay_custom_echo",
+        description="echo text",
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        risk="read_only",
+    )
+    registry = RelayRegistry(device_id="one", agent_token="agent-token")
+    socket = FakeSocket()
+    register(registry, socket)
+    run(
+        registry.set_capabilities(
+            socket,
+            Capabilities(
+                version=1,
+                type="capabilities",
+                tools=["custom.echo"],
+                descriptors=[descriptor],
+            ),
+        )
+    )
+
+    assert registry.announced_capabilities == frozenset({"custom.echo"})
+    assert registry.announced_descriptors["custom.echo"].input_schema == {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": False,
+    }
+
+
 def ping(request_id: str) -> InvokeMessage:
     return InvokeMessage(
         version=2,
@@ -139,6 +178,52 @@ def test_invoke_signature_accepts_only_a_typed_message() -> None:
         "timeout_seconds",
     ]
     assert signature.parameters["message"].annotation == "InvokeMessage"
+
+
+def test_registry_rejects_invalid_provider_arguments_before_dispatch() -> None:
+    async def scenario() -> None:
+        descriptor = ProviderToolDescriptor(
+            provider_name="custom",
+            tool_name="echo",
+            public_name="relay_custom_echo",
+            description="echo text",
+            input_schema={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            risk="read_only",
+        )
+        registry = RelayRegistry(device_id="one", agent_token="agent-token")
+        socket = FakeSocket()
+        await registry.register(
+            socket, Register(version=1, type="register", device_id="one")
+        )
+        await registry.set_capabilities(
+            socket,
+            Capabilities(
+                version=1,
+                type="capabilities",
+                tools=["custom.echo"],
+                descriptors=[descriptor],
+            ),
+        )
+        invalid = InvokeMessage(
+            version=2,
+            type="invoke",
+            request_id="invalid",
+            tool_name="custom.echo",
+            arguments={},
+        )
+        with pytest.raises(UnsupportedToolError):
+            await registry.invoke("one", invalid, 0.01)
+        assert not any(
+            isinstance(message, dict) and message.get("type") == "invoke"
+            for message in socket.messages
+        )
+
+    asyncio.run(scenario())
 
 
 def test_registry_serializes_generic_v2_and_returns_provider_result() -> None:

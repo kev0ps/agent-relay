@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import socket
 from datetime import timedelta
 
@@ -13,43 +12,19 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CancelledNotification, CancelledNotificationParams
 
+from agent_relay.capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS
 from agent_relay.mcp_facade import (
     _close_tool_input_schemas,
     create_mcp_facade,
 )
-from agent_relay.output_models import (
-    BrowserActionOutput,
-    BrowserElementOutput,
-    BrowserPageOutput,
-    BrowserTabOutput,
-    BrowserTabsOutput,
-    ComputerActionOutput,
-    ComputerCaptureOutput,
-    ComputerElementOutput,
-    ProviderToolResult,
-)
+from agent_relay.output_models import ProviderToolResult
 from agent_relay.protocol import (
-    MAX_BROWSER_ELEMENT_ID_LENGTH,
-    MAX_BROWSER_ELEMENT_VALUE_LENGTH,
-    MAX_BROWSER_ELEMENTS,
-    MAX_BROWSER_NAME_LENGTH,
-    MAX_BROWSER_PAGE_TEXT_LENGTH,
-    MAX_BROWSER_ROLE_LENGTH,
-    MAX_BROWSER_TAB_ID_LENGTH,
-    MAX_BROWSER_TABS,
-    MAX_BROWSER_TITLE_LENGTH,
-    MAX_BROWSER_URL_LENGTH,
-    MAX_COMPUTER_ELEMENT_ID_LENGTH,
-    MAX_COMPUTER_ELEMENT_VALUE_LENGTH,
-    MAX_COMPUTER_ELEMENTS,
-    MAX_COMPUTER_NAME_LENGTH,
-    MAX_COMPUTER_ROLE_LENGTH,
-    MAX_RESULT_JSON_BYTES,
     AgentResult,
     Capabilities,
     InvokeMessage,
     Register,
 )
+from agent_relay.provider_tools import ProviderToolDescriptor
 from agent_relay.registry import (
     DeviceBusyError,
     DeviceOfflineError,
@@ -117,12 +92,67 @@ def test_dynamic_facade_only_lists_announced_agent_tools() -> None:
         assert registered.device_id == "one"
         await registry.set_capabilities(
             socket,
-            Capabilities(version=1, type="capabilities", tools=["system.ping"]),
+            Capabilities(
+                version=1,
+                type="capabilities",
+                tools=["system.ping"],
+                descriptors=[
+                    ProviderToolDescriptor(
+                        provider_name="system",
+                        tool_name="ping",
+                        public_name="relay_system_ping",
+                        description="fixed local health check",
+                        input_schema={
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                        risk="read_only",
+                    )
+                ],
+            ),
         )
         assert [tool.name for tool in mcp._tool_manager.list_tools()] == [
             "relay_device_status",
             "relay_system_ping",
         ]
+
+    run(scenario())
+
+
+def test_dynamic_facade_publishes_browser_locator_schema_without_static_wrapper() -> None:
+    async def scenario() -> None:
+        registry = RelayRegistry(agent_token="agent-token")
+        mcp = create_mcp_facade(
+            registry=registry,
+            timeout_seconds=1,
+            only_announced=True,
+        )
+        socket = FakeSocket()
+        await registry.register(
+            socket,
+            Register(version=1, type="register", device_id="browser-one"),
+        )
+        descriptor = next(
+            item for item in BROWSER_PROVIDER_DESCRIPTORS if item.tool_name == "fill"
+        ).model_copy(update={"public_name": "relay_browser_fill"})
+        await registry.set_capabilities(
+            socket,
+            Capabilities(
+                version=1,
+                type="capabilities",
+                tools=["browser.fill"],
+                descriptors=[descriptor],
+            ),
+        )
+        tools = mcp._tool_manager.list_tools()
+        assert [tool.name for tool in tools] == [
+            "relay_device_status",
+            "relay_browser_fill",
+        ]
+        browser_tool = tools[1]
+        assert "locator" in browser_tool.parameters["properties"]
+        assert "element_id" not in browser_tool.parameters["properties"]
 
     run(scenario())
 
@@ -138,17 +168,6 @@ def test_tool_discovery_is_exact_and_closed() -> None:
             "relay_device_status",
             "relay_system_ping",
             "relay_terminal_exec",
-            "relay_browser_list_tabs",
-            "relay_browser_navigate",
-            "relay_browser_snapshot",
-            "relay_browser_fill",
-            "relay_browser_click",
-            "relay_browser_scroll",
-            "relay_browser_type",
-            "relay_browser_back",
-            "relay_computer_capture",
-            "relay_computer_click",
-            "relay_computer_type",
         ]
         by_name = {tool.name: tool for tool in tools}
         for name in ("relay_device_status", "relay_system_ping"):
@@ -169,103 +188,6 @@ def test_tool_discovery_is_exact_and_closed() -> None:
             "git_status",
             "git_branch",
         ]
-        assert by_name["relay_terminal_exec"].outputSchema is not None
-        assert (
-            by_name["relay_terminal_exec"].outputSchema["additionalProperties"] is False
-        )
-
-        for name in ("relay_browser_list_tabs", "relay_browser_snapshot"):
-            assert by_name[name].inputSchema == {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            }
-        expected_fields = {
-            "relay_browser_navigate": {"url"},
-            "relay_browser_fill": {"element_id", "value"},
-            "relay_browser_click": {"element_id"},
-            "relay_browser_scroll": {"direction"},
-            "relay_browser_type": {"element_id", "text"},
-            "relay_browser_back": set(),
-        }
-        for name, fields in expected_fields.items():
-            schema = by_name[name].inputSchema
-            assert schema["additionalProperties"] is False
-            assert set(schema["properties"]) == fields
-            if fields:
-                assert set(schema["required"]) == fields
-            else:
-                assert "required" not in schema or schema["required"] == []
-            for field in fields:
-                if field == "direction":
-                    assert schema["properties"][field]["enum"] == ["up", "down"]
-                else:
-                    assert schema["properties"][field]["minLength"] == 1
-                    assert schema["properties"][field]["maxLength"] > 1
-
-        for name in set(expected_fields) | {
-            "relay_browser_list_tabs",
-            "relay_browser_snapshot",
-        }:
-            output = by_name[name].outputSchema
-            assert output is not None
-            assert output["additionalProperties"] is False
-
-        tabs = by_name["relay_browser_list_tabs"].outputSchema
-        assert tabs["type"] == "object" and tabs["required"] == ["tabs"]
-        assert tabs["properties"]["tabs"]["maxItems"] > 0
-        assert tabs["$defs"]["BrowserTabOutput"]["additionalProperties"] is False
-        page = by_name["relay_browser_snapshot"].outputSchema
-        assert page["properties"]["text"]["maxLength"] > 0
-        assert page["properties"]["elements"]["maxItems"] > 0
-        assert page["$defs"]["BrowserElementOutput"]["additionalProperties"] is False
-
-        capture = by_name["relay_computer_capture"]
-        assert capture.inputSchema == {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        }
-        assert capture.outputSchema is not None
-        assert capture.outputSchema["additionalProperties"] is False
-        assert set(capture.outputSchema["properties"]) == {
-            "app", "window_title", "generation", "elements"
-        }
-        assert capture.outputSchema["properties"]["elements"]["maxItems"] > 0
-        element = capture.outputSchema["$defs"]["ComputerElementOutput"]
-        assert element["additionalProperties"] is False
-        assert set(element["properties"]) == {
-            "element_id", "role", "name", "value", "enabled"
-        }
-        assert set(element["required"]) == {
-            "element_id", "role", "name", "value", "enabled"
-        }
-
-        for name, fields in {
-            "relay_computer_click": {"element_id"},
-            "relay_computer_type": {"element_id", "text"},
-        }.items():
-            tool = by_name[name]
-            assert tool.inputSchema["additionalProperties"] is False
-            assert set(tool.inputSchema["properties"]) == fields
-            assert set(tool.inputSchema["required"]) == fields
-            assert tool.outputSchema is not None
-            assert tool.outputSchema["additionalProperties"] is False
-            assert set(tool.outputSchema["properties"]) == {
-                "success", "generation", "element_id"
-            }
-            assert set(tool.outputSchema["required"]) == {
-                "success", "generation", "element_id"
-            }
-
-        text_schema = by_name["relay_computer_type"].inputSchema["properties"]["text"]
-        assert text_schema["minLength"] == 1
-        assert text_schema["maxLength"] > 1
-        assert "pattern" in text_schema
-
-        assert ComputerElementOutput.model_config["extra"] == "forbid"
-        assert ComputerCaptureOutput.model_config["strict"] is True
-        assert ComputerActionOutput.model_config["strict"] is True
 
     run(scenario())
 
@@ -299,6 +221,32 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
                 version=1,
                 type="capabilities",
                 tools=["terminal.exec"],
+                descriptors=[
+                    ProviderToolDescriptor(
+                        provider_name="terminal",
+                        tool_name="exec",
+                        public_name="relay_terminal_exec",
+                        description="fixed allowlisted terminal command",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "command_id": {
+                                    "type": "string",
+                                    "enum": [
+                                        "pwd",
+                                        "whoami",
+                                        "python_version",
+                                        "git_status",
+                                        "git_branch",
+                                    ],
+                                }
+                            },
+                            "required": ["command_id"],
+                            "additionalProperties": False,
+                        },
+                        risk="interaction",
+                    )
+                ],
             ),
         )
         server = uvicorn.Server(
@@ -505,326 +453,55 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
     run(scenario())
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "arguments", "result", "expected_tool_name"),
-    [
-        ("relay_browser_list_tabs", {}, {"tabs": []}, "browser.list_tabs"),
-        (
-            "relay_browser_navigate",
-            {"url": "https://example.test"},
-            {
-                "tab_id": "tab-1",
-                "element_id": None,
-                "url": "https://example.test",
-                "title": "Example",
-                "success": True,
-            },
-            "browser.navigate",
-        ),
-        (
-            "relay_browser_snapshot",
-            {},
-            {
-                "tab_id": "tab-1",
-                "title": "Example",
-                "url": "https://example.test",
-                "text": "Hello",
-                "elements": [],
-            },
-            "browser.snapshot",
-        ),
-        (
-            "relay_browser_fill",
-            {"element_id": "field-1", "value": "hello"},
-            {
-                "tab_id": "tab-1",
-                "element_id": "field-1",
-                "url": "https://example.test",
-                "title": "Example",
-                "success": True,
-            },
-            "browser.fill",
-        ),
-        (
-            "relay_browser_click",
-            {"element_id": "button-1"},
-            {
-                "tab_id": "tab-1",
-                "element_id": "button-1",
-                "url": "https://example.test",
-                "title": "Example",
-                "success": True,
-            },
-            "browser.click",
-        ),
-        (
-            "relay_browser_scroll",
-            {"direction": "down"},
-            {
-                "tab_id": "tab-1",
-                "element_id": None,
-                "url": "https://example.test",
-                "title": "Example",
-                "success": True,
-            },
-            "browser.scroll",
-        ),
-        (
-            "relay_browser_type",
-            {"element_id": "field-1", "text": "hello"},
-            {
-                "tab_id": "tab-1",
-                "element_id": "field-1",
-                "url": "https://example.test",
-                "title": "Example",
-                "success": True,
-            },
-            "browser.type",
-        ),
-        (
-            "relay_browser_back",
-            {},
-            {
-                "tab_id": "tab-1",
-                "element_id": None,
-                "url": "https://example.test",
-                "title": "Example",
-                "success": True,
-            },
-            "browser.back",
-        ),
-    ],
-)
-def test_browser_tools_map_to_generic_v2_invokes(
-    tool_name: str,
-    arguments: dict[str, object],
-    result: dict[str, object],
-    expected_tool_name: str,
-) -> None:
+def test_dynamic_facade_publishes_selected_cua_descriptor() -> None:
     async def scenario() -> None:
-        registry = StubRegistry(
-            ProviderToolResult(content=[], structuredContent=result)
+        registry = RelayRegistry(agent_token="agent-token")
+        mcp = create_mcp_facade(
+            registry=registry,
+            timeout_seconds=1,
+            only_announced=True,
         )
-        mcp = create_mcp_facade(registry=registry, device_id="one", timeout_seconds=2.5)  # type: ignore[arg-type]
-        async with create_connected_server_and_client_session(mcp) as session:
-            response = await session.call_tool(tool_name, arguments)
-        assert response.isError is False
-        assert response.structuredContent == result
-        _, message, timeout = registry.calls[0]
-        assert type(message) is InvokeMessage
-        assert message.version == 2
-        assert message.tool_name == expected_tool_name
-        assert message.request_id
-        assert timeout == 2.5
-        assert message.arguments == arguments
+        socket = FakeSocket()
+        await registry.register(
+            socket,
+            Register(version=1, type="register", device_id="cua-one"),
+        )
+        await registry.set_capabilities(
+            socket,
+            Capabilities(
+                version=1,
+                type="capabilities",
+                tools=["cua.click"],
+                descriptors=[
+                    ProviderToolDescriptor(
+                        provider_name="cua",
+                        tool_name="click",
+                        public_name="relay_cua_click",
+                        description="provider-native CUA tool: click",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "target": {"type": "string", "minLength": 1}
+                            },
+                            "required": ["target"],
+                            "additionalProperties": False,
+                        },
+                        risk="interaction",
+                    )
+                ],
+            ),
+        )
+        tools = mcp._tool_manager.list_tools()
+        assert [tool.name for tool in tools] == [
+            "relay_device_status",
+            "relay_cua_click",
+        ]
+        tool = tools[1]
+        assert tool.parameters["additionalProperties"] is False
+        assert set(tool.parameters["properties"]) == {"target"}
 
     run(scenario())
 
-
-@pytest.mark.parametrize(
-    ("tool_name", "arguments", "result", "expected_tool_name"),
-    [
-        (
-            "relay_computer_capture",
-            {},
-            {
-                "app": "fixture",
-                "window_title": "Fixture",
-                "generation": "generation-1",
-                "elements": [],
-            },
-            "computer.capture",
-        ),
-        (
-            "relay_computer_click",
-            {"element_id": "opaque-1"},
-            {"success": True, "generation": "generation-1", "element_id": "opaque-1"},
-            "computer.click",
-        ),
-        (
-            "relay_computer_type",
-            {"element_id": "opaque-1", "text": "hello"},
-            {"success": True, "generation": "generation-1", "element_id": "opaque-1"},
-            "computer.type",
-        ),
-    ],
-)
-def test_computer_tools_map_to_generic_v2_invokes(
-    tool_name: str,
-    arguments: dict[str, object],
-    result: dict[str, object],
-    expected_tool_name: str,
-) -> None:
-    async def scenario() -> None:
-        registry = StubRegistry(
-            ProviderToolResult(content=[], structuredContent=result)
-        )
-        mcp = create_mcp_facade(registry=registry, device_id="one", timeout_seconds=2.5)  # type: ignore[arg-type]
-        async with create_connected_server_and_client_session(mcp) as session:
-            response = await session.call_tool(tool_name, arguments)
-        assert response.isError is False
-        assert response.structuredContent == result
-        _, message, timeout = registry.calls[0]
-        assert type(message) is InvokeMessage
-        assert message.version == 2
-        assert message.tool_name == expected_tool_name
-        assert timeout == 2.5
-        assert message.arguments == arguments
-
-    run(scenario())
-
-
-def test_computer_type_unicode_control_policy_applies_at_mcp_boundary() -> None:
-    async def scenario() -> None:
-        registry = StubRegistry(
-            ProviderToolResult(
-                content=[],
-                structuredContent={
-                    "success": True,
-                    "generation": "g",
-                    "element_id": "opaque-1",
-                },
-            )
-        )
-        mcp = create_mcp_facade(  # type: ignore[arg-type]
-            registry=registry, device_id="one", timeout_seconds=1
-        )
-        async with create_connected_server_and_client_session(mcp) as session:
-            for text in ("a\u0085b", "a\u202eb"):
-                response = await session.call_tool(
-                    "relay_computer_type", {"element_id": "opaque-1", "text": text}
-                )
-                assert response.isError is True
-            accepted = await session.call_tool(
-                "relay_computer_type", {"element_id": "opaque-1", "text": "ok \U0001f680"}
-            )
-        assert accepted.isError is False
-        assert len(registry.calls) == 1
-
-    run(scenario())
-
-
-def test_computer_outputs_reject_unbounded_or_arbitrary_data() -> None:
-    valid_element = {
-        "element_id": "opaque-1",
-        "role": "textbox",
-        "name": "Name",
-        "value": None,
-        "enabled": True,
-    }
-    with pytest.raises(Exception):
-        ComputerElementOutput.model_validate(valid_element | {"coordinates": [1, 2]})
-    with pytest.raises(Exception):
-        ComputerCaptureOutput.model_validate(
-            {
-                "app": "fixture",
-                "window_title": "Fixture",
-                "generation": "generation-1",
-                "elements": [valid_element] * (MAX_COMPUTER_ELEMENTS + 1),
-            }
-        )
-    with pytest.raises(Exception):
-        ComputerActionOutput.model_validate(
-            {"success": True, "generation": "generation-1", "element_id": None}
-        )
-
-
-def test_browser_output_models_reject_unknown_and_oversized_nested_data() -> None:
-    with pytest.raises(Exception):
-        BrowserTabsOutput.model_validate({"tabs": [], "extra": True})
-    with pytest.raises(Exception):
-        BrowserElementOutput.model_validate(
-            {
-                "element_id": "e",
-                "role": "textbox",
-                "name": "n",
-                "value": None,
-                "editable": True,
-                "enabled": True,
-                "extra": True,
-            }
-        )
-    page_schema = BrowserPageOutput.model_json_schema()
-    text_max = page_schema["properties"]["text"]["maxLength"]
-    with pytest.raises(Exception):
-        BrowserPageOutput.model_validate(
-            {
-                "tab_id": "t",
-                "title": "t",
-                "url": "u",
-                "text": "x" * (text_max + 1),
-                "elements": [],
-            }
-        )
-    with pytest.raises(Exception):
-        BrowserActionOutput.model_validate(
-            {
-                "tab_id": "t",
-                "element_id": None,
-                "url": "u",
-                "title": "t",
-                "success": True,
-                "extra": True,
-            }
-        )
-
-
-def test_worst_case_browser_outputs_fit_protocol_result_budget() -> None:
-    astral = "\U00010000"
-    tab = BrowserTabOutput(
-        tab_id=astral * MAX_BROWSER_TAB_ID_LENGTH,
-        title=astral * MAX_BROWSER_TITLE_LENGTH,
-        url=astral * MAX_BROWSER_URL_LENGTH,
-    )
-    element = BrowserElementOutput(
-        element_id=astral * MAX_COMPUTER_ELEMENT_ID_LENGTH,
-        role=astral * MAX_BROWSER_ROLE_LENGTH,
-        name=astral * MAX_BROWSER_NAME_LENGTH,
-        value=astral * MAX_COMPUTER_ELEMENT_VALUE_LENGTH,
-        editable=True,
-        enabled=True,
-    )
-    outputs = (
-        BrowserTabsOutput(tabs=[tab] * MAX_BROWSER_TABS),
-        BrowserPageOutput(
-            tab_id=tab.tab_id,
-            title=tab.title,
-            url=tab.url,
-            text=astral * MAX_BROWSER_PAGE_TEXT_LENGTH,
-            elements=[element] * MAX_BROWSER_ELEMENTS,
-        ),
-        BrowserActionOutput(
-            tab_id=tab.tab_id,
-            element_id=element.element_id,
-            url=tab.url,
-            title=tab.title,
-            success=True,
-        ),
-    )
-    for output in outputs:
-        encoded = json.dumps(
-            output.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")
-        ).encode()
-    assert len(encoded) < MAX_RESULT_JSON_BYTES
-
-
-def test_worst_case_computer_output_fits_protocol_result_budget() -> None:
-    astral = "\U00010000"
-    element = ComputerElementOutput(
-        element_id=astral * MAX_BROWSER_ELEMENT_ID_LENGTH,
-        role=astral * MAX_COMPUTER_ROLE_LENGTH,
-        name=astral * MAX_COMPUTER_NAME_LENGTH,
-        value=astral * MAX_BROWSER_ELEMENT_VALUE_LENGTH,
-        enabled=True,
-    )
-    capture = ComputerCaptureOutput(
-        app=astral * 128,
-        window_title=astral * 256,
-        generation=astral * 128,
-        elements=[element] * MAX_COMPUTER_ELEMENTS,
-    )
-    encoded = json.dumps(capture.model_dump(), ensure_ascii=False, separators=(",", ":")).encode()
-    assert len(encoded) < MAX_RESULT_JSON_BYTES
 
 
 @pytest.mark.parametrize(
@@ -856,22 +533,6 @@ def test_expected_relay_failures_are_safe_mcp_tool_errors(
 
     run(scenario())
 
-
-def test_unadvertised_browser_capability_returns_safe_mcp_error() -> None:
-    async def scenario() -> None:
-        registry = StubRegistry(UnsupportedToolError("browser.click"))
-        mcp = create_mcp_facade(  # type: ignore[arg-type]
-            registry=registry, device_id="one", timeout_seconds=1
-        )
-        async with create_connected_server_and_client_session(mcp) as session:
-            response = await session.call_tool(
-                "relay_browser_click", {"element_id": "button-1"}
-            )
-        assert response.isError is True
-        assert "device does not support this capability" in response.content[0].text  # type: ignore[union-attr]
-        assert "browser.click" not in response.content[0].text  # type: ignore[union-attr]
-
-    run(scenario())
 
 
 @pytest.mark.parametrize("tool_name", ["relay_device_status", "relay_system_ping"])

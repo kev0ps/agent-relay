@@ -18,13 +18,12 @@ from urllib.parse import urlparse
 import yaml
 
 from .catalog import (
+    CUA_REFERENCE_TOOL_NAMES,
     CatalogEntry,
     CatalogError,
     CatalogSnapshot,
 )
-from .catalog import (
-    discover_local_catalog as _discover_local_catalog,
-)
+from .catalog import discover_local_catalog as _discover_local_catalog
 from .protocol import TOOL_ORDER
 
 CONFIG_DIR_NAME = ".agent-relay"
@@ -43,9 +42,10 @@ PUBLIC_TO_INTERNAL: dict[str, str] = {
     "relay_browser_scroll": "browser.scroll",
     "relay_browser_type": "browser.type",
     "relay_browser_back": "browser.back",
-    "relay_computer_capture": "computer.capture",
-    "relay_computer_click": "computer.click",
-    "relay_computer_type": "computer.type",
+    **{
+        f"relay_cua_{name}": f"cua.{name}"
+        for name in CUA_REFERENCE_TOOL_NAMES
+    },
 }
 INTERNAL_TO_PUBLIC = {value: key for key, value in PUBLIC_TO_INTERNAL.items()}
 PUBLIC_TOOL_NAMES = tuple(PUBLIC_TO_INTERNAL)
@@ -201,16 +201,20 @@ def _tool_specs() -> tuple[ToolSpec, ...]:
         "terminal.exec": "fixed allowlisted terminal command",
         "browser.list_tabs": "list browser tabs",
         "browser.navigate": "navigate a browser tab",
-        "browser.snapshot": "read semantic browser content",
-        "browser.fill": "fill a semantic browser element",
-        "browser.click": "click a semantic browser element",
+        "browser.snapshot": "read provider-native browser content",
+        "browser.fill": "fill a freshly resolved browser locator",
+        "browser.click": "click a freshly resolved browser locator",
         "browser.scroll": "scroll a browser page",
-        "browser.type": "type into a semantic browser element",
+        "browser.type": "type into a freshly resolved browser locator",
         "browser.back": "navigate browser history backward",
-        "computer.capture": "capture bounded desktop semantics",
-        "computer.click": "click a captured desktop element",
-        "computer.type": "type into a captured desktop element",
     }
+    descriptions.update(
+        {
+            f"cua.{name}": f"provider-native CUA tool: {name}"
+            for name in CUA_REFERENCE_TOOL_NAMES
+        }
+    )
+    internal_names = (*TOOL_ORDER, *(f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES))
     specs = [
         ToolSpec(
             name=INTERNAL_TO_PUBLIC[internal],
@@ -218,13 +222,13 @@ def _tool_specs() -> tuple[ToolSpec, ...]:
             source=(
                 "browser"
                 if internal.startswith("browser.")
-                else "computer"
-                if internal.startswith("computer.")
+                else "cua"
+                if internal.startswith("cua.")
                 else "builtin"
             ),
             description=descriptions[internal],
         )
-        for internal in TOOL_ORDER
+        for internal in internal_names
     ]
     return tuple(specs) + (
         ToolSpec(
@@ -582,10 +586,27 @@ def discover_local_catalog(
             )
 
     computer = agent.get("computer", {})
-    if isinstance(computer, Mapping) and computer.get("driver_path") is not None:
-        catalog_env.setdefault(
-            "RELAY_AGENT_COMPUTER_DRIVER_PATH", str(computer["driver_path"])
+    if isinstance(computer, Mapping):
+        computer_env_fields = (
+            ("driver_path", "RELAY_AGENT_COMPUTER_DRIVER_PATH"),
+            ("allowed_app_name", "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME"),
+            ("allowed_window_title", "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE"),
+            (
+                "startup_timeout_seconds",
+                "RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS",
+            ),
+            (
+                "action_timeout_seconds",
+                "RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS",
+            ),
+            (
+                "shutdown_timeout_seconds",
+                "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS",
+            ),
         )
+        for field, env_key in computer_env_fields:
+            if computer.get(field) is not None:
+                catalog_env.setdefault(env_key, str(computer[field]))
 
     tools = agent.get("tools", {})
     allowlist = tools.get("allowlist", []) if isinstance(tools, Mapping) else []

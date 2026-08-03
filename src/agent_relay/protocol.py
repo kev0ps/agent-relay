@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import unicodedata
 from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
     TypeAdapter,
     field_validator,
+    model_validator,
 )
 
 from .json_bounds import (
@@ -23,47 +22,21 @@ from .json_bounds import (
 )
 
 MAX_TOKEN_LENGTH = 256
-MAX_CAPABILITIES = 16
+MAX_CAPABILITIES = 128
 MAX_ERROR_MESSAGE_LENGTH = 512
 MAX_PROGRESS_MESSAGE_LENGTH = 512
 MAX_RESULT_JSON_BYTES = MAX_JSON_BYTES
 MAX_RESULT_DEPTH = MAX_JSON_DEPTH
 MAX_RESULT_NODES = MAX_JSON_NODES
 MAX_BROWSER_URL_LENGTH = 2048
-MAX_BROWSER_ELEMENT_ID_LENGTH = 128
 MAX_BROWSER_FILL_VALUE_LENGTH = 4096
 MAX_BROWSER_TYPE_TEXT_LENGTH = 4096
-MAX_BROWSER_TAB_ID_LENGTH = 128
 MAX_BROWSER_TITLE_LENGTH = 256
 MAX_BROWSER_PAGE_TEXT_LENGTH = 4096
 MAX_BROWSER_ROLE_LENGTH = 64
 MAX_BROWSER_NAME_LENGTH = 128
 MAX_BROWSER_ELEMENT_VALUE_LENGTH = 256
-MAX_BROWSER_TABS = 6
 MAX_BROWSER_ELEMENTS = 12
-MAX_COMPUTER_ELEMENT_ID_LENGTH = 128
-MAX_COMPUTER_TYPE_TEXT_LENGTH = 4096
-MAX_COMPUTER_APP_LENGTH = 128
-MAX_COMPUTER_WINDOW_TITLE_LENGTH = 256
-MAX_COMPUTER_GENERATION_LENGTH = 128
-MAX_COMPUTER_ROLE_LENGTH = 64
-MAX_COMPUTER_NAME_LENGTH = 128
-MAX_COMPUTER_ELEMENT_VALUE_LENGTH = 256
-MAX_COMPUTER_ELEMENTS = 12
-
-
-def _reject_unicode_controls(value: object) -> object:
-    if isinstance(value, str) and any(unicodedata.category(char).startswith("C") for char in value):
-        raise ValueError("text contains a Unicode control character")
-    return value
-
-
-ComputerTypeText = Annotated[
-    str,
-    Field(min_length=1, max_length=MAX_COMPUTER_TYPE_TEXT_LENGTH,
-          pattern=r"^[^\x00-\x1f\x7f]+$"),
-    BeforeValidator(_reject_unicode_controls),
-]
 
 RequestId = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
@@ -78,13 +51,13 @@ ToolName = Annotated[
 TOOL_ORDER: tuple[str, ...] = (
     "system.ping", "terminal.exec", "browser.list_tabs", "browser.navigate",
     "browser.snapshot", "browser.fill", "browser.click", "browser.scroll",
-    "browser.type", "browser.back", "computer.capture", "computer.click",
-    "computer.type",
+    "browser.type", "browser.back",
 )
 
-# Imported after the legacy output constants to avoid the temporary Task 1/Task 3
-# dependency cycle. Task 5 removes the semantic v1 output inventory entirely.
+# Imported after the bounded frame primitives to keep the provider result model
+# independent from the protocol module's application-frame definitions.
 from .output_models import ProviderToolResult  # noqa: E402
+from .provider_tools import ProviderToolDescriptor  # noqa: E402
 
 
 class Message(BaseModel):
@@ -103,23 +76,25 @@ class Register(Message):
 
 class Capabilities(Message):
     type: Literal["capabilities"]
-    tools: list[
-        Literal[
-            "system.ping",
-            "terminal.exec",
-            "browser.list_tabs",
-            "browser.navigate",
-            "browser.snapshot",
-            "browser.fill",
-            "browser.click",
-            "browser.scroll",
-            "browser.type",
-            "browser.back",
-            "computer.capture",
-            "computer.click",
-            "computer.type",
+    tools: list[ToolName] = Field(min_length=0, max_length=MAX_CAPABILITIES)
+    descriptors: list[ProviderToolDescriptor] = Field(
+        default_factory=list,
+        max_length=MAX_CAPABILITIES,
+    )
+
+    @model_validator(mode="after")
+    def descriptor_names_match_tools(self) -> "Capabilities":
+        if not self.descriptors:
+            return self
+        descriptor_names = [
+            f"{descriptor.provider_name}.{descriptor.tool_name}"
+            for descriptor in self.descriptors
         ]
-    ] = Field(min_length=0, max_length=MAX_CAPABILITIES)
+        if len(set(descriptor_names)) != len(descriptor_names):
+            raise ValueError("duplicate capability descriptor")
+        if set(self.tools) != set(descriptor_names):
+            raise ValueError("capability tools do not match descriptors")
+        return self
 
 
 class ApplicationMessage(BaseModel):
@@ -164,108 +139,6 @@ class Progress(ApplicationMessage):
 class Registered(Message):
     type: Literal["registered"]
     device_id: DeviceId
-
-
-class SystemPingInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["system.ping"]
-
-
-class TerminalExecInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["terminal.exec"]
-    command_id: CommandId
-
-
-class BrowserListTabsInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.list_tabs"]
-
-
-class BrowserNavigateInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.navigate"]
-    url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)]
-
-
-class BrowserSnapshotInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.snapshot"]
-
-
-class BrowserFillInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.fill"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-    ]
-    value: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_FILL_VALUE_LENGTH)]
-
-
-class BrowserClickInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.click"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-    ]
-
-
-BrowserScrollDirection = Literal["up", "down"]
-
-
-class BrowserScrollInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.scroll"]
-    direction: BrowserScrollDirection
-
-
-class BrowserTypeInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.type"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-    ]
-    text: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)]
-
-
-class BrowserBackInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["browser.back"]
-
-
-class ComputerCaptureInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["computer.capture"]
-
-
-class ComputerClickInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["computer.click"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)
-    ]
-
-
-class ComputerTypeInvoke(Message):
-    type: Literal["invoke"]
-    request_id: RequestId
-    tool: Literal["computer.type"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)
-    ]
-    text: ComputerTypeText
 
 
 class InvokeMessage(ApplicationMessage):

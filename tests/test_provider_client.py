@@ -19,12 +19,41 @@ from agent_relay.providers.base import (
     ProviderToolClient,
     ProviderToolError,
     UnknownProviderToolError,
+    validate_provider_arguments,
 )
 from agent_relay.providers.in_process import InProcessProviderToolClient
 from agent_relay.providers.mcp_client import (
     McpProviderToolClient,
     NativeMcpSessionTransport,
 )
+
+_OPAQUE_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "maxLength": 256},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "null"},
+        {
+            "type": "array",
+            "items": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "maxItems": 8,
+        },
+    ]
+}
+_NESTED_ITEM_SCHEMA = {
+    "anyOf": [
+        {"type": "integer"},
+        {"type": "boolean"},
+        {"type": "null"},
+        {
+            "type": "object",
+            "properties": {"native": {"type": "string", "maxLength": 64}},
+            "required": ["native"],
+            "additionalProperties": False,
+            "maxProperties": 1,
+        },
+    ]
+}
 
 
 def descriptor(name: str = "snapshot") -> ProviderToolDescriptor:
@@ -33,7 +62,19 @@ def descriptor(name: str = "snapshot") -> ProviderToolDescriptor:
         tool_name=name,
         public_name=f"browser:{name}",
         description="A locally owned test tool",
-        input_schema={"type": "object", "additionalProperties": False},
+        input_schema={
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "array",
+                    "items": _NESTED_ITEM_SCHEMA,
+                    "maxItems": 8,
+                },
+                "opaque": _OPAQUE_SCHEMA,
+                "value": _OPAQUE_SCHEMA,
+            },
+            "additionalProperties": False,
+        },
         risk="read_only",
     )
 
@@ -69,6 +110,38 @@ def test_descriptors_cannot_serialize_execution_configuration() -> None:
     for field in ("handler", "module", "executable", "method", "endpoint"):
         with pytest.raises(ValueError):
             ProviderToolDescriptor.model_validate(payload | {field: "secret"})
+
+
+def test_provider_argument_schema_is_checked_before_call() -> None:
+    tool = ProviderToolDescriptor(
+        provider_name="browser",
+        tool_name="fill",
+        public_name="relay_browser_fill",
+        description="fill a field",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "element_id": {"type": "string", "minLength": 1},
+                "value": {"type": "string", "maxLength": 8},
+            },
+            "required": ["element_id", "value"],
+            "additionalProperties": False,
+        },
+        risk="interaction",
+    )
+
+    assert validate_provider_arguments(
+        tool, {"element_id": "field", "value": "hello"}
+    ) == {"element_id": "field", "value": "hello"}
+    for invalid in (
+        {},
+        {"element_id": "field"},
+        {"element_id": "field", "value": "too long!"},
+        {"element_id": "field", "value": "ok", "extra": True},
+        {"element_id": "field", "value": 1},
+    ):
+        with pytest.raises(ProviderToolError, match="do not match tool schema"):
+            validate_provider_arguments(tool, invalid)
 
 
 def test_in_process_passes_json_arguments_without_semantic_conversion() -> None:
@@ -137,6 +210,7 @@ def test_timeout_is_normalized_and_cancellation_is_preserved() -> None:
         with pytest.raises(ProviderToolError) as timed_out:
             await client.call_tool("snapshot", {})
         assert_sanitized(timed_out.value, "provider operation timed out")
+        await asyncio.wait_for(client.wait_unavailable(), 1)
         with pytest.raises(ProviderToolError, match="provider client unavailable"):
             await client.call_tool("snapshot", {})
 
@@ -222,6 +296,7 @@ class FakeMcpTransport:
                     "description": "Capture the synthetic desktop",
                     "inputSchema": {
                         "type": "object",
+                        "properties": {"opaque": _OPAQUE_SCHEMA},
                         "additionalProperties": False,
                     },
                 }

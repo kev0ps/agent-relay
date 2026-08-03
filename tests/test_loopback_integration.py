@@ -105,14 +105,14 @@ def test_real_loopback_server_agent_and_runner(tmp_path: Path) -> None:
                         break
                     await asyncio.sleep(0.01)
                 ping = await client.post(
-                    "/v1/devices/linux-test/invoke", headers=headers,
+                    "/v2/devices/linux-test/invoke", headers=headers,
                     json={"tool_name": "system.ping", "arguments": {}},
                 )
                 assert ping.status_code == 200
                 assert ping.json()["result"]["structuredContent"] == {"pong": True}
                 for command_id in ("pwd", "python_version"):
                     response = await client.post(
-                        "/v1/devices/linux-test/invoke", headers=headers,
+                        "/v2/devices/linux-test/invoke", headers=headers,
                         json={
                             "tool_name": "terminal.exec",
                             "arguments": {"command_id": command_id},
@@ -130,7 +130,7 @@ def test_real_loopback_server_agent_and_runner(tmp_path: Path) -> None:
                     else:
                         assert f"Python {sys.version_info.major}.{sys.version_info.minor}" in result["stdout"]
                 forbidden = await client.post(
-                    "/v1/devices/linux-test/invoke", headers=headers,
+                    "/v2/devices/linux-test/invoke", headers=headers,
                     json={
                         "tool_name": "terminal.exec",
                         "arguments": {"command_id": "arbitrary"},

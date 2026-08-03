@@ -49,6 +49,7 @@ from .registry import (
     DeviceAlreadyConnectedError,
     DeviceBusyError,
     DeviceOfflineError,
+    InvalidToolArgumentsError,
     LateResponseError,
     RelayRegistry,
     RemoteAgentError,
@@ -349,7 +350,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
         finally:
             await registry.disconnect(connection)
 
-    @app.post("/v1/devices/{device_id}/invoke")
+    @app.post("/v2/devices/{device_id}/invoke")
     async def invoke(
         device_id: str,
         body: InvokeRequest,
@@ -382,6 +383,8 @@ def create_app(settings: RelaySettings) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except DeviceBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except InvalidToolArgumentsError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except UnsupportedToolError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except TimeoutError as exc:

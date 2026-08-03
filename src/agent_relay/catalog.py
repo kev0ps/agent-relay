@@ -6,15 +6,90 @@ import asyncio
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal
 
 from pydantic import ValidationError
 
+from .capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS
 from .json_bounds import JsonValue
 from .output_models import ProviderToolResult
 from .provider_tools import ProviderRiskClass, ProviderToolDescriptor
 from .providers.base import ProviderToolClient, ProviderToolError, bounded_descriptors
 from .providers.in_process import InProcessProviderToolClient
+
+CUA_REFERENCE_TOOL_NAMES: tuple[str, ...] = (
+    "list_apps",
+    "list_windows",
+    "get_window_state",
+    "get_accessibility_tree",
+    "get_desktop_state",
+    "get_screen_size",
+    "get_cursor_position",
+    "get_config",
+    "get_recording_state",
+    "get_agent_cursor_state",
+    "launch_app",
+    "kill_app",
+    "bring_to_front",
+    "click",
+    "double_click",
+    "right_click",
+    "drag",
+    "type_text",
+    "press_key",
+    "hotkey",
+    "set_value",
+    "scroll",
+    "move_cursor",
+    "zoom",
+    "page",
+    "get_browser_state",
+    "browser_prepare",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_dialog",
+    "browser_set_input_files",
+    "browser_download",
+    "browser_pointer",
+    "start_recording",
+    "stop_recording",
+    "replay_trajectory",
+    "set_config",
+    "start_session",
+    "end_session",
+    "set_agent_cursor_enabled",
+    "set_agent_cursor_motion",
+    "check_permissions",
+    "health_report",
+    "check_for_update",
+    "install_ffmpeg",
+    "verify_state",
+    "set_agent_cursor_theme",
+    "escalate_session",
+    "get_session_state",
+)
+
+
+def _cua_reference_descriptor(tool_name: str) -> ProviderToolDescriptor:
+    return ProviderToolDescriptor(
+        provider_name="cua",
+        tool_name=tool_name,
+        public_name=tool_name,
+        description=f"reference CUA provider tool: {tool_name}",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        risk="interaction",
+    )
+
+
+CUA_REFERENCE_DESCRIPTORS: tuple[ProviderToolDescriptor, ...] = tuple(
+    _cua_reference_descriptor(name) for name in CUA_REFERENCE_TOOL_NAMES
+)
 
 DEFAULT_RESERVED_PUBLIC_NAMES = frozenset(
     {
@@ -28,9 +103,7 @@ DEFAULT_RESERVED_PUBLIC_NAMES = frozenset(
         "relay_browser_scroll",
         "relay_browser_type",
         "relay_browser_back",
-        "relay_computer_capture",
-        "relay_computer_click",
-        "relay_computer_type",
+        *(f"relay_cua_{name}" for name in CUA_REFERENCE_TOOL_NAMES),
         "relay_device_status",
     }
 )
@@ -40,6 +113,33 @@ ProviderStatus = Literal["available", "unavailable"]
 
 class CatalogError(ValueError):
     """A safe, local catalog or explicit-selection error."""
+
+
+class _EphemeralCuaCatalogClient:
+    """Start one owned CUA process only long enough to read its inventory."""
+
+    def __init__(self, capability: object) -> None:
+        self._capability = capability
+
+    async def list_tools(self) -> Sequence[ProviderToolDescriptor]:
+        start = getattr(self._capability, "start")
+        list_tools = getattr(self._capability, "list_tools")
+        close = getattr(self._capability, "aclose")
+        try:
+            await start()
+            return await list_tools()
+        finally:
+            await close()
+
+    async def call_tool(
+        self, tool_name: str, arguments: Mapping[str, JsonValue]
+    ) -> ProviderToolResult:
+        del tool_name, arguments
+        raise ProviderToolError("catalog discovery client does not dispatch")
+
+    async def close(self) -> None:
+        close = getattr(self._capability, "aclose")
+        await close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +186,54 @@ class CatalogPolicy:
     blocked_name_fragments: frozenset[str] = frozenset(
         {"execute_javascript", "arbitrary_code", "module_path", "executable_path"}
     )
+    cua_read_only_names: frozenset[str] = frozenset(
+        {
+            "list_apps",
+            "list_windows",
+            "get_window_state",
+            "get_accessibility_tree",
+            "get_config",
+            "get_recording_state",
+            "get_agent_cursor_state",
+            "get_browser_state",
+            "health_report",
+            "check_for_update",
+            "verify_state",
+        }
+    )
+    cua_destructive_names: frozenset[str] = frozenset(
+        {
+            "kill_app",
+            "set_value",
+            "start_recording",
+            "stop_recording",
+            "replay_trajectory",
+            "browser_set_input_files",
+            "browser_download",
+        }
+    )
+    cua_admin_names: frozenset[str] = frozenset(
+        {
+            "set_config",
+            "start_session",
+            "end_session",
+            "set_agent_cursor_enabled",
+            "set_agent_cursor_motion",
+            "check_permissions",
+            "install_ffmpeg",
+            "set_agent_cursor_theme",
+            "escalate_session",
+            "get_session_state",
+        }
+    )
+    cua_blocked_names: frozenset[str] = frozenset(
+        {
+            "page",
+            "get_desktop_state",
+            "get_screen_size",
+            "get_cursor_position",
+        }
+    )
 
     def classify(self, descriptor: ProviderToolDescriptor) -> ProviderRiskClass:
         name = descriptor.tool_name.lower()
@@ -95,6 +243,15 @@ class CatalogPolicy:
             fragment in name for fragment in self.blocked_name_fragments
         ):
             return "blocked"
+        if descriptor.provider_name == "cua":
+            if name in self.cua_blocked_names:
+                return "blocked"
+            if name in self.cua_read_only_names:
+                return "read_only"
+            if name in self.cua_destructive_names:
+                return "destructive"
+            if name in self.cua_admin_names:
+                return "admin"
         return descriptor.risk
 
 
@@ -299,21 +456,6 @@ def _reference_descriptor(
 
 
 def _local_reference_tools() -> dict[str, tuple[ProviderToolDescriptor, ...]]:
-    browser_reference: tuple[tuple[str, str, ProviderRiskClass], ...] = (
-        ("list_tabs", "list browser tabs", "read_only"),
-        ("navigate", "navigate a browser tab", "interaction"),
-        ("snapshot", "read semantic browser content", "read_only"),
-        ("fill", "fill a semantic browser element", "interaction"),
-        ("click", "click a semantic browser element", "interaction"),
-        ("scroll", "scroll a browser page", "interaction"),
-        ("type", "type into a semantic browser element", "interaction"),
-        ("back", "navigate browser history backward", "interaction"),
-    )
-    computer_reference: tuple[tuple[str, str, ProviderRiskClass], ...] = (
-        ("capture", "capture bounded desktop semantics", "read_only"),
-        ("click", "click a captured desktop element", "interaction"),
-        ("type", "type into a captured desktop element", "interaction"),
-    )
     return {
         "system": (
             _reference_descriptor(
@@ -321,18 +463,33 @@ def _local_reference_tools() -> dict[str, tuple[ProviderToolDescriptor, ...]]:
             ),
         ),
         "terminal": (
-            _reference_descriptor(
-                "terminal", "exec", "fixed allowlisted terminal command", "interaction"
+            ProviderToolDescriptor(
+                provider_name="terminal",
+                tool_name="exec",
+                public_name="exec",
+                description="fixed allowlisted terminal command",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "command_id": {
+                            "type": "string",
+                            "enum": [
+                                "pwd",
+                                "whoami",
+                                "python_version",
+                                "git_status",
+                                "git_branch",
+                            ],
+                        }
+                    },
+                    "required": ["command_id"],
+                    "additionalProperties": False,
+                },
+                risk="interaction",
             ),
         ),
-        "browser": tuple(
-            _reference_descriptor("browser", name, description, risk)
-            for name, description, risk in browser_reference
-        ),
-        "computer": tuple(
-            _reference_descriptor("computer", name, description, risk)
-            for name, description, risk in computer_reference
-        ),
+        "browser": BROWSER_PROVIDER_DESCRIPTORS,
+        "cua": CUA_REFERENCE_DESCRIPTORS,
     }
 
 
@@ -346,6 +503,44 @@ def _in_process_catalog_client(
     )
 
 
+def _configured_cua_catalog_client(
+    env: Mapping[str, str],
+) -> ProviderToolClient | None:
+    driver_path = env.get("RELAY_AGENT_COMPUTER_DRIVER_PATH")
+    app_name = env.get("RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME")
+    window_title = env.get("RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE")
+    if not driver_path or not app_name or not window_title:
+        return None
+
+    def number(name: str, default: float) -> float:
+        try:
+            return float(env.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        from .capabilities.computer import ComputerCapability
+
+        capability = ComputerCapability(
+            Path(driver_path),
+            app_name,
+            window_title,
+            startup_timeout_seconds=number(
+                "RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS", 15.0
+            ),
+            action_timeout_seconds=number(
+                "RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS", 10.0
+            ),
+            shutdown_timeout_seconds=number(
+                "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS", 3.0
+            ),
+            environ=dict(env),
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+    return _EphemeralCuaCatalogClient(capability)
+
+
 def local_provider_registrations(
     env: Mapping[str, str] | None = None,
     providers: Mapping[str, ProviderToolClient] | None = None,
@@ -354,22 +549,24 @@ def local_provider_registrations(
 
     System and Terminal are exposed through real in-process provider clients,
     so ``CatalogService`` obtains their current bounded inventory through
-    ``tools/list``. Browser and Computer Use reference names stay unavailable
-    until a real runtime provider client is supplied through ``providers``;
-    configuration alone is never treated as provider availability.
+    ``tools/list``. Browser remains unavailable until a runtime provider client
+    is supplied. A configured CUA driver is started only for an ephemeral
+    ``tools/list`` discovery session and is closed before this function returns.
     """
-    del env  # reserved for provider factories that consume environment settings
+    effective_env = {} if env is None else dict(env)
     tools = _local_reference_tools()
     runtime_providers = {} if providers is None else dict(providers)
     unknown = set(runtime_providers) - set(tools)
     if unknown:
         raise CatalogError(f"unknown local provider: {sorted(unknown)[0]}")
     registrations: list[ProviderRegistration] = []
-    for provider_name in ("system", "terminal", "browser", "computer"):
+    for provider_name in ("system", "terminal", "browser", "cua"):
         descriptors = tools[provider_name]
         client = runtime_providers.get(provider_name)
         if client is None and provider_name in {"system", "terminal"}:
             client = _in_process_catalog_client(descriptors)
+        if client is None and provider_name == "cua":
+            client = _configured_cua_catalog_client(effective_env)
         registrations.append(
             ProviderRegistration(
                 provider_name,
@@ -485,6 +682,8 @@ ProviderCatalog = CatalogSnapshot
 
 
 __all__ = [
+    "CUA_REFERENCE_DESCRIPTORS",
+    "CUA_REFERENCE_TOOL_NAMES",
     "DEFAULT_RESERVED_PUBLIC_NAMES",
     "CatalogEntry",
     "CatalogError",

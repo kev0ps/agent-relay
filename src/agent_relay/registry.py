@@ -17,6 +17,8 @@ from .protocol import (
     Progress,
     Registered,
 )
+from .provider_tools import ProviderToolDescriptor
+from .providers.base import ProviderToolError, validate_provider_arguments
 
 
 class JsonSocket(Protocol):
@@ -63,6 +65,10 @@ class UnsupportedToolError(RelayError):
     pass
 
 
+class InvalidToolArgumentsError(UnsupportedToolError):
+    pass
+
+
 class RemoteAgentError(RelayError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -74,6 +80,7 @@ class _Device:
     socket: JsonSocket
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     capabilities: set[str] = field(default_factory=set)
+    descriptors: dict[str, ProviderToolDescriptor] = field(default_factory=dict)
     last_heartbeat: float = field(default_factory=time.monotonic)
     progress_request_id: str | None = None
     progress: int | None = None
@@ -130,6 +137,12 @@ class RelayRegistry:
         device = self._device
         return frozenset(device.capabilities) if device is not None else frozenset()
 
+    @property
+    def announced_descriptors(self) -> dict[str, ProviderToolDescriptor]:
+        """Return a copy of the selected descriptor announcement."""
+        device = self._device
+        return {} if device is None else dict(device.descriptors)
+
     async def status_snapshot(self) -> DeviceStatusSnapshot:
         """Return only safe device state, copied atomically under the lock."""
         async with self._lock:
@@ -171,6 +184,10 @@ class RelayRegistry:
         async with self._lock:
             device = self._require_socket(socket)
             device.capabilities = set(message.tools)
+            device.descriptors = {
+                f"{descriptor.provider_name}.{descriptor.tool_name}": descriptor
+                for descriptor in message.descriptors
+            }
 
     async def send(self, socket: JsonSocket, message: object) -> None:
         """Serialize every server-to-agent write for the registered connection."""
@@ -204,6 +221,12 @@ class RelayRegistry:
             self._recently_completed.pop(request_id, None)
             if message.tool_name not in self._device.capabilities:
                 raise UnsupportedToolError(f"tool is not declared: {message.tool_name}")
+            descriptor = self._device.descriptors.get(message.tool_name)
+            if descriptor is not None:
+                try:
+                    validate_provider_arguments(descriptor, message.arguments)
+                except ProviderToolError:
+                    raise InvalidToolArgumentsError("invalid tool arguments") from None
             future: asyncio.Future[ProviderToolResult] = (
                 asyncio.get_running_loop().create_future()
             )

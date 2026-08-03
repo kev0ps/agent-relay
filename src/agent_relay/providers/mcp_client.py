@@ -28,6 +28,7 @@ from .base import (
     bounded_result,
     drain_pending_tasks,
     run_bounded,
+    validate_provider_arguments,
     validate_timeout,
 )
 
@@ -221,6 +222,7 @@ class McpProviderToolClient:
         self._tools: tuple[ProviderToolDescriptor, ...] | None = None
         self._closed = False
         self._available = True
+        self._unavailable = asyncio.Event()
         self._close_lock = asyncio.Lock()
         self._list_lock = asyncio.Lock()
         self._pending_tasks: set[asyncio.Task[object]] = set()
@@ -230,11 +232,17 @@ class McpProviderToolClient:
         try:
             return await self._list_tools(deadline)
         except _ProviderDeadlineExceeded:
-            self._available = False
+            self._mark_unavailable()
             raise
         except asyncio.CancelledError:
-            self._available = False
+            self._mark_unavailable()
             raise
+        except ProviderConnectionError:
+            self._mark_unavailable()
+            raise
+
+    async def wait_unavailable(self) -> None:
+        await self._unavailable.wait()
 
     async def _list_tools(
         self, deadline: float
@@ -308,17 +316,25 @@ class McpProviderToolClient:
         try:
             tools = await self._list_tools(deadline)
         except _ProviderDeadlineExceeded:
-            self._available = False
+            self._mark_unavailable()
             raise
         except asyncio.CancelledError:
-            self._available = False
+            self._mark_unavailable()
             raise
-        if tool_name not in {tool.tool_name for tool in tools}:
+        except ProviderConnectionError:
+            self._mark_unavailable()
+            raise
+        descriptor = next(
+            (tool for tool in tools if tool.tool_name == tool_name),
+            None,
+        )
+        if descriptor is None:
             raise UnknownProviderToolError("unknown provider tool")
         bounded_arguments(arguments)
+        validate_provider_arguments(descriptor, arguments)
         remaining = deadline - loop.time()
         if remaining <= 0:
-            self._available = False
+            self._mark_unavailable()
             raise _ProviderDeadlineExceeded("provider operation timed out")
         try:
             raw_result = await run_bounded(
@@ -327,10 +343,10 @@ class McpProviderToolClient:
                 self._pending_tasks,
             )
         except _ProviderDeadlineExceeded:
-            self._available = False
+            self._mark_unavailable()
             raise
         except asyncio.CancelledError:
-            self._available = False
+            self._mark_unavailable()
             raise
         except (ConnectionError, OSError):
             connection_failed = True
@@ -341,6 +357,7 @@ class McpProviderToolClient:
         else:
             connection_failed = call_failed = False
         if connection_failed:
+            self._mark_unavailable()
             raise ProviderConnectionError("provider connection failed") from None
         if call_failed:
             raise ProviderToolError("provider tool call failed") from None
@@ -350,7 +367,7 @@ class McpProviderToolClient:
         async with self._close_lock:
             if self._closed:
                 return
-            self._available = False
+            self._mark_unavailable()
             loop = asyncio.get_running_loop()
             deadline = loop.time() + self._close_timeout_seconds
             try:
@@ -381,6 +398,10 @@ class McpProviderToolClient:
     def _require_available(self) -> None:
         if not self._available:
             raise ProviderToolError("provider client unavailable")
+
+    def _mark_unavailable(self) -> None:
+        self._available = False
+        self._unavailable.set()
 
 
 def _descriptor(

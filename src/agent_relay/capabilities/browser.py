@@ -1,4 +1,4 @@
-"""Constrained, operator-enabled Chromium capability using a Playwright profile."""
+"""Constrained in-process Browser provider using a persistent Playwright profile."""
 
 from __future__ import annotations
 
@@ -6,32 +6,29 @@ import asyncio
 import inspect
 import json
 import re
-import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from ..json_bounds import MAX_JSON_COLLECTION_ITEMS, JsonObject, JsonValue
+from ..output_models import ProviderToolResult
 from ..protocol import (
-    MAX_BROWSER_ELEMENT_ID_LENGTH,
     MAX_BROWSER_ELEMENT_VALUE_LENGTH,
     MAX_BROWSER_ELEMENTS,
+    MAX_BROWSER_FILL_VALUE_LENGTH,
     MAX_BROWSER_NAME_LENGTH,
     MAX_BROWSER_PAGE_TEXT_LENGTH,
     MAX_BROWSER_ROLE_LENGTH,
     MAX_BROWSER_TITLE_LENGTH,
+    MAX_BROWSER_TYPE_TEXT_LENGTH,
     MAX_BROWSER_URL_LENGTH,
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
-    InvokeMessage,
-    ToolName,
 )
+from ..provider_tools import ProviderToolDescriptor
+from ..providers.base import UnknownProviderToolError
 
 
 class LocalActionError(RuntimeError):
@@ -47,6 +44,235 @@ class BrowserStartupError(BrowserUnavailableError):
 
 
 BrowserOriginPolicy = Literal["allowlist", "any"]
+_BROWSER_LOCATOR_STRATEGIES = ("role", "label", "placeholder", "text", "test_id")
+
+
+class _BrowserEmptyArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _BrowserNavigateArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    url: str = Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)
+
+
+class _BrowserLocator(BaseModel):
+    """A closed, provider-owned locator that is resolved afresh per action."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    by: Literal["role", "label", "placeholder", "text", "test_id"]
+    role: str | None = Field(default=None, min_length=1, max_length=MAX_BROWSER_ROLE_LENGTH)
+    name: str | None = Field(default=None, min_length=1, max_length=MAX_BROWSER_NAME_LENGTH)
+    value: str | None = Field(default=None, min_length=1, max_length=MAX_BROWSER_NAME_LENGTH)
+    exact: bool = True
+    index: int | None = Field(default=None, ge=0, lt=MAX_BROWSER_ELEMENTS)
+
+    @model_validator(mode="after")
+    def _strategy_fields(self) -> "_BrowserLocator":
+        if self.by == "role":
+            if self.role is None or self.value is not None:
+                raise ValueError("role locator requires role and forbids value")
+        elif self.value is None or self.role is not None or self.name is not None:
+            raise ValueError("locator strategy requires one value")
+        return self
+
+
+class _BrowserFillArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    locator: _BrowserLocator
+    value: str = Field(min_length=1, max_length=MAX_BROWSER_FILL_VALUE_LENGTH)
+
+
+class _BrowserClickArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    locator: _BrowserLocator
+
+
+class _BrowserScrollArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    direction: Literal["up", "down"]
+
+
+class _BrowserTypeArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    locator: _BrowserLocator
+    text: str = Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)
+
+
+@dataclass(frozen=True)
+class BrowserSnapshot:
+    url: str
+    title: str
+    text: str
+    elements: tuple[dict[str, object], ...]
+
+
+class BrowserSession(Protocol):
+    url: str
+    title: str
+
+    async def snapshot(self) -> BrowserSnapshot: ...
+    async def locate(self, locator: Mapping[str, JsonValue]) -> Any: ...
+    async def navigate(self, url: str) -> None: ...
+    async def fill(self, locator: Any, value: str) -> None: ...
+    async def type(self, locator: Any, text: str) -> None: ...
+    async def click(self, locator: Any) -> None: ...
+    async def state(self, locator: Any) -> tuple[bool, bool, bool, bool, str]: ...
+    async def scroll(self, direction: str) -> None: ...
+    async def back(self) -> bool: ...
+    async def reset(self) -> None: ...
+    async def wait_unavailable(self) -> None: ...
+    async def aclose(self) -> None: ...
+    def ensure(self, *, allow_blank: bool = False) -> None: ...
+
+
+def _empty_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+
+
+def _locator_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "by": {"type": "string", "enum": list(_BROWSER_LOCATOR_STRATEGIES)},
+            "role": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_BROWSER_ROLE_LENGTH,
+            },
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_BROWSER_NAME_LENGTH,
+            },
+            "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_BROWSER_NAME_LENGTH,
+            },
+            "exact": {"type": "boolean"},
+            "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": MAX_BROWSER_ELEMENTS - 1,
+            },
+        },
+        "required": ["by"],
+        "additionalProperties": False,
+    }
+
+
+def _descriptor(
+    tool_name: str,
+    description: str,
+    input_schema: dict[str, object],
+    risk: Literal["read_only", "interaction"],
+) -> ProviderToolDescriptor:
+    return ProviderToolDescriptor(
+        provider_name="browser",
+        tool_name=tool_name,
+        public_name=tool_name,
+        description=description,
+        input_schema=cast(JsonObject, input_schema),
+        risk=risk,
+    )
+
+
+def _locator_argument_schema(field: str) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "locator": _locator_schema(),
+            field: {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": (
+                    min(MAX_BROWSER_FILL_VALUE_LENGTH, MAX_JSON_COLLECTION_ITEMS)
+                    if field == "value"
+                    else min(MAX_BROWSER_TYPE_TEXT_LENGTH, MAX_JSON_COLLECTION_ITEMS)
+                ),
+            },
+        },
+        "required": ["locator", field],
+        "additionalProperties": False,
+    }
+
+
+_BROWSER_DESCRIPTORS = (
+    _descriptor("list_tabs", "list the owned browser pages", _empty_schema(), "read_only"),
+    _descriptor(
+        "navigate",
+        "navigate the owned browser page",
+        {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": min(MAX_BROWSER_URL_LENGTH, MAX_JSON_COLLECTION_ITEMS),
+                }
+            },
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+        "interaction",
+    ),
+    _descriptor("back", "navigate the owned browser history backward", _empty_schema(), "interaction"),
+    _descriptor(
+        "scroll",
+        "scroll the owned browser page",
+        {
+            "type": "object",
+            "properties": {"direction": {"type": "string", "enum": ["up", "down"]}},
+            "required": ["direction"],
+            "additionalProperties": False,
+        },
+        "interaction",
+    ),
+    _descriptor("snapshot", "read bounded provider-native browser content", _empty_schema(), "read_only"),
+    _descriptor(
+        "type",
+        "type into a freshly resolved browser locator",
+        _locator_argument_schema("text"),
+        "interaction",
+    ),
+    _descriptor(
+        "fill",
+        "fill a freshly resolved browser locator",
+        _locator_argument_schema("value"),
+        "interaction",
+    ),
+    _descriptor(
+        "click",
+        "click a freshly resolved browser locator",
+        {
+            "type": "object",
+            "properties": {"locator": _locator_schema()},
+            "required": ["locator"],
+            "additionalProperties": False,
+        },
+        "interaction",
+    ),
+)
+_BROWSER_DESCRIPTOR_BY_NAME = {descriptor.tool_name: descriptor for descriptor in _BROWSER_DESCRIPTORS}
+BROWSER_PROVIDER_DESCRIPTORS = _BROWSER_DESCRIPTORS
+
+
+def _browser_arguments(model: type[BaseModel], arguments: Mapping[str, JsonValue]) -> BaseModel:
+    try:
+        return model.model_validate(arguments)
+    except ValidationError:
+        raise LocalActionError() from None
 
 
 async def _await_shared_cleanup(task: asyncio.Task[None]) -> None:
@@ -62,51 +288,6 @@ async def _await_shared_cleanup(task: asyncio.Task[None]) -> None:
                 break
     if cancellation is not None:
         raise cancellation
-
-
-class BrowserHandle(Protocol): ...
-
-
-@dataclass(frozen=True)
-class BrowserElement:
-    handle: BrowserHandle
-    role: str
-    name: str
-    value: str | None
-
-
-@dataclass(frozen=True)
-class BrowserSnapshot:
-    url: str
-    title: str
-    text: str
-    elements: tuple[BrowserElement, ...]
-
-
-class BrowserSession(Protocol):
-    url: str
-    title: str
-    async def snapshot(self) -> BrowserSnapshot: ...
-    async def navigate(self, url: str) -> None: ...
-    async def fill(self, handle: BrowserHandle, value: str) -> None: ...
-    async def type(self, handle: BrowserHandle, text: str) -> None: ...
-    async def click(self, handle: BrowserHandle) -> None: ...
-    async def scroll(self, direction: str) -> None: ...
-    async def back(self) -> bool: ...
-    async def state(self, handle: BrowserHandle) -> tuple[bool, bool, bool, bool, str]: ...
-    async def dispose(self, handle: BrowserHandle) -> None: ...
-    async def reset(self) -> None: ...
-    async def wait_unavailable(self) -> None: ...
-    async def aclose(self) -> None: ...
-    def ensure(self, *, allow_blank: bool = False) -> None: ...
-
-
-@dataclass
-class _Record:
-    session: BrowserSession
-    handle: BrowserHandle
-    editable: bool
-    clickable: bool
 
 
 def normalize_origin(value: str) -> str:
@@ -135,18 +316,9 @@ def origin_of_url(value: str) -> str:
 
 
 class BrowserCapability:
-    tools: frozenset[ToolName] = frozenset(
-        {
-            "browser.list_tabs",
-            "browser.navigate",
-            "browser.snapshot",
-            "browser.fill",
-            "browser.click",
-            "browser.scroll",
-            "browser.type",
-            "browser.back",
-        }
-    )
+    """Provider-neutral Browser capability with no opaque Relay element handles."""
+
+    tools = frozenset(f"browser.{descriptor.tool_name}" for descriptor in _BROWSER_DESCRIPTORS)
 
     def __init__(
         self,
@@ -174,14 +346,14 @@ class BrowserCapability:
         self._startup_timeout = startup_timeout_seconds
         self._action_timeout = action_timeout_seconds
         self._factory = adapter_factory or _RealSession.create
-        self._session: BrowserSession | None = None
-        self._records: dict[str, _Record] = {}
-        self._tab_id = secrets.token_urlsafe(24)
         self._session_lock = asyncio.Lock()
+        self._session: BrowserSession | None = None
         self._teardown_tasks: dict[int, asyncio.Task[None]] = {}
-        self._teardown_records: dict[int, list[_Record]] = {}
         self._close_task: asyncio.Task[None] | None = None
         self._closed = False
+
+    async def list_tools(self) -> tuple[ProviderToolDescriptor, ...]:
+        return _BROWSER_DESCRIPTORS
 
     async def start(self) -> None:
         async with self._session_lock:
@@ -211,6 +383,7 @@ class BrowserCapability:
             except Exception:
                 raise BrowserStartupError() from None
 
+
     def _ready(self, *, allow_blank: bool = False) -> BrowserSession:
         if self._session is None:
             raise BrowserUnavailableError()
@@ -220,38 +393,66 @@ class BrowserCapability:
             ensure(allow_blank=allow_blank)
         return session
 
-    async def invoke(self, message: InvokeMessage) -> dict[str, object]:
+    async def call_tool(
+        self, tool_name: str, arguments: Mapping[str, JsonValue]
+    ) -> ProviderToolResult:
+        short_name = tool_name.removeprefix("browser.")
+        if short_name not in _BROWSER_DESCRIPTOR_BY_NAME:
+            raise UnknownProviderToolError("unknown provider tool")
+        result = await self._call_tool(short_name, arguments)
+        if isinstance(result, ProviderToolResult):
+            return result
+        return ProviderToolResult.model_validate({"content": [], "structuredContent": result})
+
+    async def invoke(self, message: Any) -> dict[str, object]:
+        """Compatibility seam for CapabilityProviderClient's v2 local envelope."""
+        tool_name = str(message.tool_name).removeprefix("browser.")
+        result = await self._call_tool(tool_name, message.arguments)
+        if isinstance(result, ProviderToolResult):
+            return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return result
+
+    async def _call_tool(
+        self, tool_name: str, arguments: Mapping[str, JsonValue]
+    ) -> dict[str, object] | ProviderToolResult:
         owned_session = self._session
         try:
-            if isinstance(message, BrowserListTabsInvoke):
+            if tool_name == "list_tabs":
+                _browser_arguments(_BrowserEmptyArguments, arguments)
                 session = self._ready(allow_blank=True)
-                result = {"tabs": [self._tab(session, allow_blank=True)]}
-                self._ready(allow_blank=True)
-                return result
-            if isinstance(message, BrowserSnapshotInvoke):
+                return {"tabs": [self._tab(session, allow_blank=True)]}
+            if tool_name == "snapshot":
+                _browser_arguments(_BrowserEmptyArguments, arguments)
                 return await self._snapshot()
-            if isinstance(message, BrowserNavigateInvoke):
-                return await self._navigate(message.url)
-            if isinstance(message, BrowserFillInvoke):
-                return await self._fill(message.element_id, message.value)
-            if isinstance(message, BrowserClickInvoke):
-                return await self._click(message.element_id)
-            if isinstance(message, BrowserScrollInvoke):
-                return await self._scroll(message.direction)
-            if isinstance(message, BrowserTypeInvoke):
-                return await self._type(message.element_id, message.text)
-            if isinstance(message, BrowserBackInvoke):
+            if tool_name == "navigate":
+                parsed = _browser_arguments(_BrowserNavigateArguments, arguments)
+                assert isinstance(parsed, _BrowserNavigateArguments)
+                return await self._navigate(parsed.url)
+            if tool_name == "fill":
+                parsed = _browser_arguments(_BrowserFillArguments, arguments)
+                assert isinstance(parsed, _BrowserFillArguments)
+                return await self._fill(parsed.locator.model_dump(mode="json"), parsed.value)
+            if tool_name == "click":
+                parsed = _browser_arguments(_BrowserClickArguments, arguments)
+                assert isinstance(parsed, _BrowserClickArguments)
+                return await self._click(parsed.locator.model_dump(mode="json"))
+            if tool_name == "scroll":
+                parsed = _browser_arguments(_BrowserScrollArguments, arguments)
+                assert isinstance(parsed, _BrowserScrollArguments)
+                return await self._scroll(parsed.direction)
+            if tool_name == "type":
+                parsed = _browser_arguments(_BrowserTypeArguments, arguments)
+                assert isinstance(parsed, _BrowserTypeArguments)
+                return await self._type(parsed.locator.model_dump(mode="json"), parsed.text)
+            if tool_name == "back":
+                _browser_arguments(_BrowserEmptyArguments, arguments)
                 return await self._back()
-            raise LocalActionError()
+            raise UnknownProviderToolError("unknown provider tool")
         except asyncio.CancelledError:
-            records, self._records = self._records, {}
-            reset = owned_session is not None and self._session is owned_session
-            cleanup = asyncio.create_task(
-                self._cancel_invocation(list(records.values()), owned_session if reset else None)
-            )
+            cleanup = asyncio.create_task(self._cancel_invocation(owned_session))
             await _await_shared_cleanup(cleanup)
             raise
-        except LocalActionError:
+        except (LocalActionError, UnknownProviderToolError):
             raise
         except Exception:
             raise LocalActionError() from None
@@ -259,7 +460,10 @@ class BrowserCapability:
     def _tab(self, session: BrowserSession, *, allow_blank: bool = False) -> dict[str, object]:
         if not (allow_blank and session.url == "about:blank"):
             self._check_origin(session.url)
-        return {"tab_id": self._tab_id, "title": session.title[:MAX_BROWSER_TITLE_LENGTH], "url": session.url[:MAX_BROWSER_URL_LENGTH]}
+        return {
+            "title": session.title[:MAX_BROWSER_TITLE_LENGTH],
+            "url": session.url[:MAX_BROWSER_URL_LENGTH],
+        }
 
     def _check_origin(self, url: str) -> None:
         try:
@@ -273,142 +477,111 @@ class BrowserCapability:
     async def _snapshot(self) -> dict[str, object]:
         session = self._ready()
         self._check_origin(session.url)
-        await self._invalidate()
         snap = await asyncio.wait_for(session.snapshot(), self._action_timeout)
         self._check_origin(snap.url)
         elements: list[dict[str, object]] = []
-        selected = snap.elements[:MAX_BROWSER_ELEMENTS]
-        await asyncio.gather(
-            *(session.dispose(item.handle) for item in snap.elements[MAX_BROWSER_ELEMENTS:]),
-            return_exceptions=True,
-        )
-        for item in selected:
+        for raw in snap.elements[:MAX_BROWSER_ELEMENTS]:
+            if "element_id" in raw or "handle" in raw:
+                raise LocalActionError()
+            locator = raw.get("locator")
+            if not isinstance(locator, Mapping):
+                raise LocalActionError()
             try:
-                visible, enabled, editable, _, input_type = await session.state(item.handle)
-            except Exception:
-                await self._dispose(session, item.handle)
-                continue
-            if not visible:
-                await self._dispose(session, item.handle)
-                continue
-            element_id = secrets.token_urlsafe(24)[:MAX_BROWSER_ELEMENT_ID_LENGTH]
-            semantic_clickable = item.role in {"button", "link", "checkbox", "radio"}
-            self._records[element_id] = _Record(session, item.handle, editable and input_type not in {"password", "file"}, semantic_clickable)
-            elements.append({"element_id": element_id, "role": item.role[:MAX_BROWSER_ROLE_LENGTH] or "unknown", "name": item.name[:MAX_BROWSER_NAME_LENGTH], "value": None if item.value is None else item.value[:MAX_BROWSER_ELEMENT_VALUE_LENGTH], "editable": editable and input_type not in {"password", "file"}, "enabled": enabled})
-        result = {"tab_id": self._tab_id, "title": snap.title[:MAX_BROWSER_TITLE_LENGTH], "url": snap.url[:MAX_BROWSER_URL_LENGTH], "text": snap.text[:MAX_BROWSER_PAGE_TEXT_LENGTH], "elements": elements}
-        self._ready()
-        return result
+                checked = _BrowserLocator.model_validate(locator)
+            except ValidationError:
+                raise LocalActionError() from None
+            item = dict(raw)
+            if item.get("input_type") in {"password", "file"}:
+                item["value"] = None
+            item.pop("input_type", None)
+            item["locator"] = checked.model_dump(mode="json", exclude_none=True)
+            elements.append(item)
+        return {
+            "title": snap.title[:MAX_BROWSER_TITLE_LENGTH],
+            "url": snap.url[:MAX_BROWSER_URL_LENGTH],
+            "text": snap.text[:MAX_BROWSER_PAGE_TEXT_LENGTH],
+            "elements": elements,
+        }
 
     async def _navigate(self, url: str) -> dict[str, object]:
         self._check_origin(url)
-        await self._invalidate()
         session = self._ready(allow_blank=True)
         await asyncio.wait_for(session.navigate(url), self._action_timeout)
         self._ready()
         self._check_origin(session.url)
-        return self._action(None)
+        return self._action()
 
-    async def _fill(self, element_id: str, value: str) -> dict[str, object]:
-        record = self._records.get(element_id)
-        if record is None or not record.editable:
-            raise LocalActionError()
+    async def _resolve(self, locator: Mapping[str, JsonValue]) -> tuple[BrowserSession, object]:
         session = self._ready()
-        visible, enabled, editable, _, input_type = await session.state(record.handle)
-        if not (visible and enabled and editable) or input_type in {"password", "file"}:
+        handle = await asyncio.wait_for(session.locate(locator), self._action_timeout)
+        visible, enabled, _, _, _ = await asyncio.wait_for(
+            session.state(handle), self._action_timeout
+        )
+        if not (visible and enabled):
             raise LocalActionError()
-        await asyncio.wait_for(session.fill(record.handle, value), self._action_timeout)
+        return session, handle
+
+    async def _fill(self, locator: Mapping[str, JsonValue], value: str) -> dict[str, object]:
+        session, handle = await self._resolve(locator)
+        _, _, editable, _, input_type = await session.state(handle)
+        if not editable or input_type in {"password", "file"}:
+            raise LocalActionError()
+        await asyncio.wait_for(session.fill(handle, value), self._action_timeout)
         self._ready()
         self._check_origin(session.url)
-        return self._action(element_id)
+        return self._action()
 
-    async def _type(self, element_id: str, text: str) -> dict[str, object]:
-        record = self._records.get(element_id)
-        if record is None or not record.editable:
+    async def _type(self, locator: Mapping[str, JsonValue], text: str) -> dict[str, object]:
+        session, handle = await self._resolve(locator)
+        _, _, editable, _, input_type = await session.state(handle)
+        if not editable or input_type in {"password", "file"}:
             raise LocalActionError()
-        session = self._ready()
-        visible, enabled, editable, _, input_type = await session.state(record.handle)
-        if not (visible and enabled and editable) or input_type in {"password", "file"}:
-            raise LocalActionError()
-        await asyncio.wait_for(session.type(record.handle, text), self._action_timeout)
+        await asyncio.wait_for(session.type(handle, text), self._action_timeout)
         self._ready()
         self._check_origin(session.url)
-        return self._action(element_id)
+        return self._action()
+
+    async def _click(self, locator: Mapping[str, JsonValue]) -> dict[str, object]:
+        session, handle = await self._resolve(locator)
+        _, _, _, clickable, _ = await session.state(handle)
+        if not clickable:
+            raise LocalActionError()
+        await asyncio.wait_for(session.click(handle), self._action_timeout)
+        self._ready()
+        self._check_origin(session.url)
+        return self._action()
 
     async def _scroll(self, direction: str) -> dict[str, object]:
-        if direction not in {"up", "down"}:
-            raise LocalActionError()
-        await self._invalidate()
         session = self._ready()
         await asyncio.wait_for(session.scroll(direction), self._action_timeout)
         self._ready()
         self._check_origin(session.url)
-        return self._action(None)
+        return self._action()
 
     async def _back(self) -> dict[str, object]:
-        await self._invalidate()
         session = self._ready()
         moved = await asyncio.wait_for(session.back(), self._action_timeout)
         if not moved:
             raise LocalActionError()
         self._ready()
         self._check_origin(session.url)
-        return self._action(None)
+        return self._action()
 
-    async def _click(self, element_id: str) -> dict[str, object]:
-        record = self._records.pop(element_id, None)
-        if record is None:
-            raise LocalActionError()
-        try:
-            if not record.clickable:
-                raise LocalActionError()
-            session = self._ready()
-            if session is not record.session:
-                raise BrowserUnavailableError()
-            visible, enabled, _, clickable, _ = await session.state(record.handle)
-            if not (visible and enabled and clickable):
-                raise LocalActionError()
-            await asyncio.wait_for(session.click(record.handle), self._action_timeout)
-            self._ready()
-            self._check_origin(session.url)
-            await self._invalidate()
-            return self._action(element_id)
-        finally:
-            await self._dispose_shielded(record.session, record.handle)
-
-    def _action(self, element_id: str | None) -> dict[str, object]:
+    def _action(self) -> dict[str, object]:
         session = self._ready()
-        return self._tab(session) | {"element_id": element_id, "success": True}
+        return {
+            "success": True,
+            "title": session.title[:MAX_BROWSER_TITLE_LENGTH],
+            "url": session.url[:MAX_BROWSER_URL_LENGTH],
+        }
 
-    async def _invalidate(self) -> None:
-        records, self._records = self._records, {}
-        cleanup = asyncio.create_task(self._dispose_records(list(records.values())))
-        await _await_shared_cleanup(cleanup)
-
-    async def _dispose_records(self, records: list[_Record]) -> None:
-        await asyncio.gather(
-            *(self._dispose(record.session, record.handle) for record in records),
-            return_exceptions=True,
-        )
-
-    async def _cancel_invocation(
-        self, records: list[_Record], session: BrowserSession | None
-    ) -> None:
-        await self._dispose_records(records)
-        if session is not None:
-            try:
-                await asyncio.wait_for(session.reset(), self._action_timeout)
-            except Exception:
-                pass
-
-    async def _dispose(self, session: BrowserSession, handle: BrowserHandle) -> None:
+    async def _cancel_invocation(self, session: BrowserSession | None) -> None:
+        if session is None:
+            return
         try:
-            await asyncio.wait_for(session.dispose(handle), self._action_timeout)
+            await asyncio.wait_for(session.reset(), self._action_timeout)
         except Exception:
             pass
-
-    async def _dispose_shielded(self, session: BrowserSession, handle: BrowserHandle) -> None:
-        cleanup = asyncio.create_task(self._dispose(session, handle))
-        await _await_shared_cleanup(cleanup)
 
     async def wait_unavailable(self) -> None:
         session = self._session
@@ -418,12 +591,10 @@ class BrowserCapability:
         async with self._session_lock:
             if self._session is session:
                 self._session = None
-                records, self._records = self._records, {}
-                self._schedule_teardown(session, list(records.values()))
+                self._schedule_teardown(session)
 
-    def _schedule_teardown(self, session: BrowserSession, records: list[_Record]) -> None:
+    def _schedule_teardown(self, session: BrowserSession) -> None:
         key = id(session)
-        self._teardown_records.setdefault(key, []).extend(records)
         if key in self._teardown_tasks:
             return
         task = asyncio.create_task(self._close_session(session, key))
@@ -432,7 +603,6 @@ class BrowserCapability:
         def completed(done: asyncio.Task[None]) -> None:
             if self._teardown_tasks.get(key) is done:
                 self._teardown_tasks.pop(key, None)
-                self._teardown_records.pop(key, None)
             if not done.cancelled():
                 done.exception()
 
@@ -440,27 +610,13 @@ class BrowserCapability:
 
     async def _drain_teardowns(self) -> None:
         while self._teardown_tasks:
-            active = tuple(self._teardown_tasks.items())
-            await asyncio.gather(*(asyncio.shield(task) for _, task in active))
-            for key, task in active:
-                if self._teardown_tasks.get(key) is task and task.done():
-                    self._teardown_tasks.pop(key, None)
-                    self._teardown_records.pop(key, None)
+            active = tuple(self._teardown_tasks.values())
+            await asyncio.gather(*(asyncio.shield(task) for task in active))
 
-    async def _close_session(self, session: BrowserSession, key: int) -> None:
-        while records := self._teardown_records.get(key):
-            batch, records[:] = records[:], []
-            await asyncio.gather(
-                *(self._dispose(record.session, record.handle) for record in batch),
-                return_exceptions=True,
-            )
-        close = asyncio.create_task(session.aclose())
+    async def _close_session(self, session: BrowserSession, _key: int) -> None:
         try:
-            await asyncio.wait_for(
-                asyncio.gather(close, return_exceptions=True),
-                max(self._startup_timeout, self._action_timeout * 6),
-            )
-        except TimeoutError:
+            await asyncio.wait_for(session.aclose(), max(self._startup_timeout, self._action_timeout * 6))
+        except Exception:
             pass
 
     async def aclose(self) -> None:
@@ -469,15 +625,15 @@ class BrowserCapability:
             self._close_task = asyncio.create_task(self._aclose_owned())
         await _await_shared_cleanup(self._close_task)
 
+    async def close(self) -> None:
+        await self.aclose()
+
     async def _aclose_owned(self) -> None:
         async with self._session_lock:
             self._closed = True
-            records, self._records = self._records, {}
             session, self._session = self._session, None
         if session:
-            self._schedule_teardown(session, list(records.values()))
-        else:
-            await self._dispose_records(list(records.values()))
+            self._schedule_teardown(session)
         await self._drain_teardowns()
 
 
@@ -493,7 +649,7 @@ class _RealSession:
         startup: float,
         action: float,
         origin_policy: BrowserOriginPolicy = "allowlist",
-    ) -> _RealSession:
+    ) -> "_RealSession":
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
@@ -566,8 +722,10 @@ class _RealSession:
                     await route.abort()
                 except Exception:
                     pass
+
         await self.context.route("**/*", route_handler)
         if hasattr(self.context, "route_web_socket"):
+
             async def close_websocket(ws: object) -> None:
                 try:
                     await ws.close()
@@ -591,10 +749,12 @@ class _RealSession:
     def _spawn(self, awaitable: Awaitable[object]) -> None:
         task = asyncio.create_task(awaitable)
         self.tasks.add(task)
+
         def completed(done: asyncio.Task[object]) -> None:
             self.tasks.discard(done)
             if not done.cancelled():
                 done.exception()
+
         task.add_done_callback(completed)
 
     def _bind_page(self, page: object) -> None:
@@ -675,8 +835,15 @@ class _RealSession:
             "(node, limit) => (node.innerText || '').slice(0, limit)",
             MAX_BROWSER_PAGE_TEXT_LENGTH,
         )
-        result: list[BrowserElement] = []
-        for role, editable, clickable in (("textbox", True, False), ("button", False, True), ("link", False, True), ("checkbox", False, True), ("radio", False, True), ("combobox", True, False)):
+        result: list[dict[str, object]] = []
+        for role, editable, clickable in (
+            ("textbox", True, False),
+            ("button", False, True),
+            ("link", False, True),
+            ("checkbox", False, True),
+            ("radio", False, True),
+            ("combobox", True, False),
+        ):
             locator = page.get_by_role(role)
             try:
                 count = await locator.count()
@@ -694,63 +861,118 @@ class _RealSession:
                     continue
             for index in range(min(count, MAX_BROWSER_ELEMENTS - len(result))):
                 item = locator.nth(index)
-                handle = None
                 try:
                     if not await item.is_visible():
                         continue
-                    handle = await item.element_handle()
-                    if handle:
-                        try:
-                            aria = await item.aria_snapshot(
-                                timeout=self.action * 1000, depth=0
-                            )
-                            name = _parse_root_aria_name(aria, role)
-                        except Exception:
-                            if role != "button":
-                                raise
-                            name = await item.evaluate(
-                                """(node, limit) => {
-                                    const labelled = node.getAttribute('aria-label');
-                                    const source = labelled === null
-                                        ? (node.textContent || '')
-                                        : labelled;
-                                    return source.trim().slice(0, limit);
-                                }""",
-                                MAX_BROWSER_NAME_LENGTH,
-                            )
-                            if type(name) is not str or not name:
-                                raise LocalActionError()
-                        name = name[:MAX_BROWSER_NAME_LENGTH]
-                        value = None
-                        if editable:
-                            value = await item.evaluate(
-                                "(node, limit) => ('value' in node) ? String(node.value).slice(0, limit) : null",
-                                MAX_BROWSER_ELEMENT_VALUE_LENGTH,
-                            )
-                        result.append(BrowserElement(handle, role, name, value))
+                    try:
+                        aria = await item.aria_snapshot(timeout=self.action * 1000, depth=0)
+                        name = _parse_root_aria_name(aria, role)
+                    except Exception:
+                        if role != "button":
+                            raise
+                        name = await item.evaluate(
+                            """(node, limit) => {
+                                const labelled = node.getAttribute('aria-label');
+                                const source = labelled === null
+                                    ? (node.textContent || '')
+                                    : labelled;
+                                return source.trim().slice(0, limit);
+                            }""",
+                            MAX_BROWSER_NAME_LENGTH,
+                        )
+                        if type(name) is not str or not name:
+                            raise LocalActionError()
+                    name = name[:MAX_BROWSER_NAME_LENGTH]
+                    input_type = (await item.get_attribute("type") or "").lower()
+                    value = None
+                    if editable and input_type not in {"password", "file"}:
+                        value = await item.evaluate(
+                            "(node, limit) => ('value' in node) ? String(node.value).slice(0, limit) : null",
+                            MAX_BROWSER_ELEMENT_VALUE_LENGTH,
+                        )
+                    result.append(
+                        {
+                            "locator": {
+                                "by": "role",
+                                "role": role,
+                                "name": name or None,
+                                "exact": True,
+                                "index": index,
+                            },
+                            "role": role[:MAX_BROWSER_ROLE_LENGTH] or "unknown",
+                            "name": name,
+                            "value": None if value is None else value[:MAX_BROWSER_ELEMENT_VALUE_LENGTH],
+                            "input_type": input_type,
+                            "editable": editable,
+                            "enabled": await item.is_enabled(),
+                            "clickable": clickable,
+                        }
+                    )
                 except Exception:
-                    if handle is not None:
-                        try:
-                            await handle.dispose()
-                        except Exception:
-                            pass
+                    continue
         return BrowserSnapshot(self.url, self.title, text, tuple(result))
+
+    async def locate(self, locator: Mapping[str, JsonValue]) -> Any:
+        self._ensure()
+        checked = _BrowserLocator.model_validate(locator)
+        page = self.page
+        if page is None:
+            raise BrowserUnavailableError()
+        if checked.by == "role":
+            target = page.get_by_role(
+                checked.role,
+                name=checked.name,
+                exact=checked.exact,
+            )
+        elif checked.by == "label":
+            target = page.get_by_label(checked.value, exact=checked.exact)
+        elif checked.by == "placeholder":
+            target = page.get_by_placeholder(checked.value, exact=checked.exact)
+        elif checked.by == "text":
+            target = page.get_by_text(checked.value, exact=checked.exact)
+        else:
+            target = page.get_by_test_id(checked.value)
+        count = await target.count()
+        if checked.index is None:
+            if count != 1:
+                raise LocalActionError()
+            return target
+        if checked.index >= count:
+            raise LocalActionError()
+        return target.nth(checked.index)
 
     async def navigate(self, url: str) -> None:
         await self.page.goto(url, timeout=self.action * 1000)
         await self._refresh()
 
-    async def fill(self, handle: object, value: str) -> None:
-        await handle.fill(value, timeout=self.action * 1000)
+    async def fill(self, locator: object, value: str) -> None:
+        await locator.fill(value, timeout=self.action * 1000)
         await self._refresh()
 
-    async def type(self, handle: object, text: str) -> None:
-        await handle.type(text, timeout=self.action * 1000)
+    async def type(self, locator: object, text: str) -> None:
+        await locator.type(text, timeout=self.action * 1000)
         await self._refresh()
 
-    async def click(self, handle: object) -> None:
-        await handle.click(timeout=self.action * 1000)
+    async def click(self, locator: object) -> None:
+        await locator.click(timeout=self.action * 1000)
         await self._refresh()
+
+    async def state(self, locator: object) -> tuple[bool, bool, bool, bool, str]:
+        if not await locator.evaluate("node => node.isConnected"):
+            return False, False, False, False, ""
+        visible, enabled = await locator.is_visible(), await locator.is_enabled()
+        tag = await locator.get_attribute("type") or ""
+        role = await locator.get_attribute("role") or ""
+        node = await locator.evaluate("node => node.tagName.toLowerCase()")
+        clickable = (
+            role in {"button", "link", "checkbox", "radio"}
+            or node in {"button", "a"}
+            or tag.lower() in {"button", "submit", "checkbox", "radio"}
+        )
+        if not clickable:
+            clickable = await locator.get_attribute("href") is not None
+        editable = False if clickable else await locator.is_editable()
+        return visible, enabled, editable, clickable, tag.lower()
 
     async def scroll(self, direction: str) -> None:
         await self.page.evaluate(
@@ -764,26 +986,6 @@ class _RealSession:
         await self._refresh()
         return response is not None
 
-    async def state(self, handle: Any) -> tuple[bool, bool, bool, bool, str]:
-        if not await handle.evaluate("node => node.isConnected"):
-            return False, False, False, False, ""
-        visible, enabled = await handle.is_visible(), await handle.is_enabled()
-        tag = await handle.get_attribute("type") or ""
-        role = await handle.get_attribute("role") or ""
-        node = await handle.evaluate("node => node.tagName.toLowerCase()")
-        clickable = (
-            role in {"button", "link", "checkbox", "radio"}
-            or node in {"button", "a"}
-            or tag.lower() in {"button", "submit", "checkbox", "radio"}
-        )
-        if not clickable:
-            clickable = await handle.get_attribute("href") is not None
-        editable = False if clickable else await handle.is_editable()
-        return visible, enabled, editable, clickable, tag.lower()
-
-    async def dispose(self, handle: object) -> None:
-        await handle.dispose()
-
     async def reset(self) -> None:
         self.suppress_close = True
         try:
@@ -795,7 +997,8 @@ class _RealSession:
         self._bind_page(self.page)
         self.url, self.title = self.page.url, ""
 
-    async def wait_unavailable(self) -> None: await self.unavailable.wait()
+    async def wait_unavailable(self) -> None:
+        await self.unavailable.wait()
 
     async def aclose(self) -> None:
         if self._close_task is None:

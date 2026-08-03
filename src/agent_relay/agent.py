@@ -13,10 +13,10 @@ import signal
 import stat
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, AsyncContextManager, Callable, Literal, Protocol
+from typing import Any, AsyncContextManager, Callable, Literal, Protocol, cast
 from urllib.parse import urlparse
 
 import websockets
@@ -32,6 +32,7 @@ from pydantic import (
 
 from .capabilities.base import (
     CapabilityName,
+    CapabilityProviderClient,
     CommandFailedError,
     LocalCapability,
 )
@@ -40,32 +41,24 @@ from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
 from .catalog import CatalogError, CatalogSnapshot
 from .config import PUBLIC_TO_INTERNAL, load_agent_settings
-from .output_models import ProviderToolResult
 from .protocol import (
     MAX_RESULT_JSON_BYTES,
     TOOL_ORDER,
     AgentError,
     AgentResult,
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
     Cancel,
     Capabilities,
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
     Heartbeat,
     InvokeMessage,
     Registered,
-    SystemPingInvoke,
-    TerminalExecInvoke,
     ToolName,
     parse_server_message,
+)
+from .provider_tools import ProviderToolDescriptor
+from .providers.base import (
+    ProviderToolClient,
+    bounded_result,
+    validate_provider_arguments,
 )
 from .runner import CommandRunner
 
@@ -77,37 +70,8 @@ class ConfigurationError(ValueError):
         super().__init__("invalid agent configuration")
 
 
-_LEGACY_INVOKE_BY_TOOL = {
-    "system.ping": SystemPingInvoke,
-    "terminal.exec": TerminalExecInvoke,
-    "browser.list_tabs": BrowserListTabsInvoke,
-    "browser.navigate": BrowserNavigateInvoke,
-    "browser.snapshot": BrowserSnapshotInvoke,
-    "browser.fill": BrowserFillInvoke,
-    "browser.click": BrowserClickInvoke,
-    "browser.scroll": BrowserScrollInvoke,
-    "browser.type": BrowserTypeInvoke,
-    "browser.back": BrowserBackInvoke,
-    "computer.capture": ComputerCaptureInvoke,
-    "computer.click": ComputerClickInvoke,
-    "computer.type": ComputerTypeInvoke,
-}
-
-
-def _adapt_legacy_invoke(message: InvokeMessage) -> object:
-    """Validate a v2 generic invoke for one currently typed local capability."""
-    model = _LEGACY_INVOKE_BY_TOOL.get(message.tool_name)
-    if model is None:
-        raise ValueError("unsupported local capability")
-    return model.model_validate(
-        {
-            "version": 1,
-            "type": "invoke",
-            "request_id": message.request_id,
-            "tool": message.tool_name,
-            **message.arguments,
-        }
-    )
+class ProviderUnavailableError(ConnectionError):
+    """A selected provider became unavailable during an Agent session."""
 
 
 class AgentSettings(BaseModel):
@@ -584,6 +548,7 @@ class RelayAgent:
         connector: Callable[..., AsyncContextManager[TextSocket]] | None = None,
         monotonic: Callable[[], float] | None = None,
         catalog: CatalogSnapshot | None = None,
+        provider_clients: Mapping[str, ProviderToolClient] | None = None,
     ) -> None:
         self.settings = settings
         configured_runner = runner or CommandRunner(settings.workspace, timeout_seconds=settings.command_timeout_seconds, stdout_limit=settings.stdout_limit, stderr_limit=settings.stderr_limit)
@@ -624,6 +589,7 @@ class RelayAgent:
             )
         allowed_tools: set[str] | None = None
         selected_catalog: CatalogSnapshot | None = None
+        selected_provider_names: set[str] = set()
         if catalog is not None:
             try:
                 selected_names = settings.tools_allowlist or ()
@@ -635,10 +601,19 @@ class RelayAgent:
                 f"{descriptor.provider_name}.{descriptor.tool_name}"
                 for descriptor in selected_catalog.selected_descriptors
             }
+            selected_provider_names = {
+                descriptor.provider_name
+                for descriptor in selected_catalog.selected_descriptors
+            }
             configured_capabilities = [
                 capability
                 for capability in configured_capabilities
-                if any(tool in allowed_tools for tool in capability.tools)
+                if (
+                    getattr(capability, "provider_name", None)
+                    in selected_provider_names
+                    if getattr(capability, "requires_catalog", False)
+                    else any(tool in allowed_tools for tool in capability.tools)
+                )
             ]
         elif settings.tools_allowlist is not None:
             allowed_tools = {
@@ -649,12 +624,58 @@ class RelayAgent:
                 for capability in configured_capabilities
                 if any(tool in allowed_tools for tool in capability.tools)
             ]
+        configured_capabilities = [
+            capability
+            for capability in configured_capabilities
+            if not (
+                getattr(capability, "requires_catalog", False)
+                and selected_catalog is None
+            )
+        ]
         self._catalog = selected_catalog
-        self._capabilities = self._index_capabilities(
+        effective_provider_clients = dict(provider_clients or {})
+        if selected_catalog is not None:
+            for capability in configured_capabilities:
+                provider_name = getattr(capability, "provider_name", None)
+                if (
+                    provider_name in selected_provider_names
+                    and provider_name not in effective_provider_clients
+                ):
+                    effective_provider_clients[provider_name] = cast(
+                        ProviderToolClient, capability
+                    )
+        self._static_capabilities = self._index_capabilities(
             configured_capabilities, allowed_tools=allowed_tools
         )
+        self._capabilities = dict(self._static_capabilities)
         self._unique_capabilities = tuple(dict.fromkeys(map(id, configured_capabilities)))
         self._capability_objects = {id(item): item for item in configured_capabilities}
+        self._provider_routes = self._build_provider_routes(
+            selected_catalog,
+            self._capabilities,
+            effective_provider_clients,
+        )
+        self._provider_close_objects = {
+            id(client): client for client in effective_provider_clients.values()
+        }
+        self._announcement_descriptors = (
+            tuple(
+                descriptor
+                for descriptor in selected_catalog.selected_descriptors
+                if f"{descriptor.provider_name}.{descriptor.tool_name}"
+                in self._provider_routes
+            )
+            if selected_catalog is not None
+            else ()
+        )
+        self._announcement_tools = (
+            tuple(
+                f"{descriptor.provider_name}.{descriptor.tool_name}"
+                for descriptor in self._announcement_descriptors
+            )
+            if selected_catalog is not None
+            else self._ordered_announcement_tools()
+        )
         self._close_task: asyncio.Task[None] | None = None
         self._closed = False
         self._stop_event = asyncio.Event()
@@ -709,6 +730,8 @@ class RelayAgent:
                     raise
                 except asyncio.CancelledError:
                     raise
+                except ProviderUnavailableError:
+                    self.stop()
                 except Exception as error:
                     if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
                         phase = getattr(error, "startup_phase", None)
@@ -744,16 +767,100 @@ class RelayAgent:
             for tool in capability.tools:
                 if allowed_tools is not None and tool not in allowed_tools:
                     continue
-                if tool not in TOOL_ORDER:
+                if tool not in TOOL_ORDER and not (
+                    tool.startswith("cua.") and len(tool) > len("cua.")
+                ):
                     raise ValueError("unsupported local capability")
                 if tool in indexed:
                     raise ValueError(f"duplicate local capability: {tool}")
                 indexed[tool] = capability
         return indexed
 
+    @staticmethod
+    def _build_provider_routes(
+        catalog: CatalogSnapshot | None,
+        capabilities: Mapping[str, LocalCapability],
+        provider_clients: Mapping[str, ProviderToolClient],
+    ) -> dict[str, tuple[ProviderToolClient, ProviderToolDescriptor | None]]:
+        routes: dict[str, tuple[ProviderToolClient, ProviderToolDescriptor | None]] = {}
+        if catalog is None:
+            if provider_clients:
+                raise ConfigurationError() from None
+            wrappers: dict[int, CapabilityProviderClient] = {}
+            for wire_name, capability in capabilities.items():
+                wrapper = wrappers.setdefault(
+                    id(capability), CapabilityProviderClient(capability)
+                )
+                routes[wire_name] = (wrapper, None)
+            return routes
+
+        wrapper_descriptors: dict[int, list[ProviderToolDescriptor]] = {}
+        wrapper_capabilities: dict[int, LocalCapability] = {}
+        for descriptor in catalog.selected_descriptors:
+            wire_name = f"{descriptor.provider_name}.{descriptor.tool_name}"
+            if descriptor.provider_name in provider_clients:
+                continue
+            capability = capabilities.get(wire_name)
+            if capability is None:
+                continue
+            capability_id = id(capability)
+            wrapper_capabilities[capability_id] = capability
+            wrapper_descriptors.setdefault(capability_id, []).append(descriptor)
+        wrappers = {
+            capability_id: CapabilityProviderClient(
+                capability, wrapper_descriptors[capability_id]
+            )
+            for capability_id, capability in wrapper_capabilities.items()
+        }
+        for descriptor in catalog.selected_descriptors:
+            wire_name = f"{descriptor.provider_name}.{descriptor.tool_name}"
+            provider = provider_clients.get(descriptor.provider_name)
+            if provider is not None:
+                routes[wire_name] = (provider, descriptor)
+            elif wire_name in capabilities:
+                capability = capabilities[wire_name]
+                routes[wire_name] = (wrappers[id(capability)], descriptor)
+        return routes
+
     async def _start_capabilities(self) -> None:
         for ident in self._unique_capabilities:
             await self._capability_objects[ident].start()
+        if self._catalog is None:
+            active = dict(self._static_capabilities)
+            for ident in self._unique_capabilities:
+                capability = self._capability_objects[ident]
+                list_tools = getattr(capability, "list_tools", None)
+                if not callable(list_tools):
+                    continue
+                if getattr(capability, "provider_inventory_ready", True) is False:
+                    continue
+                descriptors = await cast(
+                    Callable[[], Coroutine[Any, Any, Sequence[ProviderToolDescriptor]]],
+                    list_tools,
+                )()
+                available = {
+                    f"{descriptor.provider_name}.{descriptor.tool_name}"
+                    for descriptor in descriptors
+                }
+                active = {
+                    wire_name: owner
+                    for wire_name, owner in active.items()
+                    if owner is not capability or wire_name in available
+                }
+            self._capabilities = active
+            self._provider_routes = self._build_provider_routes(
+                self._catalog,
+                self._capabilities,
+                {},
+            )
+            self._announcement_tools = self._ordered_announcement_tools()
+
+    def _ordered_announcement_tools(self) -> tuple[str, ...]:
+        ordered = [tool for tool in TOOL_ORDER if tool in self._capabilities]
+        ordered.extend(
+            tool for tool in self._capabilities if tool not in TOOL_ORDER
+        )
+        return tuple(ordered)
 
     async def aclose(self) -> None:
         """Close every configured capability exactly once."""
@@ -776,6 +883,8 @@ class RelayAgent:
         for ident in self._unique_capabilities:
             capability = self._capability_objects[ident]
             await asyncio.gather(capability.aclose(), return_exceptions=True)
+        for client in self._provider_close_objects.values():
+            await asyncio.gather(client.close(), return_exceptions=True)
 
     def _session_was_stable(self) -> bool:
         """Only reset after a registered connection outlives the local threshold."""
@@ -809,18 +918,30 @@ class RelayAgent:
             Capabilities(
                 version=1,
                 type="capabilities",
-                tools=[tool for tool in TOOL_ORDER if tool in self._capabilities],
-            ).model_dump(mode="json"),
+                tools=list(self._announcement_tools),
+                descriptors=(
+                    list(self._announcement_descriptors)
+                    if self._catalog is not None
+                    else []
+                ),
+            ).model_dump(mode="json", exclude_defaults=True),
         )
         heartbeat = asyncio.create_task(self._heartbeat(socket))
         action: asyncio.Task[None] | None = None
         action_request_id: str | None = None
+        cancelled_requests: set[str] = set()
         receive: asyncio.Task[object] | None = asyncio.create_task(self._receive(socket))
         stopping = asyncio.create_task(self._stop_event.wait())
         unavailable = {asyncio.create_task(self._capability_objects[ident].wait_unavailable()) for ident in self._unique_capabilities}
+        provider_unavailable: set[asyncio.Task[object]] = set()
+        for provider in self._provider_close_objects.values():
+            waiter = getattr(provider, "wait_unavailable", None)
+            if callable(waiter):
+                wait_unavailable = cast(Callable[[], Coroutine[Any, Any, None]], waiter)
+                provider_unavailable.add(asyncio.create_task(wait_unavailable()))
         try:
             while not self._stop_event.is_set():
-                wait_for = {receive, stopping, *unavailable}
+                wait_for = {receive, stopping, *unavailable, *provider_unavailable}
                 if action is not None:
                     wait_for.add(action)
                 done, _ = await asyncio.wait(wait_for, return_when=asyncio.FIRST_COMPLETED)
@@ -828,10 +949,22 @@ class RelayAgent:
                     break
                 if done & unavailable:
                     if action is not None:
+                        if action_request_id is not None:
+                            cancelled_requests.add(action_request_id)
                         action.cancel()
                         await asyncio.gather(action, return_exceptions=True)
                         action = None
+                        action_request_id = None
                     raise ConnectionError("local capability unavailable")
+                if done & provider_unavailable:
+                    if action is not None:
+                        if action_request_id is not None:
+                            cancelled_requests.add(action_request_id)
+                        action.cancel()
+                        await asyncio.gather(action, return_exceptions=True)
+                        action = None
+                        action_request_id = None
+                    raise ProviderUnavailableError("provider unavailable")
                 if action is not None and action in done:
                     await action
                     action = None
@@ -843,12 +976,16 @@ class RelayAgent:
                         if action is not None:
                             await self._send_error(socket, message.request_id, "busy", "an action is already running")
                         else:
-                            action = asyncio.create_task(self._perform(socket, message))
+                            action = asyncio.create_task(
+                                self._perform(socket, message, cancelled_requests)
+                            )
                             action_request_id = message.request_id
                     elif isinstance(message, Cancel):
                         if action is not None and action_request_id == message.request_id:
+                            cancelled_requests.add(message.request_id)
                             action.cancel()
                             await asyncio.gather(action, return_exceptions=True)
+                            cancelled_requests.discard(message.request_id)
                             action = None
                             action_request_id = None
                     else:
@@ -860,9 +997,20 @@ class RelayAgent:
             stopping.cancel()
             for task in unavailable:
                 task.cancel()
+            for task in provider_unavailable:
+                task.cancel()
             if action is not None:
+                if action_request_id is not None:
+                    cancelled_requests.add(action_request_id)
                 action.cancel()
-            await asyncio.gather(heartbeat, stopping, *unavailable, *(item for item in (receive, action) if item is not None), return_exceptions=True)
+            await asyncio.gather(
+                heartbeat,
+                stopping,
+                *unavailable,
+                *provider_unavailable,
+                *(item for item in (receive, action) if item is not None),
+                return_exceptions=True,
+            )
 
     async def _heartbeat(self, socket: TextSocket) -> None:
         while not self._stop_event.is_set():
@@ -870,16 +1018,34 @@ class RelayAgent:
             if not self._stop_event.is_set():
                 await self._send(socket, Heartbeat(version=2, type="heartbeat").model_dump(mode="json"))
 
-    async def _perform(self, socket: TextSocket, message: InvokeMessage) -> None:
+    async def _perform(
+        self,
+        socket: TextSocket,
+        message: InvokeMessage,
+        cancelled_requests: set[str],
+    ) -> None:
         try:
-            capability = self._capabilities.get(message.tool_name)
-            if capability is None:
-                raise ValueError("unsupported local capability")
-            legacy_message = _adapt_legacy_invoke(message)
-            result = await capability.invoke(legacy_message)
-            provider_result = ProviderToolResult(
-                content=[], structuredContent=result
-            )
+            route = self._provider_routes.get(message.tool_name)
+            if route is None:
+                raise ValueError("unsupported provider tool")
+            provider, descriptor = route
+            arguments = message.arguments
+            if descriptor is not None:
+                arguments = validate_provider_arguments(descriptor, arguments)
+                provider_tool_name = descriptor.tool_name
+            else:
+                provider_tool_name = message.tool_name
+            if isinstance(provider, CapabilityProviderClient):
+                result = await provider.call_message(
+                    provider_tool_name,
+                    arguments,
+                    request_id=message.request_id,
+                )
+            else:
+                result = await provider.call_tool(provider_tool_name, arguments)
+            if message.request_id in cancelled_requests:
+                return
+            provider_result = bounded_result(result)
             await self._send(
                 socket,
                 AgentResult(
@@ -892,6 +1058,8 @@ class RelayAgent:
         except asyncio.CancelledError:
             raise
         except CommandFailedError:
+            if message.request_id in cancelled_requests:
+                return
             await self._send_error(
                 socket,
                 message.request_id,
@@ -899,6 +1067,8 @@ class RelayAgent:
                 "configured command failed",
             )
         except Exception:
+            if message.request_id in cancelled_requests:
+                return
             await self._send_error(socket, message.request_id, "agent_error", "local action failed")
 
     async def _receive(self, socket: TextSocket) -> object:

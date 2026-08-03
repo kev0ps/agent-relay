@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 from agent_relay.agent import (
     AgentSettings,
     ConfigurationError,
+    ProviderUnavailableError,
     RelayAgent,
     _private_local_path,
     _read_agent_id_file,
@@ -19,12 +21,11 @@ from agent_relay.agent import (
     _run_with_signal_handlers,
     main,
 )
+from agent_relay.capabilities.terminal import TerminalCapability
 from agent_relay.catalog import CatalogService, ProviderRegistration
-from agent_relay.protocol import (
-    BrowserListTabsInvoke,
-    SystemPingInvoke,
-    TerminalExecInvoke,
-)
+from agent_relay.json_bounds import JsonValue
+from agent_relay.output_models import ProviderTextContent, ProviderToolResult
+from agent_relay.protocol import InvokeMessage
 from agent_relay.provider_tools import ProviderToolDescriptor
 from agent_relay.runner import CommandResult
 
@@ -55,7 +56,279 @@ def _load_canonical_agent_settings(environment: dict[str, str]) -> AgentSettings
     raise AssertionError("unreachable")
 
 
-def test_agent_filters_capabilities_by_the_selected_catalog_entries(tmp_path: Path) -> None:
+def test_agent_dispatches_selected_descriptor_through_provider_client(
+    tmp_path: Path,
+) -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="custom",
+        tool_name="echo",
+        public_name="provider-supplied-name",
+        description="echo text",
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string", "minLength": 1}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        risk="read_only",
+    )
+
+    class Provider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Mapping[str, JsonValue]]] = []
+            self.closed = False
+
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [descriptor]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            self.calls.append((tool_name, arguments))
+            return ProviderToolResult(
+                content=[{"type": "text", "text": "ok"}],
+                structuredContent={"echo": arguments["text"]},
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def scenario() -> None:
+        provider = Provider()
+        catalog = await CatalogService(
+            [ProviderRegistration("custom", provider)]
+        ).discover(("relay_custom_echo",))
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                tools_allowlist=("relay_custom_echo",),
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[],
+            catalog=catalog,
+            provider_clients={"custom": provider},
+        )
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "echo",
+                        "tool_name": "custom.echo",
+                        "arguments": {"text": "hello"},
+                    }
+                ),
+            ]
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if provider.calls:
+                break
+            await asyncio.sleep(0.001)
+        agent.stop()
+        await task
+        await agent.aclose()
+        assert provider.calls == [("echo", {"text": "hello"})]
+        assert provider.closed
+        assert socket.sent[-1]["type"] == "result"
+        assert socket.sent[-1]["result"]["content"] == [
+            {"type": "text", "text": "ok"}
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_cua_catalog_selection_controls_websocket_routing(
+    tmp_path: Path,
+) -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="cua",
+        tool_name="click",
+        public_name="relay_cua_click",
+        description="click",
+        input_schema={"type": "object", "additionalProperties": False},
+        risk="interaction",
+    )
+
+    class Provider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Mapping[str, JsonValue]]] = []
+            self.closed = False
+
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [descriptor]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            self.calls.append((tool_name, arguments))
+            return ProviderToolResult(
+                content=[], structured_content={"clicked": True}
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def scenario() -> None:
+        provider = Provider()
+        catalog = await CatalogService(
+            [ProviderRegistration(
+                "cua", provider, allow_reserved_public_names=True
+            )]
+        ).discover(("relay_cua_click",))
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                tools_allowlist=("relay_cua_click",),
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[],
+            catalog=catalog,
+            provider_clients={"cua": provider},
+        )
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "click",
+                        "tool_name": "cua.click",
+                        "arguments": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "unselected",
+                        "tool_name": "cua.type_text",
+                        "arguments": {},
+                    }
+                ),
+            ]
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if provider.calls and any(
+                message.get("request_id") == "unselected"
+                and message.get("type") == "error"
+                for message in socket.sent
+            ):
+                break
+            await asyncio.sleep(0.001)
+        agent.stop()
+        await task
+        await agent.aclose()
+
+        assert provider.calls == [("click", {})]
+        assert provider.closed
+        assert any(
+            message.get("request_id") == "click"
+            and message.get("type") == "result"
+            for message in socket.sent
+        )
+        assert any(
+            message.get("request_id") == "unselected"
+            and message.get("type") == "error"
+            for message in socket.sent
+        )
+
+    asyncio.run(scenario())
+
+
+def test_agent_rejects_provider_arguments_before_call(
+    tmp_path: Path,
+) -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="custom",
+        tool_name="echo",
+        public_name="relay_custom_echo",
+        description="echo text",
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        risk="read_only",
+    )
+
+    class Provider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [descriptor]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            self.calls += 1
+            return ProviderToolResult(content=[])
+
+        async def close(self) -> None:
+            return None
+
+    async def scenario() -> None:
+        provider = Provider()
+        catalog = await CatalogService(
+            [ProviderRegistration("custom", provider)]
+        ).discover(("relay_custom_echo",))
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                tools_allowlist=("relay_custom_echo",),
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[],
+            catalog=catalog,
+            provider_clients={"custom": provider},
+        )
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "invalid",
+                        "tool_name": "custom.echo",
+                        "arguments": {},
+                    }
+                ),
+            ]
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if any(item["type"] == "error" for item in socket.sent):
+                break
+            await asyncio.sleep(0.001)
+        agent.stop()
+        await task
+        assert provider.calls == 0
+        assert socket.sent[-1] == {
+            "version": 2,
+            "type": "error",
+            "request_id": "invalid",
+            "error": {"code": "agent_error", "message": "local action failed"},
+        }
+
+    asyncio.run(scenario())
+
+
     descriptor = ProviderToolDescriptor(
         provider_name="system",
         tool_name="ping",
@@ -269,9 +542,7 @@ def test_computer_settings_are_disabled_by_default_and_all_or_none(
         computer_allowed_window_title="Relay Desktop Fixture",
     )
     agent = RelayAgent(configured)
-    assert {"computer.capture", "computer.click", "computer.type"} <= set(
-        agent._capabilities
-    )
+    assert not any(tool.startswith("cua.") for tool in agent._capabilities)
     with pytest.raises(ConfigurationError):
         AgentSettings(
             server_url="wss://relay.example/not-agent",
@@ -281,7 +552,7 @@ def test_computer_settings_are_disabled_by_default_and_all_or_none(
         )
 
 
-def test_computer_starts_before_browser_when_both_use_the_desktop(
+def test_catalogless_agent_does_not_start_cua_before_browser(
     tmp_path: Path,
 ) -> None:
     driver = tmp_path / "cua-driver"
@@ -311,7 +582,32 @@ def test_computer_starts_before_browser_when_both_use_the_desktop(
 
     asyncio.run(agent._start_capabilities())
 
-    assert starts[-2:] == ["ComputerCapability", "BrowserCapability"]
+    assert starts == [
+        "SystemCapability",
+        "TerminalCapability",
+        "BrowserCapability",
+    ]
+
+
+def test_catalogless_agent_never_indexes_blocked_cua_tools(tmp_path: Path) -> None:
+    driver = tmp_path / "cua-driver"
+    driver.write_text("#!/bin/sh\n")
+    driver.chmod(0o755)
+    agent = RelayAgent(
+        AgentSettings(
+            server_url="ws://localhost/ws/agent",
+            device_id="d",
+            agent_token="secret",
+            workspace=tmp_path,
+            tools_allowlist=("relay_cua_page",),
+            computer_driver_path=driver,
+            computer_allowed_app_name="Fixture",
+            computer_allowed_window_title="Relay Desktop Fixture",
+        )
+    )
+
+    assert "cua.page" not in agent._capabilities
+    assert not any(tool.startswith("cua.") for tool in agent._capabilities)
 
 
 @pytest.mark.parametrize(
@@ -835,7 +1131,7 @@ class _Capability:
         self.tools = frozenset({name})
         self.result = result or {"capability": name}
         self.error = error
-        self.invocations: list[SystemPingInvoke | TerminalExecInvoke] = []
+        self.invocations: list[InvokeMessage] = []
         self.closed = 0
         self.unavailable = asyncio.Event()
 
@@ -846,7 +1142,7 @@ class _Capability:
         await self.unavailable.wait()
 
     async def invoke(
-        self, message: SystemPingInvoke | TerminalExecInvoke
+        self, message: InvokeMessage
     ) -> dict[str, object]:
         self.invocations.append(message)
         if self.error is not None:
@@ -935,7 +1231,7 @@ def test_capability_unavailable_cancels_active_browser_action_without_result(tmp
     class BlockingBrowser(_Capability):
         cancelled = False
 
-        async def invoke(self, message: BrowserListTabsInvoke) -> dict[str, object]:
+        async def invoke(self, message: InvokeMessage) -> dict[str, object]:
             self.invocations.append(message)  # type: ignore[arg-type]
             try:
                 await asyncio.Event().wait()
@@ -1183,7 +1479,16 @@ def test_unknown_or_malformed_generic_invocation_becomes_safe_v2_error(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        terminal = _Capability("terminal.exec")
+        class Runner:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def run(self, command_id: str) -> CommandResult:
+                self.calls.append(command_id)
+                return CommandResult(stdout="unexpected")
+
+        runner = Runner()
+        terminal = TerminalCapability(runner)
         socket = _Socket(
             [
                 json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
@@ -1224,7 +1529,7 @@ def test_unknown_or_malformed_generic_invocation_becomes_safe_v2_error(
             await asyncio.sleep(0.001)
         agent.stop()
         await task
-        assert terminal.invocations == []
+        assert runner.calls == []
         assert [item for item in socket.sent if item["type"] == "error"] == [
             {
                 "version": 2,
@@ -1327,7 +1632,7 @@ def test_cancellation_reaches_active_capability_and_suppresses_late_result(
         cancelled = False
 
         async def invoke(
-            self, message: SystemPingInvoke | TerminalExecInvoke
+            self, message: InvokeMessage
         ) -> dict[str, object]:
             self.invocations.append(message)
             try:
@@ -1370,7 +1675,7 @@ def test_only_one_capability_action_runs_at_a_time(tmp_path: Path) -> None:
         release = asyncio.Event()
 
         async def invoke(
-            self, message: SystemPingInvoke | TerminalExecInvoke
+            self, message: InvokeMessage
         ) -> dict[str, object]:
             self.invocations.append(message)
             self.started.set()
@@ -1563,6 +1868,182 @@ def test_agent_cancel_suppresses_late_result_and_allows_next_action(tmp_path: Pa
         await task
         assert runner.cancelled
         assert [message.get("request_id") for message in socket.sent if message["type"] == "result"] == ["new"]
+
+    asyncio.run(scenario())
+
+
+def test_agent_closes_session_when_provider_becomes_unavailable(
+    tmp_path: Path,
+) -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="custom",
+        tool_name="wait",
+        public_name="relay_custom_wait",
+        description="wait",
+        input_schema={"type": "object", "additionalProperties": False},
+        risk="read_only",
+    )
+
+    class Provider:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.unavailable = asyncio.Event()
+            self.cancelled = False
+
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [descriptor]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            raise AssertionError("unreachable")
+
+        async def wait_unavailable(self) -> None:
+            await self.unavailable.wait()
+
+        async def close(self) -> None:
+            return None
+
+    async def scenario() -> None:
+        provider = Provider()
+        catalog = await CatalogService(
+            [ProviderRegistration("custom", provider)]
+        ).discover(("relay_custom_wait",))
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                tools_allowlist=("relay_custom_wait",),
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[],
+            catalog=catalog,
+            provider_clients={"custom": provider},
+        )
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "offline",
+                        "tool_name": "custom.wait",
+                        "arguments": {},
+                    }
+                ),
+            ]
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        await asyncio.wait_for(provider.started.wait(), 1)
+        provider.unavailable.set()
+        with pytest.raises(ProviderUnavailableError):
+            await task
+        await agent.aclose()
+        assert provider.cancelled
+        assert not any(message.get("type") == "result" for message in socket.sent)
+
+    asyncio.run(scenario())
+
+
+def test_agent_suppresses_result_from_provider_that_swallows_cancellation(
+    tmp_path: Path,
+) -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="custom",
+        tool_name="wait",
+        public_name="relay_custom_wait",
+        description="wait",
+        input_schema={"type": "object", "additionalProperties": False},
+        risk="read_only",
+    )
+
+    class NonCooperativeProvider:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+            self.finished = asyncio.Event()
+
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [descriptor]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                self.finished.set()
+                return ProviderToolResult(
+                    content=[ProviderTextContent(type="text", text="late")]
+                )
+
+        async def close(self) -> None:
+            return None
+
+    async def scenario() -> None:
+        provider = NonCooperativeProvider()
+        catalog = await CatalogService(
+            [ProviderRegistration("custom", provider)]
+        ).discover(("relay_custom_wait",))
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                tools_allowlist=("relay_custom_wait",),
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[],
+            catalog=catalog,
+            provider_clients={"custom": provider},
+        )
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "late",
+                        "tool_name": "custom.wait",
+                        "arguments": {},
+                    }
+                ),
+            ]
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        await asyncio.wait_for(provider.started.wait(), 1)
+        socket.inbound.put_nowait(
+            json.dumps(
+                {
+                    "version": 2,
+                    "type": "cancel",
+                    "request_id": "late",
+                    "reason": "stop",
+                }
+            )
+        )
+        await asyncio.wait_for(provider.cancelled.wait(), 1)
+        await asyncio.wait_for(provider.finished.wait(), 1)
+        agent.stop()
+        await task
+        await agent.aclose()
+        assert not any(
+            message.get("type") == "result" and message.get("request_id") == "late"
+            for message in socket.sent
+        )
 
     asyncio.run(scenario())
 

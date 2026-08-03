@@ -269,7 +269,7 @@ def test_mcp_accepts_configured_remote_host_when_public_bind_is_enabled() -> Non
 def test_control_endpoint_requires_distinct_bearer_token() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
-        path = "/v1/devices/device-a/invoke"
+        path = "/v2/devices/device-a/invoke"
         missing = client.post(path, json={"tool_name": "system.ping", "arguments": {}})
         wrong = client.post(
             path,
@@ -318,7 +318,7 @@ def test_direct_control_invokes_generic_v2_message_and_preserves_provider_result
     app.state.registry.invoke = invoke
     with TestClient(app) as client:
         response = client.post(
-            "/v1/devices/device-a/invoke",
+            "/v2/devices/device-a/invoke",
             headers={"Authorization": "Bearer control-secret"},
             json={
                 "tool_name": "cua.get_accessibility_tree",
@@ -360,7 +360,7 @@ def test_direct_control_rejects_legacy_and_open_top_level_fields(
     app = create_app(settings())
     with TestClient(app) as client:
         response = client.post(
-            "/v1/devices/device-a/invoke",
+            "/v2/devices/device-a/invoke",
             headers={"Authorization": "Bearer control-secret"},
             json=body,
         )
@@ -379,7 +379,7 @@ def test_direct_control_rejects_oversized_arguments_without_dispatch() -> None:
     app.state.registry.invoke = invoke
     with TestClient(app) as client:
         response = client.post(
-            "/v1/devices/device-a/invoke",
+            "/v2/devices/device-a/invoke",
             headers={"Authorization": "Bearer control-secret"},
             json={"tool_name": "provider.tool", "arguments": {"value": "x" * 65536}},
         )
@@ -406,7 +406,7 @@ def test_direct_control_rejects_invalid_provider_result_with_sanitized_error(
     app.state.registry.invoke = invoke
     with TestClient(app) as client:
         response = client.post(
-            "/v1/devices/device-a/invoke",
+            "/v2/devices/device-a/invoke",
             headers={"Authorization": "Bearer control-secret"},
             json={"tool_name": "provider.tool", "arguments": {}},
         )
@@ -417,7 +417,7 @@ def test_direct_control_rejects_invalid_provider_result_with_sanitized_error(
 
 def test_direct_control_api_has_one_closed_generic_request_schema() -> None:
     schema = create_app(settings()).openapi()
-    request = schema["paths"]["/v1/devices/{device_id}/invoke"]["post"]["requestBody"][
+    request = schema["paths"]["/v2/devices/{device_id}/invoke"]["post"]["requestBody"][
         "content"
     ]["application/json"]["schema"]
     model = schema["components"]["schemas"][request["$ref"].rsplit("/", 1)[1]]
@@ -433,7 +433,7 @@ def test_direct_control_api_has_one_closed_generic_request_schema() -> None:
 def test_direct_control_api_response_schema_is_closed_recursively() -> None:
     schema = create_app(settings()).openapi()
     components = schema["components"]["schemas"]
-    response = schema["paths"]["/v1/devices/{device_id}/invoke"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+    response = schema["paths"]["/v2/devices/{device_id}/invoke"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
     seen: set[str] = set()
 
     def walk(node: object) -> None:
@@ -463,7 +463,7 @@ def test_control_endpoint_rejects_non_ascii_bearer_token() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
         response = client.post(
-            "/v1/devices/device-a/invoke",
+            "/v2/devices/device-a/invoke",
             headers=[(b"authorization", "Bearer token-\u00e9".encode())],
             json={"tool_name": "system.ping", "arguments": {}},
         )
@@ -612,12 +612,12 @@ def test_control_endpoint_distinguishes_unknown_and_offline_device() -> None:
     headers = {"Authorization": "Bearer control-secret"}
     with TestClient(app) as client:
         unknown = client.post(
-            "/v1/devices/other/invoke",
+            "/v2/devices/other/invoke",
             headers=headers,
             json={"tool_name": "system.ping", "arguments": {}},
         )
         offline = client.post(
-            "/v1/devices/device-a/invoke",
+            "/v2/devices/device-a/invoke",
             headers=headers,
             json={"tool_name": "system.ping", "arguments": {}},
         )
@@ -692,7 +692,7 @@ def test_websocket_register_invoke_and_result() -> None:
             )
             assert ws.receive_json()["type"] == "registered"
             unavailable = client.post(
-                "/v1/devices/device-a/invoke",
+                "/v2/devices/device-a/invoke",
                 headers={"Authorization": "Bearer control-secret"},
                 json={"tool_name": "system.ping", "arguments": {}},
             )
@@ -704,7 +704,7 @@ def test_websocket_register_invoke_and_result() -> None:
 
             def control_request() -> None:
                 response["value"] = client.post(
-                    "/v1/devices/device-a/invoke",
+                    "/v2/devices/device-a/invoke",
                     headers={"Authorization": "Bearer control-secret"},
                     json={
                         "tool_name": "system.ping",
@@ -857,7 +857,7 @@ def test_websocket_processes_capabilities_heartbeat_progress_and_error(
             assert heartbeat_handled.wait(timeout=2)
             assert app.state.registry.last_heartbeat > before
             terminal = client.post(
-                "/v1/devices/device-a/invoke",
+                "/v2/devices/device-a/invoke",
                 headers=headers,
                 json={"tool_name": "terminal.exec", "arguments": {"command_id": "pwd"}},
             )
@@ -871,7 +871,7 @@ def test_websocket_processes_capabilities_heartbeat_progress_and_error(
 
             def control_request() -> None:
                 response["value"] = client.post(
-                    "/v1/devices/device-a/invoke",
+                    "/v2/devices/device-a/invoke",
                     headers=headers,
                     json={
                         "tool_name": "terminal.exec",
@@ -933,7 +933,7 @@ def test_websocket_closes_cleanly_for_a_duplicate_result() -> None:
 
             def control_request() -> None:
                 response["value"] = client.post(
-                    "/v1/devices/device-a/invoke",
+                    "/v2/devices/device-a/invoke",
                     headers=headers,
                     json={
                         "tool_name": "system.ping",
@@ -982,7 +982,7 @@ def test_websocket_closes_for_a_result_sent_after_timeout() -> None:
 
             def control_request() -> None:
                 response["value"] = client.post(
-                    "/v1/devices/device-a/invoke",
+                    "/v2/devices/device-a/invoke",
                     headers=headers,
                     json={
                         "tool_name": "system.ping",
@@ -1038,7 +1038,7 @@ def test_websocket_disconnect_during_invocation_releases_caller_and_registry() -
 
             def control_request() -> None:
                 response["value"] = client.post(
-                    "/v1/devices/device-a/invoke",
+                    "/v2/devices/device-a/invoke",
                     headers=headers,
                     json={
                         "tool_name": "system.ping",

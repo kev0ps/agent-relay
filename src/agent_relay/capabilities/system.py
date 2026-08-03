@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from ..protocol import SystemPingInvoke
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 from .base import InvokeMessage
+
+
+class _SystemArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class SystemCapability:
@@ -17,8 +22,12 @@ class SystemCapability:
         await asyncio.Future()
 
     async def invoke(self, message: InvokeMessage) -> dict[str, object]:
-        if not isinstance(message, SystemPingInvoke):
+        if message.tool_name != "system.ping":
             raise ValueError("unsupported invocation")
+        try:
+            _SystemArguments.model_validate(message.arguments)
+        except ValidationError:
+            raise ValueError("unsupported invocation") from None
         return {"pong": True}
 
     async def aclose(self) -> None:

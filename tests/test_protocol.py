@@ -5,32 +5,16 @@ import json
 import pytest
 from pydantic import ValidationError
 
+import agent_relay.protocol as protocol
 from agent_relay.protocol import (
-    MAX_BROWSER_ELEMENT_ID_LENGTH,
-    MAX_BROWSER_FILL_VALUE_LENGTH,
-    MAX_BROWSER_URL_LENGTH,
-    MAX_COMPUTER_ELEMENT_ID_LENGTH,
-    MAX_COMPUTER_TYPE_TEXT_LENGTH,
+    MAX_CAPABILITIES,
     MAX_RESULT_JSON_BYTES,
     AgentError,
     AgentResult,
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
     Capabilities,
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
     InvokeMessage,
     Progress,
     Register,
-    SystemPingInvoke,
-    TerminalExecInvoke,
     parse_agent_message,
     parse_server_message,
 )
@@ -66,6 +50,25 @@ def test_v2_generic_invoke_and_provider_result_are_the_only_application_frames()
     )
     assert isinstance(result, AgentResult)
     assert result.result.structured_content == {"ok": True}
+
+
+def test_protocol_does_not_expose_operation_specific_invoke_models() -> None:
+    legacy_names = (
+        "SystemPingInvoke",
+        "TerminalExecInvoke",
+        "BrowserListTabsInvoke",
+        "BrowserNavigateInvoke",
+        "BrowserSnapshotInvoke",
+        "BrowserFillInvoke",
+        "BrowserClickInvoke",
+        "BrowserScrollInvoke",
+        "BrowserTypeInvoke",
+        "BrowserBackInvoke",
+        "ComputerCaptureInvoke",
+        "ComputerClickInvoke",
+        "ComputerTypeInvoke",
+    )
+    assert all(not hasattr(protocol, name) for name in legacy_names)
 
 
 @pytest.mark.parametrize(
@@ -119,24 +122,25 @@ def test_rejects_bad_version_type_and_extra_fields(payload: dict[str, object]) -
         parse_agent_message(payload)
 
 
-def test_terminal_exec_only_allows_closed_command_ids() -> None:
-    invoke = TerminalExecInvoke(
-        version=1,
+def test_generic_invoke_preserves_provider_owned_arguments() -> None:
+    invoke = InvokeMessage(
+        version=2,
         type="invoke",
         request_id="req-1",
-        tool="terminal.exec",
-        command_id="pwd",
+        tool_name="terminal.exec",
+        arguments={"command_id": "pwd"},
     )
-    assert invoke.command_id == "pwd"
+    assert invoke.tool_name == "terminal.exec"
+    assert invoke.arguments == {"command_id": "pwd"}
 
-    with pytest.raises(ValidationError):
-        TerminalExecInvoke(
-            version=1,
-            type="invoke",
-            request_id="req-1",
-            tool="terminal.exec",
-            command_id="rm_rf",
-        )
+    unvalidated = InvokeMessage(
+        version=2,
+        type="invoke",
+        request_id="req-2",
+        tool_name="terminal.exec",
+        arguments={"command_id": "provider-owned-command"},
+    )
+    assert unvalidated.arguments == {"command_id": "provider-owned-command"}
 
 
 def test_invoke_message_is_an_explicit_closed_union() -> None:
@@ -146,144 +150,44 @@ def test_invoke_message_is_an_explicit_closed_union() -> None:
 
 
 @pytest.mark.parametrize(
-    ("payload", "expected_type"),
+    "payload",
     [
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "ping-1",
-                "tool": "system.ping",
-            },
-            SystemPingInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "exec-1",
-                "tool": "terminal.exec",
-                "command_id": "pwd",
-            },
-            TerminalExecInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "tabs-1",
-                "tool": "browser.list_tabs",
-            },
-            BrowserListTabsInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "nav-1",
-                "tool": "browser.navigate",
-                "url": "https://example.test/",
-            },
-            BrowserNavigateInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "read-1",
-                "tool": "browser.snapshot",
-            },
-            BrowserSnapshotInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "fill-1",
-                "tool": "browser.fill",
-                "element_id": "field-1",
-                "value": "hello",
-            },
-            BrowserFillInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "click-1",
-                "tool": "browser.click",
-                "element_id": "button-1",
-            },
-            BrowserClickInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "scroll-1",
-                "tool": "browser.scroll",
-                "direction": "down",
-            },
-            BrowserScrollInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "type-browser-1",
-                "tool": "browser.type",
-                "element_id": "field-1",
-                "text": "hello",
-            },
-            BrowserTypeInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "back-1",
-                "tool": "browser.back",
-            },
-            BrowserBackInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "capture-1",
-                "tool": "computer.capture",
-            },
-            ComputerCaptureInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "computer-click-1",
-                "tool": "computer.click",
-                "element_id": "opaque-generation-element",
-            },
-            ComputerClickInvoke,
-        ),
-        (
-            {
-                "version": 1,
-                "type": "invoke",
-                "request_id": "type-1",
-                "tool": "computer.type",
-                "element_id": "opaque-generation-element",
-                "text": "hello",
-            },
-            ComputerTypeInvoke,
-        ),
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "ping-1",
+            "tool_name": "system.ping",
+            "arguments": {},
+        },
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "exec-1",
+            "tool_name": "terminal.exec",
+            "arguments": {"command_id": "pwd"},
+        },
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "browser-1",
+            "tool_name": "browser.click",
+            "arguments": {"element_id": "provider-owned-id"},
+        },
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "computer-1",
+            "tool_name": "computer.type",
+            "arguments": {"element_id": "provider-owned-id", "text": "hello"},
+        },
     ],
 )
-def test_invoke_parsing_is_discriminated_by_type_and_tool(
-    payload: dict[str, object], expected_type: type[object]
+def test_generic_invoke_parsing_accepts_provider_tool_arguments(
+    payload: dict[str, object],
 ) -> None:
-    del expected_type
-    with pytest.raises((ValidationError, ValueError)):
-        parse_server_message(payload)
+    message = parse_server_message(payload)
+    assert isinstance(message, InvokeMessage)
+    assert message.tool_name
 
 
 @pytest.mark.parametrize(
@@ -292,149 +196,77 @@ def test_invoke_parsing_is_discriminated_by_type_and_tool(
         {
             "version": 1,
             "type": "invoke",
-            "request_id": "ping-1",
+            "request_id": "legacy-1",
             "tool": "system.ping",
-            "command_id": "pwd",
         },
         {
-            "version": 1,
+            "version": 2,
             "type": "invoke",
-            "request_id": "exec-1",
-            "tool": "terminal.exec",
+            "request_id": "missing-name",
+            "arguments": {},
         },
         {
-            "version": 1,
+            "version": 2,
             "type": "invoke",
-            "request_id": "exec-1",
-            "tool": "terminal.exec",
-            "command_id": "arbitrary",
+            "request_id": "legacy-field",
+            "tool": "system.ping",
+            "arguments": {},
         },
         {
-            "version": 1,
+            "version": 2,
             "type": "invoke",
-            "request_id": "other-1",
-            "tool": "arbitrary",
-            "args": {},
+            "request_id": "array-args",
+            "tool_name": "system.ping",
+            "arguments": [],
+        },
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "handler-field",
+            "tool_name": "system.ping",
+            "arguments": {},
+            "handler": "not-accepted",
+        },
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "bad-name",
+            "tool_name": "bad/name",
+            "arguments": {},
         },
     ],
 )
-def test_invoke_parsing_forbids_unknown_and_wrong_tool_fields(
+def test_generic_invoke_rejects_legacy_and_malformed_frames(
     payload: dict[str, object],
 ) -> None:
     with pytest.raises((ValidationError, ValueError)):
         parse_server_message(payload)
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {
-            "version": 1,
-            "type": "invoke",
-            "request_id": "x",
-            "tool": "browser.list_tabs",
-            "url": "https://example.test",
+def test_generic_invoke_keeps_provider_arguments_bounded_but_opaque() -> None:
+    message = InvokeMessage(
+        version=2,
+        type="invoke",
+        request_id="opaque-1",
+        tool_name="cua.provider_tool",
+        arguments={
+            "provider_owned": {"value": "kept"},
+            "items": [1, True, None],
         },
-        {
-            "version": 1,
-            "type": "invoke",
-            "request_id": "x",
-            "tool": "browser.snapshot",
-            "element_id": "x",
-        },
-        {"version": 1, "type": "invoke", "request_id": "x", "tool": "browser.navigate"},
-        {
-            "version": 1,
-            "type": "invoke",
-            "request_id": "x",
-            "tool": "browser.fill",
-            "element_id": "x",
-        },
-        {
-            "version": 1,
-            "type": "invoke",
-            "request_id": "x",
-            "tool": "browser.click",
-            "element_id": 1,
-        },
-    ],
-)
-def test_browser_invoke_parsing_fails_closed(payload: dict[str, object]) -> None:
-    with pytest.raises((ValidationError, ValueError)):
-        parse_server_message(payload)
-
-
-@pytest.mark.parametrize(
-    ("model", "field", "limit"),
-    [
-        (BrowserNavigateInvoke, "url", MAX_BROWSER_URL_LENGTH),
-        (BrowserClickInvoke, "element_id", MAX_BROWSER_ELEMENT_ID_LENGTH),
-        (BrowserFillInvoke, "value", MAX_BROWSER_FILL_VALUE_LENGTH),
-    ],
-)
-def test_browser_invoke_strings_are_nonempty_and_bounded(
-    model: type[object], field: str, limit: int
-) -> None:
-    base = {"version": 1, "type": "invoke", "request_id": "x"}
-    payloads = {
-        BrowserNavigateInvoke: {"tool": "browser.navigate", "url": "x"},
-        BrowserClickInvoke: {"tool": "browser.click", "element_id": "x"},
-        BrowserFillInvoke: {"tool": "browser.fill", "element_id": "x", "value": "x"},
+    )
+    assert message.arguments == {
+        "provider_owned": {"value": "kept"},
+        "items": [1, True, None],
     }
-    valid = base | payloads[model]  # type: ignore[index]
-    model.model_validate(valid | {field: "x" * limit})  # type: ignore[attr-defined]
-    for rejected in ("", "x" * (limit + 1)):
-        with pytest.raises(ValidationError):
-            model.model_validate(valid | {field: rejected})  # type: ignore[attr-defined]
 
-
-def test_computer_invokes_are_closed_bounded_and_preserve_semantic_target() -> None:
-    base = {"version": 1, "type": "invoke", "request_id": "x"}
-    ComputerCaptureInvoke.model_validate(base | {"tool": "computer.capture"})
-    ComputerClickInvoke.model_validate(
-        base
-        | {
-            "tool": "computer.click",
-            "element_id": "x" * MAX_COMPUTER_ELEMENT_ID_LENGTH,
-        }
-    )
-    ComputerTypeInvoke.model_validate(
-        base
-        | {
-            "tool": "computer.type",
-            "element_id": "opaque-id",
-            "text": "x" * MAX_COMPUTER_TYPE_TEXT_LENGTH,
-        }
-    )
-    with pytest.raises((ValidationError, ValueError)):
-        parse_server_message(
-            base
-            | {
-                "tool": "computer.type",
-                "element_id": "opaque-id",
-                "text": "launch \U0001f680",
-            }
+    with pytest.raises(ValidationError):
+        InvokeMessage(
+            version=2,
+            type="invoke",
+            request_id="opaque-2",
+            tool_name="cua.provider_tool",
+            arguments=[],  # type: ignore[arg-type]
         )
-
-    rejected = [
-        {"tool": "computer.capture", "coordinates": [1, 2]},
-        {"tool": "computer.click", "element_id": "", "x": 1},
-        {"tool": "computer.type", "text": "missing target"},
-        {"tool": "computer.type", "element_id": "opaque-id", "text": ""},
-        {"tool": "computer.type", "element_id": "opaque-id", "text": "a\nb"},
-        {"tool": "computer.type", "element_id": "opaque-id", "text": "a\x00b"},
-        {"tool": "computer.type", "element_id": "opaque-id", "text": "a\u0085b"},
-        {"tool": "computer.type", "element_id": "opaque-id", "text": "a\u202eb"},
-        {
-            "tool": "computer.type",
-            "element_id": "opaque-id",
-            "text": "x" * (MAX_COMPUTER_TYPE_TEXT_LENGTH + 1),
-        },
-    ]
-    for payload in rejected:
-        with pytest.raises((ValidationError, ValueError)):
-            parse_server_message(base | payload)
-
 
 def test_register_frame_has_no_credential_field_or_secret_repr() -> None:
     message = Register(version=1, type="register", device_id="device-a")
@@ -469,7 +301,11 @@ def test_protocol_rejects_register_frame_credentials_and_bounds_agent_payloads()
             token="secret",  # type: ignore[call-arg]
         )
     with pytest.raises(ValidationError):
-        Capabilities(version=1, type="capabilities", tools=["system.ping"] * 17)
+        Capabilities(
+            version=1,
+            type="capabilities",
+            tools=["system.ping"] * (MAX_CAPABILITIES + 1),
+        )
     with pytest.raises(ValidationError):
         AgentResult(
             version=2,

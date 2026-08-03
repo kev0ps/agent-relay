@@ -7,7 +7,7 @@ import pytest
 from agent_relay.capabilities.base import LocalCapability
 from agent_relay.capabilities.system import SystemCapability
 from agent_relay.capabilities.terminal import TerminalCapability
-from agent_relay.protocol import SystemPingInvoke, TerminalExecInvoke
+from agent_relay.protocol import InvokeMessage
 from agent_relay.runner import CommandResult
 
 
@@ -20,18 +20,22 @@ def test_system_capability_accepts_only_system_ping() -> None:
     async def scenario() -> None:
         capability = SystemCapability()
         assert await capability.invoke(
-            SystemPingInvoke(
-                version=1, type="invoke", request_id="ping", tool="system.ping"
+            InvokeMessage(
+                version=2,
+                type="invoke",
+                request_id="ping",
+                tool_name="system.ping",
+                arguments={},
             )
         ) == {"pong": True}
         with pytest.raises(ValueError, match="unsupported invocation"):
             await capability.invoke(
-                TerminalExecInvoke(
-                    version=1,
+                InvokeMessage(
+                    version=2,
                     type="invoke",
                     request_id="exec",
-                    tool="terminal.exec",
-                    command_id="pwd",
+                    tool_name="terminal.exec",
+                    arguments={"command_id": "pwd"},
                 )
             )
         await capability.aclose()
@@ -51,12 +55,12 @@ def test_terminal_capability_accepts_only_terminal_exec() -> None:
         runner = Runner()
         capability = TerminalCapability(runner)
         assert await capability.invoke(
-            TerminalExecInvoke(
-                version=1,
+            InvokeMessage(
+                version=2,
                 type="invoke",
                 request_id="exec",
-                tool="terminal.exec",
-                command_id="pwd",
+                tool_name="terminal.exec",
+                arguments={"command_id": "pwd"},
             )
         ) == {
             "command_id": "pwd",
@@ -70,11 +74,12 @@ def test_terminal_capability_accepts_only_terminal_exec() -> None:
         assert runner.calls == ["pwd"]
         with pytest.raises(ValueError, match="unsupported invocation"):
             await capability.invoke(
-                SystemPingInvoke(
-                    version=1,
+                InvokeMessage(
+                    version=2,
                     type="invoke",
                     request_id="ping",
-                    tool="system.ping",
+                    tool_name="system.ping",
+                    arguments={},
                 )
             )
         await capability.aclose()
@@ -90,12 +95,12 @@ def test_terminal_capability_preserves_safe_command_failure() -> None:
     async def scenario() -> None:
         with pytest.raises(RuntimeError, match="configured command failed"):
             await TerminalCapability(Runner()).invoke(
-                TerminalExecInvoke(
-                    version=1,
+                InvokeMessage(
+                    version=2,
                     type="invoke",
                     request_id="exec",
-                    tool="terminal.exec",
-                    command_id="pwd",
+                    tool_name="terminal.exec",
+                    arguments={"command_id": "pwd"},
                 )
             )
 

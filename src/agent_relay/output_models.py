@@ -20,31 +20,7 @@ from .json_bounds import (
     validate_resource_uri,
 )
 
-# Temporary semantic-v1 DTO limits. Keeping these local avoids coupling the
-# provider-neutral result model back to the WebSocket protocol module. Task 5
-# removes the legacy semantic output inventory below.
-MAX_BROWSER_URL_LENGTH = 2048
-MAX_BROWSER_ELEMENT_ID_LENGTH = 128
-MAX_BROWSER_TAB_ID_LENGTH = 128
-MAX_BROWSER_TITLE_LENGTH = 256
-MAX_BROWSER_PAGE_TEXT_LENGTH = 4096
-MAX_BROWSER_ROLE_LENGTH = 64
-MAX_BROWSER_NAME_LENGTH = 128
-MAX_BROWSER_ELEMENT_VALUE_LENGTH = 256
-MAX_BROWSER_TABS = 6
-MAX_BROWSER_ELEMENTS = 12
-MAX_COMPUTER_ELEMENT_ID_LENGTH = 128
-MAX_COMPUTER_APP_LENGTH = 128
-MAX_COMPUTER_WINDOW_TITLE_LENGTH = 256
-MAX_COMPUTER_GENERATION_LENGTH = 128
-MAX_COMPUTER_ROLE_LENGTH = 64
-MAX_COMPUTER_NAME_LENGTH = 128
-MAX_COMPUTER_ELEMENT_VALUE_LENGTH = 256
-MAX_COMPUTER_ELEMENTS = 12
 CommandId = Literal["pwd", "whoami", "python_version", "git_status", "git_branch"]
-ToolName = Annotated[
-    str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
-]
 
 
 class Output(BaseModel):
@@ -68,72 +44,6 @@ class TerminalExecOutput(Output):
     timed_out: bool
     stdout_truncated: bool
     stderr_truncated: bool
-
-
-BrowserUrl = Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)]
-BrowserTabId = Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_TAB_ID_LENGTH)]
-BrowserElementId = Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)]
-
-
-class BrowserElementOutput(Output):
-    element_id: BrowserElementId
-    role: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_ROLE_LENGTH)]
-    name: Annotated[str, Field(max_length=MAX_BROWSER_NAME_LENGTH)]
-    value: Annotated[str, Field(max_length=MAX_BROWSER_ELEMENT_VALUE_LENGTH)] | None
-    editable: bool
-    enabled: bool
-
-
-class BrowserTabOutput(Output):
-    tab_id: BrowserTabId
-    title: Annotated[str, Field(max_length=MAX_BROWSER_TITLE_LENGTH)]
-    url: BrowserUrl
-
-
-class BrowserTabsOutput(Output):
-    tabs: list[BrowserTabOutput] = Field(max_length=MAX_BROWSER_TABS)
-
-
-class BrowserPageOutput(Output):
-    tab_id: BrowserTabId
-    title: Annotated[str, Field(max_length=MAX_BROWSER_TITLE_LENGTH)]
-    url: BrowserUrl
-    text: Annotated[str, Field(max_length=MAX_BROWSER_PAGE_TEXT_LENGTH)]
-    elements: list[BrowserElementOutput] = Field(max_length=MAX_BROWSER_ELEMENTS)
-
-
-class BrowserActionOutput(Output):
-    tab_id: BrowserTabId
-    element_id: BrowserElementId | None
-    url: BrowserUrl
-    title: Annotated[str, Field(max_length=MAX_BROWSER_TITLE_LENGTH)]
-    success: bool
-
-
-ComputerElementId = Annotated[str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)]
-ComputerGeneration = Annotated[str, Field(min_length=1, max_length=MAX_COMPUTER_GENERATION_LENGTH)]
-
-
-class ComputerElementOutput(Output):
-    element_id: ComputerElementId
-    role: Annotated[str, Field(min_length=1, max_length=MAX_COMPUTER_ROLE_LENGTH)]
-    name: Annotated[str, Field(max_length=MAX_COMPUTER_NAME_LENGTH)]
-    value: Annotated[str, Field(max_length=MAX_COMPUTER_ELEMENT_VALUE_LENGTH)] | None
-    enabled: bool
-
-
-class ComputerCaptureOutput(Output):
-    app: Annotated[str, Field(min_length=1, max_length=MAX_COMPUTER_APP_LENGTH)]
-    window_title: Annotated[str, Field(max_length=MAX_COMPUTER_WINDOW_TITLE_LENGTH)]
-    generation: ComputerGeneration
-    elements: list[ComputerElementOutput] = Field(max_length=MAX_COMPUTER_ELEMENTS)
-
-
-class ComputerActionOutput(Output):
-    success: bool
-    generation: ComputerGeneration
-    element_id: ComputerElementId
-
 
 class _ProviderContent(Output):
     """Shared bounded MCP metadata for provider content blocks."""
@@ -306,10 +216,10 @@ class ProviderResourceLinkContent(_ProviderContent):
     uri: ProviderResourceUri
     name: str = Field(
         min_length=1,
-        max_length=MAX_BROWSER_TITLE_LENGTH,
+        max_length=MAX_JSON_BYTES,
     )
-    title: str | None = Field(default=None, max_length=MAX_BROWSER_TITLE_LENGTH)
-    description: str | None = Field(default=None, max_length=MAX_BROWSER_PAGE_TEXT_LENGTH)
+    title: str | None = Field(default=None, max_length=MAX_JSON_BYTES)
+    description: str | None = Field(default=None, max_length=MAX_JSON_BYTES)
     mime_type: str | None = Field(
         default=None,
         max_length=128,
@@ -397,19 +307,3 @@ class ProviderToolResult(Output):
             label="provider result",
         )
         return self
-
-
-# Keep the original semantic DTO inventory below intact for the current v1 path.
-OUTPUT_BY_TOOL: dict[ToolName, type[Output]] = {
-    "system.ping": PingOutput, "terminal.exec": TerminalExecOutput,
-    "browser.list_tabs": BrowserTabsOutput, "browser.navigate": BrowserActionOutput,
-    "browser.snapshot": BrowserPageOutput, "browser.fill": BrowserActionOutput,
-    "browser.click": BrowserActionOutput, "browser.scroll": BrowserActionOutput,
-    "browser.type": BrowserActionOutput, "browser.back": BrowserActionOutput,
-    "computer.capture": ComputerCaptureOutput,
-    "computer.click": ComputerActionOutput, "computer.type": ComputerActionOutput,
-}
-
-
-def validate_tool_output(tool: ToolName, result: object) -> Output:
-    return OUTPUT_BY_TOOL[tool].model_validate(result)

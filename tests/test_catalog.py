@@ -60,9 +60,26 @@ def test_local_catalog_loader_discovers_builtins_and_marks_optional_providers() 
 
     assert by_name["relay_system_ping"].status == "disabled"
     assert by_name["relay_terminal_exec"].status == "disabled"
+    assert by_name["relay_terminal_exec"].descriptor.input_schema == {
+        "type": "object",
+        "properties": {
+            "command_id": {
+                "type": "string",
+                "enum": [
+                    "pwd",
+                    "whoami",
+                    "python_version",
+                    "git_status",
+                    "git_branch",
+                ],
+            }
+        },
+        "required": ["command_id"],
+        "additionalProperties": False,
+    }
     assert by_name["relay_browser_snapshot"].status == "unavailable"
-    assert by_name["relay_computer_capture"].status == "unavailable"
-    assert set(snapshot.unavailable_providers) == {"browser", "computer"}
+    assert by_name["relay_cua_list_apps"].status == "unavailable"
+    assert set(snapshot.unavailable_providers) == {"browser", "cua"}
     assert all(entry.risk for entry in snapshot.entries)
 
 
@@ -76,7 +93,7 @@ def test_local_catalog_loader_does_not_treat_settings_as_provider_availability()
     )
 
     assert snapshot.entry("relay_browser_snapshot").status == "unavailable"
-    assert snapshot.entry("relay_computer_capture").status == "unavailable"
+    assert snapshot.entry("relay_cua_list_apps").status == "unavailable"
 
 
 def test_local_catalog_loader_uses_injected_runtime_provider_tools_list() -> None:
@@ -85,7 +102,7 @@ def test_local_catalog_loader_uses_injected_runtime_provider_tools_list() -> Non
     snapshot = discover_local_catalog(providers={"browser": provider})
 
     assert snapshot.entry("relay_browser_snapshot").status == "disabled"
-    assert snapshot.unavailable_providers == ("computer",)
+    assert snapshot.unavailable_providers == ("cua",)
 
 
 def test_public_names_are_stable_and_collision_checked() -> None:

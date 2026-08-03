@@ -4,34 +4,23 @@ from __future__ import annotations
 
 import uuid
 from ipaddress import ip_address
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.fastmcp.tools.tool_manager import ToolManager
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import Field, ValidationError
+from pydantic import ValidationError
 
-from .config import INTERNAL_TO_PUBLIC, SERVER_LOCAL_TOOL
+from .config import SERVER_LOCAL_TOOL
+from .mcp_dynamic_registry import DynamicToolManager
 from .output_models import (
-    BrowserActionOutput,
-    BrowserPageOutput,
-    BrowserTabsOutput,
-    ComputerActionOutput,
-    ComputerCaptureOutput,
-    ComputerElementId,
     Output,
     PingOutput,
     ProviderToolResult,
     TerminalExecOutput,
 )
 from .protocol import (
-    MAX_BROWSER_ELEMENT_ID_LENGTH,
-    MAX_BROWSER_FILL_VALUE_LENGTH,
-    MAX_BROWSER_TYPE_TEXT_LENGTH,
-    MAX_BROWSER_URL_LENGTH,
     CommandId,
-    ComputerTypeText,
     InvokeMessage,
 )
 from .registry import (
@@ -51,40 +40,6 @@ class DeviceStatusOutput(Output):
     invocation_state: Literal["idle", "busy"]
     progress: int | None
     heartbeat_age_seconds: float | None
-
-
-class _AnnouncedToolManager(ToolManager):
-    """Expose only the tools declared by the currently connected Agent."""
-
-    def __init__(
-        self, registry: RelayRegistry, *, warn_on_duplicate_tools: bool = True
-    ) -> None:
-        super().__init__(warn_on_duplicate_tools=warn_on_duplicate_tools)
-        self._registry = registry
-
-    def _is_available(self, name: str) -> bool:
-        if name == SERVER_LOCAL_TOOL:
-            return True
-        internal = next(
-            (
-                candidate
-                for candidate, public in INTERNAL_TO_PUBLIC.items()
-                if public == name
-            ),
-            None,
-        )
-        return (
-            internal is not None
-            and internal in self._registry.announced_capabilities
-        )
-
-    def list_tools(self) -> list[Any]:
-        return [tool for tool in super().list_tools() if self._is_available(tool.name)]
-
-    def get_tool(self, name: str) -> Any | None:
-        if not self._is_available(name):
-            return None
-        return super().get_tool(name)
 
 
 def create_mcp_facade(
@@ -121,12 +76,6 @@ def create_mcp_facade(
         streamable_http_path="/mcp",
         transport_security=transport_security,
     )
-    if only_announced:
-        mcp._tool_manager = _AnnouncedToolManager(
-            registry,
-            warn_on_duplicate_tools=mcp.settings.warn_on_duplicate_tools,
-        )
-
     @mcp.tool(structured_output=True)
     async def relay_device_status() -> DeviceStatusOutput:
         """Return the configured Relay device's safe connection status."""
@@ -171,197 +120,20 @@ def create_mcp_facade(
         result = await _invoke(registry, device_id, message, timeout_seconds)
         return _validate_output(TerminalExecOutput, result)
 
-    @mcp.tool(structured_output=True)
-    async def relay_browser_list_tabs() -> BrowserTabsOutput:
-        """List the bounded set of browser tabs available to the device."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.list_tabs",
-            arguments={},
-        )
-        return _validate_output(
-            BrowserTabsOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
 
-    @mcp.tool(structured_output=True)
-    async def relay_browser_navigate(
-        url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)],
-    ) -> BrowserActionOutput:
-        """Navigate the active browser tab to a bounded URL."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.navigate",
-            arguments={"url": url},
-        )
-        return _validate_output(
-            BrowserActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_browser_snapshot() -> BrowserPageOutput:
-        """Return bounded semantic content from the active browser page."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.snapshot",
-            arguments={},
-        )
-        return _validate_output(
-            BrowserPageOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_browser_fill(
-        element_id: Annotated[
-            str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-        ],
-        value: Annotated[
-            str, Field(min_length=1, max_length=MAX_BROWSER_FILL_VALUE_LENGTH)
-        ],
-    ) -> BrowserActionOutput:
-        """Fill one opaque semantic browser element with a bounded value."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.fill",
-            arguments={"element_id": element_id, "value": value},
-        )
-        return _validate_output(
-            BrowserActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_browser_click(
-        element_id: Annotated[
-            str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-        ],
-    ) -> BrowserActionOutput:
-        """Click one opaque semantic browser element."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.click",
-            arguments={"element_id": element_id},
-        )
-        return _validate_output(
-            BrowserActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_browser_scroll(direction: Literal["up", "down"]) -> BrowserActionOutput:
-        """Scroll the active browser page by one viewport in a bounded direction."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.scroll",
-            arguments={"direction": direction},
-        )
-        return _validate_output(
-            BrowserActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_browser_type(
-        element_id: Annotated[
-            str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-        ],
-        text: Annotated[
-            str, Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)
-        ],
-    ) -> BrowserActionOutput:
-        """Type bounded text into one opaque semantic browser element."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.type",
-            arguments={"element_id": element_id, "text": text},
-        )
-        return _validate_output(
-            BrowserActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_browser_back() -> BrowserActionOutput:
-        """Navigate the active browser tab one step back in its history."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="browser.back",
-            arguments={},
-        )
-        return _validate_output(
-            BrowserActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_computer_capture() -> ComputerCaptureOutput:
-        """Capture bounded accessibility metadata and semantic elements."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="computer.capture",
-            arguments={},
-        )
-        return _validate_output(
-            ComputerCaptureOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_computer_click(
-        element_id: ComputerElementId,
-    ) -> ComputerActionOutput:
-        """Click one opaque element from the most recent capture generation."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="computer.click",
-            arguments={"element_id": element_id},
-        )
-        return _validate_output(
-            ComputerActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
-
-    @mcp.tool(structured_output=True)
-    async def relay_computer_type(
-        element_id: ComputerElementId,
-        text: ComputerTypeText,
-    ) -> ComputerActionOutput:
-        """Type bounded text into one opaque element from the latest capture."""
-        message = InvokeMessage(
-            version=2,
-            type="invoke",
-            request_id=uuid.uuid4().hex,
-            tool_name="computer.type",
-            arguments={"element_id": element_id, "text": text},
-        )
-        return _validate_output(
-            ComputerActionOutput,
-            await _invoke(registry, device_id, message, timeout_seconds),
-        )
 
     _close_tool_input_schemas(mcp)
+    if only_announced:
+        server_tool = mcp._tool_manager.get_tool(SERVER_LOCAL_TOOL)
+        if server_tool is None:
+            raise RuntimeError("server-local MCP tool was not registered")
+        mcp._tool_manager = DynamicToolManager(
+            registry=registry,
+            timeout_seconds=timeout_seconds,
+            device_id=device_id,
+            static_tools=(server_tool,),
+            warn_on_duplicate_tools=mcp.settings.warn_on_duplicate_tools,
+        )
 
     return mcp
 
