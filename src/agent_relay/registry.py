@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .output_models import ProviderToolResult
 from .protocol import (
     AgentError,
     AgentResult,
@@ -105,7 +106,7 @@ class RelayRegistry:
         self._device_id = device_id
         self._agent_token = agent_token
         self._device: _Device | None = None
-        self._pending: dict[str, asyncio.Future[dict[str, object]]] = {}
+        self._pending: dict[str, asyncio.Future[ProviderToolResult]] = {}
         self._recently_completed: dict[str, None] = {}
         self._lock = asyncio.Lock()
         self._cancel_send_timeout_seconds = cancel_send_timeout_seconds
@@ -187,7 +188,7 @@ class RelayRegistry:
         device_id: str | None,
         message: InvokeMessage,
         timeout_seconds: float,
-    ) -> dict[str, object]:
+    ) -> ProviderToolResult:
         request_id = message.request_id
         async with self._lock:
             if self._device_id is None or (
@@ -201,9 +202,9 @@ class RelayRegistry:
             if self._pending:
                 raise DeviceBusyError("device already has an invocation in progress")
             self._recently_completed.pop(request_id, None)
-            if message.tool not in self._device.capabilities:
-                raise UnsupportedToolError(f"tool is not declared: {message.tool}")
-            future: asyncio.Future[dict[str, object]] = (
+            if message.tool_name not in self._device.capabilities:
+                raise UnsupportedToolError(f"tool is not declared: {message.tool_name}")
+            future: asyncio.Future[ProviderToolResult] = (
                 asyncio.get_running_loop().create_future()
             )
             self._pending[request_id] = future
@@ -261,7 +262,7 @@ class RelayRegistry:
         self,
         request_id: str,
         *,
-        result: dict[str, object] | None = None,
+        result: ProviderToolResult | None = None,
         exception: Exception | None = None,
     ) -> None:
         async with self._lock:
@@ -275,7 +276,9 @@ class RelayRegistry:
             if exception is not None:
                 future.set_exception(exception)
             else:
-                future.set_result(result if result is not None else {})
+                if result is None:  # pragma: no cover - result/error are exclusive
+                    raise RuntimeError("missing result")
+                future.set_result(result)
 
     async def disconnect(self, socket: JsonSocket) -> None:
         async with self._lock:
@@ -297,7 +300,7 @@ class RelayRegistry:
                 return
             write_lock = self._device.write_lock
         message = Cancel(
-            version=1,
+            version=2,
             type="cancel",
             request_id=request_id,
             reason="control request cancelled or timed out",

@@ -1,8 +1,7 @@
-"""Strict, versioned JSON wire models for the Relay v1 protocol."""
+"""Strict identity frames and provider-neutral v2 application messages."""
 
 from __future__ import annotations
 
-import json
 import unicodedata
 from typing import Annotated, Literal
 
@@ -15,13 +14,21 @@ from pydantic import (
     field_validator,
 )
 
+from .json_bounds import (
+    MAX_JSON_BYTES,
+    MAX_JSON_DEPTH,
+    MAX_JSON_NODES,
+    JsonObject,
+    validate_json_bounds,
+)
+
 MAX_TOKEN_LENGTH = 256
 MAX_CAPABILITIES = 16
 MAX_ERROR_MESSAGE_LENGTH = 512
 MAX_PROGRESS_MESSAGE_LENGTH = 512
-MAX_RESULT_JSON_BYTES = 64 * 1024
-MAX_RESULT_DEPTH = 16
-MAX_RESULT_NODES = 4096
+MAX_RESULT_JSON_BYTES = MAX_JSON_BYTES
+MAX_RESULT_DEPTH = MAX_JSON_DEPTH
+MAX_RESULT_NODES = MAX_JSON_NODES
 MAX_BROWSER_URL_LENGTH = 2048
 MAX_BROWSER_ELEMENT_ID_LENGTH = 128
 MAX_BROWSER_FILL_VALUE_LENGTH = 4096
@@ -65,24 +72,25 @@ DeviceId = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
 ]
 CommandId = Literal["pwd", "whoami", "python_version", "git_status", "git_branch"]
-ToolName = Literal[
-    "system.ping", "terminal.exec", "browser.list_tabs", "browser.navigate",
-    "browser.snapshot", "browser.fill", "browser.click", "browser.scroll",
-    "browser.type", "browser.back", "computer.capture", "computer.click",
-    "computer.type",
+ToolName = Annotated[
+    str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 ]
-TOOL_ORDER: tuple[ToolName, ...] = (
+TOOL_ORDER: tuple[str, ...] = (
     "system.ping", "terminal.exec", "browser.list_tabs", "browser.navigate",
     "browser.snapshot", "browser.fill", "browser.click", "browser.scroll",
     "browser.type", "browser.back", "computer.capture", "computer.click",
     "computer.type",
 )
 
+# Imported after the legacy output constants to avoid the temporary Task 1/Task 3
+# dependency cycle. Task 5 removes the semantic v1 output inventory entirely.
+from .output_models import ProviderToolResult  # noqa: E402
+
 
 class Message(BaseModel):
     """Base class which rejects unknown wire fields."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
     version: Literal[1]
     type: str
@@ -114,48 +122,23 @@ class Capabilities(Message):
     ] = Field(min_length=0, max_length=MAX_CAPABILITIES)
 
 
-class Heartbeat(Message):
+class ApplicationMessage(BaseModel):
+    """Closed v2 frame used only after the Agent is authenticated."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    version: Literal[2]
+    type: str
+
+
+class Heartbeat(ApplicationMessage):
     type: Literal["heartbeat"]
 
 
-class AgentResult(Message):
+class AgentResult(ApplicationMessage):
     type: Literal["result"]
     request_id: RequestId
-    result: dict[str, object]
-
-    @field_validator("result", mode="before")
-    @classmethod
-    def bounded_json_result(cls, value: object) -> object:
-        """Accept only a reasonably-sized, shallow JSON object result."""
-        if not isinstance(value, dict):
-            raise ValueError("result must be a JSON object")
-        nodes = 0
-        stack: list[tuple[object, int]] = [(value, 1)]
-        while stack:
-            node, depth = stack.pop()
-            nodes += 1
-            if nodes > MAX_RESULT_NODES:
-                raise ValueError("result has too many nodes")
-            if depth > MAX_RESULT_DEPTH:
-                raise ValueError("result is too deeply nested")
-            if isinstance(node, dict):
-                for key, child in node.items():
-                    if not isinstance(key, str):
-                        raise ValueError("result object keys must be strings")
-                    stack.append((child, depth + 1))
-            elif isinstance(node, list):
-                stack.extend((child, depth + 1) for child in node)
-            elif not isinstance(node, str | int | float | bool | type(None)):
-                raise ValueError("result must contain JSON values")
-        try:
-            encoded = json.dumps(
-                value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-            ).encode("utf-8")
-        except (TypeError, ValueError) as exc:
-            raise ValueError("result must contain JSON values") from exc
-        if len(encoded) > MAX_RESULT_JSON_BYTES:
-            raise ValueError("result JSON exceeds maximum size")
-        return value
+    result: ProviderToolResult
 
 
 class ErrorDetail(BaseModel):
@@ -165,13 +148,13 @@ class ErrorDetail(BaseModel):
     message: Annotated[str, Field(min_length=1, max_length=MAX_ERROR_MESSAGE_LENGTH)]
 
 
-class AgentError(Message):
+class AgentError(ApplicationMessage):
     type: Literal["error"]
     request_id: RequestId
     error: ErrorDetail
 
 
-class Progress(Message):
+class Progress(ApplicationMessage):
     type: Literal["progress"]
     request_id: RequestId
     progress: Annotated[int, Field(ge=0, le=100)]
@@ -285,24 +268,21 @@ class ComputerTypeInvoke(Message):
     text: ComputerTypeText
 
 
-InvokeMessage = (
-    SystemPingInvoke
-    | TerminalExecInvoke
-    | BrowserListTabsInvoke
-    | BrowserNavigateInvoke
-    | BrowserSnapshotInvoke
-    | BrowserFillInvoke
-    | BrowserClickInvoke
-    | BrowserScrollInvoke
-    | BrowserTypeInvoke
-    | BrowserBackInvoke
-    | ComputerCaptureInvoke
-    | ComputerClickInvoke
-    | ComputerTypeInvoke
-)
+class InvokeMessage(ApplicationMessage):
+    """Provider-neutral invocation with bounded opaque JSON arguments."""
+
+    type: Literal["invoke"]
+    request_id: RequestId
+    tool_name: ToolName
+    arguments: JsonObject = Field(default_factory=dict)
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def bounded_arguments(cls, value: object) -> object:
+        return validate_json_bounds(value, require_object=True, label="arguments")
 
 
-class Cancel(Message):
+class Cancel(ApplicationMessage):
     type: Literal["cancel"]
     request_id: RequestId
     reason: Annotated[str, Field(min_length=1, max_length=256)]
@@ -316,6 +296,9 @@ _agent_adapter = TypeAdapter(Annotated[AgentMessage, Field(discriminator="type")
 
 def parse_agent_message(value: object) -> AgentMessage:
     """Parse one decoded JSON object from an agent."""
+    if isinstance(value, dict) and value.get("type") in {"result", "error", "progress"}:
+        if value.get("version") != 2:
+            raise ValueError("invalid application message version")
     return _agent_adapter.validate_python(value)
 
 
@@ -329,22 +312,5 @@ def parse_server_message(value: object) -> ServerMessage:
     if message_type == "cancel":
         return Cancel.model_validate(value)
     if message_type == "invoke":
-        invoke_types = {
-            "system.ping": SystemPingInvoke,
-            "terminal.exec": TerminalExecInvoke,
-            "browser.list_tabs": BrowserListTabsInvoke,
-            "browser.navigate": BrowserNavigateInvoke,
-            "browser.snapshot": BrowserSnapshotInvoke,
-            "browser.fill": BrowserFillInvoke,
-            "browser.click": BrowserClickInvoke,
-            "browser.scroll": BrowserScrollInvoke,
-            "browser.type": BrowserTypeInvoke,
-            "browser.back": BrowserBackInvoke,
-            "computer.capture": ComputerCaptureInvoke,
-            "computer.click": ComputerClickInvoke,
-            "computer.type": ComputerTypeInvoke,
-        }
-        invoke_type = invoke_types.get(value.get("tool"))
-        if invoke_type is not None:
-            return invoke_type.model_validate(value)
+        return InvokeMessage.model_validate(value)
     raise ValueError("unknown server message")

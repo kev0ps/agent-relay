@@ -7,21 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agent_relay.protocol import (
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
-    SystemPingInvoke,
-    TerminalExecInvoke,
-)
+from agent_relay.output_models import ProviderToolResult
+from agent_relay.protocol import InvokeMessage
 from agent_relay.server import (
     RelaySettings,
     _is_allowed_bind_host,
@@ -283,11 +270,11 @@ def test_control_endpoint_requires_distinct_bearer_token() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
         path = "/v1/devices/device-a/invoke"
-        missing = client.post(path, json={"tool": "system.ping"})
+        missing = client.post(path, json={"tool_name": "system.ping", "arguments": {}})
         wrong = client.post(
             path,
             headers={"Authorization": "Bearer nope"},
-            json={"tool": "system.ping"},
+            json={"tool_name": "system.ping", "arguments": {}},
         )
         assert missing.status_code == wrong.status_code == 401
         assert missing.headers["www-authenticate"] == "Bearer"
@@ -295,126 +282,155 @@ def test_control_endpoint_requires_distinct_bearer_token() -> None:
         assert "control" not in missing.json()["detail"]
 
 
-@pytest.mark.parametrize(
-    ("body", "expected_type"),
-    [
-        ({"tool": "system.ping"}, SystemPingInvoke),
-        (
-            {"tool": "terminal.exec", "command_id": "pwd"},
-            TerminalExecInvoke,
-        ),
-        ({"tool": "browser.list_tabs"}, BrowserListTabsInvoke),
-        (
-            {"tool": "browser.navigate", "url": "https://example.test"},
-            BrowserNavigateInvoke,
-        ),
-        ({"tool": "browser.snapshot"}, BrowserSnapshotInvoke),
-        (
-            {"tool": "browser.fill", "element_id": "field-1", "value": "hello"},
-            BrowserFillInvoke,
-        ),
-        ({"tool": "browser.click", "element_id": "button-1"}, BrowserClickInvoke),
-        ({"tool": "browser.scroll", "direction": "down"}, BrowserScrollInvoke),
-        ({"tool": "browser.type", "element_id": "field-1", "text": "hello"}, BrowserTypeInvoke),
-        ({"tool": "browser.back"}, BrowserBackInvoke),
-        ({"tool": "computer.capture"}, ComputerCaptureInvoke),
-        ({"tool": "computer.click", "element_id": "opaque-1"}, ComputerClickInvoke),
-        (
-            {"tool": "computer.type", "element_id": "opaque-1", "text": "hello \U0001f680"},
-            ComputerTypeInvoke,
-        ),
-    ],
-)
-def test_compatibility_control_api_invokes_with_exact_typed_model(
-    body: dict[str, object], expected_type: type[object]
-) -> None:
+def test_websocket_rejects_v1_result_after_authenticated_registration() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/agent", headers={"Authorization": "Bearer agent-secret"}
+        ) as socket:
+            socket.send_json({"version": 1, "type": "register", "device_id": "device-a"})
+            socket.receive_json()
+            socket.send_json(
+                {"version": 1, "type": "result", "request_id": "r", "result": {}}
+            )
+            with pytest.raises(WebSocketDisconnect) as error:
+                socket.receive_json()
+            assert error.value.code == 1002
+
+
+def test_direct_control_invokes_generic_v2_message_and_preserves_provider_result() -> None:
     app = create_app(settings())
     calls: list[tuple[object, ...]] = []
+    result = ProviderToolResult(
+        content=[
+            {"type": "text", "text": "tree ready"},
+            {"type": "image", "data": "aW1hZ2U=", "mimeType": "image/png"},
+        ],
+        structuredContent={"root": {"role": "window"}},
+        isError=False,
+        _meta={"provider": "fixture"},
+    )
 
-    outputs = {
-        "system.ping": {"pong": True},
-        "terminal.exec": {"command_id": "pwd", "stdout": "", "stderr": "", "exit_code": 0, "timed_out": False, "stdout_truncated": False, "stderr_truncated": False},
-        "browser.list_tabs": {"tabs": []},
-        "browser.navigate": {"tab_id": "t", "element_id": None, "url": "https://example.test", "title": "", "success": True},
-        "browser.snapshot": {"tab_id": "t", "title": "", "url": "https://example.test", "text": "", "elements": []},
-        "browser.fill": {"tab_id": "t", "element_id": "field-1", "url": "https://example.test", "title": "", "success": True},
-        "browser.click": {"tab_id": "t", "element_id": "button-1", "url": "https://example.test", "title": "", "success": True},
-        "browser.scroll": {"tab_id": "t", "element_id": None, "url": "https://example.test", "title": "", "success": True},
-        "browser.type": {"tab_id": "t", "element_id": "field-1", "url": "https://example.test", "title": "", "success": True},
-        "browser.back": {"tab_id": "t", "element_id": None, "url": "https://example.test", "title": "", "success": True},
-        "computer.capture": {"app": "fixture", "window_title": "", "generation": "g", "elements": []},
-        "computer.click": {"success": True, "generation": "g", "element_id": "opaque-1"},
-        "computer.type": {"success": True, "generation": "g", "element_id": "opaque-1"},
-    }
-
-    async def invoke(*args: object) -> dict[str, object]:
+    async def invoke(*args: object) -> ProviderToolResult:
         calls.append(args)
-        return outputs[body["tool"]]  # type: ignore[index]
+        return result
 
     app.state.registry.invoke = invoke
     with TestClient(app) as client:
         response = client.post(
             "/v1/devices/device-a/invoke",
             headers={"Authorization": "Bearer control-secret"},
-            json=body,
+            json={
+                "tool_name": "cua.get_accessibility_tree",
+                "arguments": {},
+                "timeout_seconds": 1,
+            },
         )
 
     assert response.status_code == 200
     assert len(calls) == 1
     device_id, message, timeout = calls[0]
     assert device_id == "device-a"
-    assert type(message) is expected_type
-    assert message.request_id == response.json()["request_id"]
-    assert timeout == settings().max_timeout_seconds
+    assert message == InvokeMessage(
+        version=2,
+        type="invoke",
+        request_id=response.json()["request_id"],
+        tool_name="cua.get_accessibility_tree",
+        arguments={},
+    )
+    assert timeout == 1
+    assert response.json()["result"] == result.model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
 
 
-def test_compatibility_control_api_has_closed_per_tool_request_schemas() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"tool": "system.ping"},
+        {"tool_name": "terminal.exec", "arguments": {}, "command_id": "pwd"},
+        {"tool_name": "browser.navigate", "arguments": {}, "url": "https://example.test"},
+        {"tool_name": "browser.click", "arguments": {}, "element_id": "button"},
+        {"tool_name": "provider.tool", "arguments": {}, "method": "run"},
+    ],
+)
+def test_direct_control_rejects_legacy_and_open_top_level_fields(
+    body: dict[str, object],
+) -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/devices/device-a/invoke",
+            headers={"Authorization": "Bearer control-secret"},
+            json=body,
+        )
+    assert response.status_code == 422
+
+
+def test_direct_control_rejects_oversized_arguments_without_dispatch() -> None:
+    app = create_app(settings())
+    dispatched = False
+
+    async def invoke(*_args: object) -> ProviderToolResult:
+        nonlocal dispatched
+        dispatched = True
+        return ProviderToolResult(content=[])
+
+    app.state.registry.invoke = invoke
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/devices/device-a/invoke",
+            headers={"Authorization": "Bearer control-secret"},
+            json={"tool_name": "provider.tool", "arguments": {"value": "x" * 65536}},
+        )
+    assert response.status_code == 422
+    assert not dispatched
+    assert "xxxxx" not in response.text
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"content": [{"type": "text", "text": "ATTACKER_SENTINEL", "extra": True}]},
+        {"content": [{"type": "text", "text": "ATTACKER_SENTINEL" * 65536}]},
+    ],
+)
+def test_direct_control_rejects_invalid_provider_result_with_sanitized_error(
+    result: dict[str, object],
+) -> None:
+    app = create_app(settings())
+
+    async def invoke(*_args: object) -> object:
+        return result
+
+    app.state.registry.invoke = invoke
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/devices/device-a/invoke",
+            headers={"Authorization": "Bearer control-secret"},
+            json={"tool_name": "provider.tool", "arguments": {}},
+        )
+    assert response.status_code == 502
+    assert response.json() == {"detail": "device returned an invalid result"}
+    assert "ATTACKER_SENTINEL" not in response.text
+
+
+def test_direct_control_api_has_one_closed_generic_request_schema() -> None:
     schema = create_app(settings()).openapi()
     request = schema["paths"]["/v1/devices/{device_id}/invoke"]["post"]["requestBody"][
         "content"
     ]["application/json"]["schema"]
-    assert request["discriminator"]["propertyName"] == "tool"
-    variants = [
-        schema["components"]["schemas"][ref["$ref"].rsplit("/", 1)[1]]
-        for ref in request["oneOf"]
-    ]
-    by_tool = {variant["properties"]["tool"]["const"]: variant for variant in variants}
-    assert set(by_tool) == {
-        "system.ping",
-        "terminal.exec",
-        "browser.list_tabs",
-        "browser.navigate",
-        "browser.snapshot",
-        "browser.fill",
-        "browser.click",
-        "browser.scroll",
-        "browser.type",
-        "browser.back",
-        "computer.capture",
-        "computer.click",
-        "computer.type",
+    model = schema["components"]["schemas"][request["$ref"].rsplit("/", 1)[1]]
+    assert model["additionalProperties"] is False
+    assert set(model["properties"]) == {
+        "tool_name",
+        "arguments",
+        "timeout_seconds",
     }
-    expected = {
-        "system.ping": {"tool", "timeout_seconds"},
-        "terminal.exec": {"tool", "command_id", "timeout_seconds"},
-        "browser.list_tabs": {"tool", "timeout_seconds"},
-        "browser.navigate": {"tool", "url", "timeout_seconds"},
-        "browser.snapshot": {"tool", "timeout_seconds"},
-        "browser.fill": {"tool", "element_id", "value", "timeout_seconds"},
-        "browser.click": {"tool", "element_id", "timeout_seconds"},
-        "browser.scroll": {"tool", "direction", "timeout_seconds"},
-        "browser.type": {"tool", "element_id", "text", "timeout_seconds"},
-        "browser.back": {"tool", "timeout_seconds"},
-        "computer.capture": {"tool", "timeout_seconds"},
-        "computer.click": {"tool", "element_id", "timeout_seconds"},
-        "computer.type": {"tool", "element_id", "text", "timeout_seconds"},
-    }
-    for tool, fields in expected.items():
-        assert by_tool[tool]["additionalProperties"] is False
-        assert set(by_tool[tool]["properties"]) == fields
+    assert model["required"] == ["tool_name"]
 
 
-def test_compatibility_control_api_response_schema_is_closed_recursively() -> None:
+def test_direct_control_api_response_schema_is_closed_recursively() -> None:
     schema = create_app(settings()).openapi()
     components = schema["components"]["schemas"]
     response = schema["paths"]["/v1/devices/{device_id}/invoke"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
@@ -436,59 +452,12 @@ def test_compatibility_control_api_response_schema_is_closed_recursively() -> No
                 walk(value)
 
     walk(response)
-    for name in ("InvokeResponse", "ComputerCaptureOutput", "ComputerElementOutput", "ComputerActionOutput"):
+    for name in ("InvokeResponse", "ProviderToolResult"):
         assert components[name]["additionalProperties"] is False
     request_id = components["InvokeResponse"]["properties"]["request_id"]
     assert request_id["minLength"] == 1
     assert request_id["maxLength"] == 128
     assert request_id["pattern"] == "^[A-Za-z0-9._:-]+$"
-
-
-@pytest.mark.parametrize("malformed", [
-    {"app": "fixture", "window_title": "Fixture", "generation": "g", "elements": [{"element_id": "e", "role": "button", "name": "Apply", "value": None, "enabled": True, "coordinates": [1, 2]}]},
-    {"app": "fixture", "window_title": "Fixture", "generation": "g", "elements": [], "screenshot": "ATTACKER_SENTINEL"},
-    {"success": True, "generation": "g", "element_id": "e"},
-])
-def test_compatibility_computer_capture_fails_closed_on_wrong_output(malformed: dict[str, object]) -> None:
-    app = create_app(settings())
-    async def invoke(*_args: object) -> dict[str, object]:
-        return malformed
-    app.state.registry.invoke = invoke
-    with TestClient(app) as client:
-        response = client.post("/v1/devices/device-a/invoke", headers={"Authorization": "Bearer control-secret"}, json={"tool": "computer.capture"})
-    assert response.status_code == 502
-    assert response.json() == {"detail": "device returned an invalid result"}
-    assert "ATTACKER_SENTINEL" not in response.text
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"tool": "system.ping", "command_id": "pwd"},
-        {"tool": "browser.list_tabs", "url": "https://example.test"},
-        {"tool": "browser.navigate"},
-        {"tool": "browser.fill", "element_id": "field"},
-        {"tool": "browser.click", "element_id": "button", "value": "x"},
-        {"tool": "computer.capture", "screenshot": True},
-        {"tool": "computer.click", "element_id": "button", "coordinates": [1, 2]},
-        {"tool": "computer.type", "text": "missing target"},
-        {"tool": "computer.type", "element_id": "field", "text": "a\nb"},
-        {"tool": "computer.type", "element_id": "field", "text": "a\u0085b"},
-        {"tool": "computer.type", "element_id": "field", "text": "a\u202eb"},
-    ],
-)
-def test_compatibility_control_api_rejects_wrong_per_tool_fields(
-    body: dict[str, object],
-) -> None:
-    app = create_app(settings())
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/devices/device-a/invoke",
-            headers={"Authorization": "Bearer control-secret"},
-            json=body,
-        )
-    assert response.status_code == 422
-
 
 def test_control_endpoint_rejects_non_ascii_bearer_token() -> None:
     app = create_app(settings())
@@ -496,7 +465,7 @@ def test_control_endpoint_rejects_non_ascii_bearer_token() -> None:
         response = client.post(
             "/v1/devices/device-a/invoke",
             headers=[(b"authorization", "Bearer token-\u00e9".encode())],
-            json={"tool": "system.ping"},
+            json={"tool_name": "system.ping", "arguments": {}},
         )
 
     assert response.status_code == 401
@@ -643,12 +612,14 @@ def test_control_endpoint_distinguishes_unknown_and_offline_device() -> None:
     headers = {"Authorization": "Bearer control-secret"}
     with TestClient(app) as client:
         unknown = client.post(
-            "/v1/devices/other/invoke", headers=headers, json={"tool": "system.ping"}
+            "/v1/devices/other/invoke",
+            headers=headers,
+            json={"tool_name": "system.ping", "arguments": {}},
         )
         offline = client.post(
             "/v1/devices/device-a/invoke",
             headers=headers,
-            json={"tool": "system.ping"},
+            json={"tool_name": "system.ping", "arguments": {}},
         )
     assert unknown.status_code == 404
     assert offline.status_code == 503
@@ -658,7 +629,7 @@ def test_websocket_requires_register_as_first_message() -> None:
     app = create_app(settings())
     with TestClient(app) as client:
         with client.websocket_connect("/ws/agent", headers={"Authorization": "Bearer agent-secret"}) as ws:
-            ws.send_json({"version": 1, "type": "heartbeat"})
+            ws.send_json({"version": 2, "type": "heartbeat"})
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 ws.receive_json()
     assert exc_info.value.code == 1002
@@ -723,7 +694,7 @@ def test_websocket_register_invoke_and_result() -> None:
             unavailable = client.post(
                 "/v1/devices/device-a/invoke",
                 headers={"Authorization": "Bearer control-secret"},
-                json={"tool": "system.ping"},
+                json={"tool_name": "system.ping", "arguments": {}},
             )
             assert unavailable.status_code == 409
             ws.send_json(
@@ -735,20 +706,29 @@ def test_websocket_register_invoke_and_result() -> None:
                 response["value"] = client.post(
                     "/v1/devices/device-a/invoke",
                     headers={"Authorization": "Bearer control-secret"},
-                    json={"tool": "system.ping", "timeout_seconds": 1},
+                    json={
+                        "tool_name": "system.ping",
+                        "arguments": {},
+                        "timeout_seconds": 1,
+                    },
                 )
 
             thread = threading.Thread(target=control_request)
             thread.start()
             invoke = ws.receive_json()
             assert invoke["type"] == "invoke"
-            assert invoke["tool"] == "system.ping"
+            assert invoke["version"] == 2
+            assert invoke["tool_name"] == "system.ping"
+            assert invoke["arguments"] == {}
             ws.send_json(
                 {
-                    "version": 1,
+                    "version": 2,
                     "type": "result",
                     "request_id": invoke["request_id"],
-                    "result": {"pong": True},
+                    "result": {
+                        "content": [],
+                        "structuredContent": {"pong": True},
+                    },
                 }
             )
             thread.join(timeout=2)
@@ -757,7 +737,11 @@ def test_websocket_register_invoke_and_result() -> None:
             assert completed.status_code == 200  # type: ignore[union-attr]
             assert completed.json() == {
                 "request_id": invoke["request_id"],
-                "result": {"pong": True},
+                "result": {
+                    "content": [],
+                    "structuredContent": {"pong": True},
+                    "isError": False,
+                },
             }  # type: ignore[union-attr]
 
 
@@ -869,13 +853,13 @@ def test_websocket_processes_capabilities_heartbeat_progress_and_error(
             )
             assert ws.receive_json()["type"] == "registered"
             before = app.state.registry.last_heartbeat
-            ws.send_json({"version": 1, "type": "heartbeat"})
+            ws.send_json({"version": 2, "type": "heartbeat"})
             assert heartbeat_handled.wait(timeout=2)
             assert app.state.registry.last_heartbeat > before
             terminal = client.post(
                 "/v1/devices/device-a/invoke",
                 headers=headers,
-                json={"tool": "terminal.exec", "command_id": "pwd"},
+                json={"tool_name": "terminal.exec", "arguments": {"command_id": "pwd"}},
             )
             assert terminal.status_code == 409
 
@@ -889,16 +873,20 @@ def test_websocket_processes_capabilities_heartbeat_progress_and_error(
                 response["value"] = client.post(
                     "/v1/devices/device-a/invoke",
                     headers=headers,
-                    json={"tool": "terminal.exec", "command_id": "pwd"},
+                    json={
+                        "tool_name": "terminal.exec",
+                        "arguments": {"command_id": "pwd"},
+                    },
                 )
 
             thread = threading.Thread(target=control_request)
             thread.start()
             invoke = ws.receive_json()
-            assert invoke["tool"] == "terminal.exec"
+            assert invoke["tool_name"] == "terminal.exec"
+            assert invoke["arguments"] == {"command_id": "pwd"}
             ws.send_json(
                 {
-                    "version": 1,
+                    "version": 2,
                     "type": "progress",
                     "request_id": invoke["request_id"],
                     "progress": 50,
@@ -908,7 +896,7 @@ def test_websocket_processes_capabilities_heartbeat_progress_and_error(
             assert app.state.registry.current_progress == 50
             ws.send_json(
                 {
-                    "version": 1,
+                    "version": 2,
                     "type": "error",
                     "request_id": invoke["request_id"],
                     "error": {"code": "failed", "message": "agent failed"},
@@ -947,17 +935,21 @@ def test_websocket_closes_cleanly_for_a_duplicate_result() -> None:
                 response["value"] = client.post(
                     "/v1/devices/device-a/invoke",
                     headers=headers,
-                    json={"tool": "system.ping", "timeout_seconds": 1},
+                    json={
+                        "tool_name": "system.ping",
+                        "arguments": {},
+                        "timeout_seconds": 1,
+                    },
                 )
 
             thread = threading.Thread(target=control_request)
             thread.start()
             invoke = ws.receive_json()
             result = {
-                "version": 1,
+                "version": 2,
                 "type": "result",
                 "request_id": invoke["request_id"],
-                "result": {"pong": True},
+                "result": {"content": [], "structuredContent": {"pong": True}},
             }
             ws.send_json(result)
             thread.join(timeout=2)
@@ -992,7 +984,11 @@ def test_websocket_closes_for_a_result_sent_after_timeout() -> None:
                 response["value"] = client.post(
                     "/v1/devices/device-a/invoke",
                     headers=headers,
-                    json={"tool": "system.ping", "timeout_seconds": 0.1},
+                    json={
+                        "tool_name": "system.ping",
+                        "arguments": {},
+                        "timeout_seconds": 0.1,
+                    },
                 )
 
             thread = threading.Thread(target=control_request)
@@ -1003,10 +999,13 @@ def test_websocket_closes_for_a_result_sent_after_timeout() -> None:
             assert cancel["request_id"] == invoke["request_id"]
             ws.send_json(
                 {
-                    "version": 1,
+                    "version": 2,
                     "type": "result",
                     "request_id": invoke["request_id"],
-                    "result": {"too": "late"},
+                    "result": {
+                        "content": [],
+                        "structuredContent": {"too": "late"},
+                    },
                 }
             )
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -1041,7 +1040,11 @@ def test_websocket_disconnect_during_invocation_releases_caller_and_registry() -
                 response["value"] = client.post(
                     "/v1/devices/device-a/invoke",
                     headers=headers,
-                    json={"tool": "system.ping", "timeout_seconds": 1},
+                    json={
+                        "tool_name": "system.ping",
+                        "arguments": {},
+                        "timeout_seconds": 1,
+                    },
                 )
 
             thread = threading.Thread(target=control_request)

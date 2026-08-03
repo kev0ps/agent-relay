@@ -23,8 +23,11 @@ def test_public_repository_document_exists(relative_path: str) -> None:
 
 def test_repository_uses_one_active_roadmap_without_dated_plans() -> None:
     assert not (ROOT / "docs/plans").exists()
-    assert not (ROOT / ".hermes/plans").exists()
     assert "only active roadmap" in (ROOT / "docs/ROADMAP.md").read_text()
+
+
+def test_hermes_is_an_ignored_internal_directory() -> None:
+    assert ".hermes/" in (ROOT / ".gitignore").read_text().splitlines()
 
 
 def test_package_metadata_declares_mit_license() -> None:

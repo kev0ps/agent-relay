@@ -26,6 +26,7 @@ from agent_relay.output_models import (
     ComputerActionOutput,
     ComputerCaptureOutput,
     ComputerElementOutput,
+    ProviderToolResult,
 )
 from agent_relay.protocol import (
     MAX_BROWSER_ELEMENT_ID_LENGTH,
@@ -45,21 +46,9 @@ from agent_relay.protocol import (
     MAX_COMPUTER_ROLE_LENGTH,
     MAX_RESULT_JSON_BYTES,
     AgentResult,
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
     Capabilities,
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
+    InvokeMessage,
     Register,
-    SystemPingInvoke,
-    TerminalExecInvoke,
 )
 from agent_relay.registry import (
     DeviceBusyError,
@@ -97,15 +86,15 @@ class BlockingSocket:
 
 
 class StubRegistry:
-    def __init__(self, result: object) -> None:
+    def __init__(self, result: ProviderToolResult | BaseException) -> None:
         self.result = result
         self.calls: list[tuple[object, ...]] = []
 
-    async def invoke(self, *args: object) -> dict[str, object]:
+    async def invoke(self, *args: object) -> ProviderToolResult:
         self.calls.append(args)
         if isinstance(self.result, BaseException):
             raise self.result
-        assert isinstance(self.result, dict)
+        assert isinstance(self.result, ProviderToolResult)
         return self.result
 
 
@@ -379,10 +368,12 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_result(
                 AgentResult(
-                    version=1,
+                    version=2,
                     type="result",
                     request_id=relay_request_id,
-                    result={"late": True},
+                    result=ProviderToolResult(
+                        content=[], structuredContent={"late": True}
+                    ),
                 )
             )
         assert [
@@ -488,7 +479,9 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
     tool_name: str, arguments: dict[str, object], result: dict[str, object]
 ) -> None:
     async def scenario() -> None:
-        registry = StubRegistry(result)
+        registry = StubRegistry(
+            ProviderToolResult(content=[], structuredContent=result)
+        )
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=2.5
         )
@@ -500,25 +493,22 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
         assert len(registry.calls) == 1
         device_id, message, timeout = registry.calls[0]
         assert device_id == "one"
-        expected_type = (
-            SystemPingInvoke if tool_name == "relay_system_ping" else TerminalExecInvoke
-        )
-        assert type(message) is expected_type
+        assert type(message) is InvokeMessage
+        assert message.version == 2
         assert message.request_id
-        assert message.tool == (
+        assert message.tool_name == (
             "system.ping" if tool_name == "relay_system_ping" else "terminal.exec"
         )
-        if isinstance(message, TerminalExecInvoke):
-            assert message.command_id == arguments["command_id"]
+        assert message.arguments == arguments
         assert timeout == 2.5
 
     run(scenario())
 
 
 @pytest.mark.parametrize(
-    ("tool_name", "arguments", "result", "expected_type"),
+    ("tool_name", "arguments", "result", "expected_tool_name"),
     [
-        ("relay_browser_list_tabs", {}, {"tabs": []}, BrowserListTabsInvoke),
+        ("relay_browser_list_tabs", {}, {"tabs": []}, "browser.list_tabs"),
         (
             "relay_browser_navigate",
             {"url": "https://example.test"},
@@ -529,7 +519,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "title": "Example",
                 "success": True,
             },
-            BrowserNavigateInvoke,
+            "browser.navigate",
         ),
         (
             "relay_browser_snapshot",
@@ -541,7 +531,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "text": "Hello",
                 "elements": [],
             },
-            BrowserSnapshotInvoke,
+            "browser.snapshot",
         ),
         (
             "relay_browser_fill",
@@ -553,7 +543,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "title": "Example",
                 "success": True,
             },
-            BrowserFillInvoke,
+            "browser.fill",
         ),
         (
             "relay_browser_click",
@@ -565,7 +555,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "title": "Example",
                 "success": True,
             },
-            BrowserClickInvoke,
+            "browser.click",
         ),
         (
             "relay_browser_scroll",
@@ -577,7 +567,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "title": "Example",
                 "success": True,
             },
-            BrowserScrollInvoke,
+            "browser.scroll",
         ),
         (
             "relay_browser_type",
@@ -589,7 +579,7 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "title": "Example",
                 "success": True,
             },
-            BrowserTypeInvoke,
+            "browser.type",
         ),
         (
             "relay_browser_back",
@@ -601,35 +591,38 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
                 "title": "Example",
                 "success": True,
             },
-            BrowserBackInvoke,
+            "browser.back",
         ),
     ],
 )
-def test_browser_tools_map_to_exact_typed_invokes(
+def test_browser_tools_map_to_generic_v2_invokes(
     tool_name: str,
     arguments: dict[str, object],
     result: dict[str, object],
-    expected_type: type[object],
+    expected_tool_name: str,
 ) -> None:
     async def scenario() -> None:
-        registry = StubRegistry(result)
+        registry = StubRegistry(
+            ProviderToolResult(content=[], structuredContent=result)
+        )
         mcp = create_mcp_facade(registry=registry, device_id="one", timeout_seconds=2.5)  # type: ignore[arg-type]
         async with create_connected_server_and_client_session(mcp) as session:
             response = await session.call_tool(tool_name, arguments)
         assert response.isError is False
         assert response.structuredContent == result
         _, message, timeout = registry.calls[0]
-        assert type(message) is expected_type
+        assert type(message) is InvokeMessage
+        assert message.version == 2
+        assert message.tool_name == expected_tool_name
         assert message.request_id
         assert timeout == 2.5
-        for key, value in arguments.items():
-            assert getattr(message, key) == value
+        assert message.arguments == arguments
 
     run(scenario())
 
 
 @pytest.mark.parametrize(
-    ("tool_name", "arguments", "result", "expected_type"),
+    ("tool_name", "arguments", "result", "expected_tool_name"),
     [
         (
             "relay_computer_capture",
@@ -640,40 +633,43 @@ def test_browser_tools_map_to_exact_typed_invokes(
                 "generation": "generation-1",
                 "elements": [],
             },
-            ComputerCaptureInvoke,
+            "computer.capture",
         ),
         (
             "relay_computer_click",
             {"element_id": "opaque-1"},
             {"success": True, "generation": "generation-1", "element_id": "opaque-1"},
-            ComputerClickInvoke,
+            "computer.click",
         ),
         (
             "relay_computer_type",
             {"element_id": "opaque-1", "text": "hello"},
             {"success": True, "generation": "generation-1", "element_id": "opaque-1"},
-            ComputerTypeInvoke,
+            "computer.type",
         ),
     ],
 )
-def test_computer_tools_map_to_exact_typed_invokes(
+def test_computer_tools_map_to_generic_v2_invokes(
     tool_name: str,
     arguments: dict[str, object],
     result: dict[str, object],
-    expected_type: type[object],
+    expected_tool_name: str,
 ) -> None:
     async def scenario() -> None:
-        registry = StubRegistry(result)
+        registry = StubRegistry(
+            ProviderToolResult(content=[], structuredContent=result)
+        )
         mcp = create_mcp_facade(registry=registry, device_id="one", timeout_seconds=2.5)  # type: ignore[arg-type]
         async with create_connected_server_and_client_session(mcp) as session:
             response = await session.call_tool(tool_name, arguments)
         assert response.isError is False
         assert response.structuredContent == result
         _, message, timeout = registry.calls[0]
-        assert type(message) is expected_type
+        assert type(message) is InvokeMessage
+        assert message.version == 2
+        assert message.tool_name == expected_tool_name
         assert timeout == 2.5
-        for key, value in arguments.items():
-            assert getattr(message, key) == value
+        assert message.arguments == arguments
 
     run(scenario())
 
@@ -681,7 +677,14 @@ def test_computer_tools_map_to_exact_typed_invokes(
 def test_computer_type_unicode_control_policy_applies_at_mcp_boundary() -> None:
     async def scenario() -> None:
         registry = StubRegistry(
-            {"success": True, "generation": "g", "element_id": "opaque-1"}
+            ProviderToolResult(
+                content=[],
+                structuredContent={
+                    "success": True,
+                    "generation": "g",
+                    "element_id": "opaque-1",
+                },
+            )
         )
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=1
@@ -894,7 +897,7 @@ def test_unexpected_tool_failures_never_reach_mcp_clients(tool_name: str) -> Non
 
 def test_terminal_command_enum_and_extra_arguments_are_rejected() -> None:
     async def scenario() -> None:
-        registry = StubRegistry({})
+        registry = StubRegistry(ProviderToolResult(content=[], structuredContent={}))
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=1
         )

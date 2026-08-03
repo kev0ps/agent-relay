@@ -33,22 +33,37 @@ from pydantic import (
 from .capabilities.base import (
     CapabilityName,
     CommandFailedError,
-    InvokeMessage,
     LocalCapability,
 )
 from .capabilities.browser import BrowserStartupError
 from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
+from .catalog import CatalogError, CatalogSnapshot
 from .config import PUBLIC_TO_INTERNAL, load_agent_settings
+from .output_models import ProviderToolResult
 from .protocol import (
     MAX_RESULT_JSON_BYTES,
     TOOL_ORDER,
     AgentError,
     AgentResult,
+    BrowserBackInvoke,
+    BrowserClickInvoke,
+    BrowserFillInvoke,
+    BrowserListTabsInvoke,
+    BrowserNavigateInvoke,
+    BrowserScrollInvoke,
+    BrowserSnapshotInvoke,
+    BrowserTypeInvoke,
     Cancel,
     Capabilities,
+    ComputerCaptureInvoke,
+    ComputerClickInvoke,
+    ComputerTypeInvoke,
     Heartbeat,
+    InvokeMessage,
     Registered,
+    SystemPingInvoke,
+    TerminalExecInvoke,
     ToolName,
     parse_server_message,
 )
@@ -60,6 +75,39 @@ class ConfigurationError(ValueError):
 
     def __init__(self) -> None:
         super().__init__("invalid agent configuration")
+
+
+_LEGACY_INVOKE_BY_TOOL = {
+    "system.ping": SystemPingInvoke,
+    "terminal.exec": TerminalExecInvoke,
+    "browser.list_tabs": BrowserListTabsInvoke,
+    "browser.navigate": BrowserNavigateInvoke,
+    "browser.snapshot": BrowserSnapshotInvoke,
+    "browser.fill": BrowserFillInvoke,
+    "browser.click": BrowserClickInvoke,
+    "browser.scroll": BrowserScrollInvoke,
+    "browser.type": BrowserTypeInvoke,
+    "browser.back": BrowserBackInvoke,
+    "computer.capture": ComputerCaptureInvoke,
+    "computer.click": ComputerClickInvoke,
+    "computer.type": ComputerTypeInvoke,
+}
+
+
+def _adapt_legacy_invoke(message: InvokeMessage) -> object:
+    """Validate a v2 generic invoke for one currently typed local capability."""
+    model = _LEGACY_INVOKE_BY_TOOL.get(message.tool_name)
+    if model is None:
+        raise ValueError("unsupported local capability")
+    return model.model_validate(
+        {
+            "version": 1,
+            "type": "invoke",
+            "request_id": message.request_id,
+            "tool": message.tool_name,
+            **message.arguments,
+        }
+    )
 
 
 class AgentSettings(BaseModel):
@@ -535,6 +583,7 @@ class RelayAgent:
         capabilities: Sequence[LocalCapability] | None = None,
         connector: Callable[..., AsyncContextManager[TextSocket]] | None = None,
         monotonic: Callable[[], float] | None = None,
+        catalog: CatalogSnapshot | None = None,
     ) -> None:
         self.settings = settings
         configured_runner = runner or CommandRunner(settings.workspace, timeout_seconds=settings.command_timeout_seconds, stdout_limit=settings.stdout_limit, stderr_limit=settings.stderr_limit)
@@ -574,7 +623,24 @@ class RelayAgent:
                 )
             )
         allowed_tools: set[str] | None = None
-        if settings.tools_allowlist is not None:
+        selected_catalog: CatalogSnapshot | None = None
+        if catalog is not None:
+            try:
+                selected_names = settings.tools_allowlist or ()
+                catalog.validate_allowlist(selected_names)
+                selected_catalog = catalog.select(selected_names)
+            except CatalogError:
+                raise ConfigurationError() from None
+            allowed_tools = {
+                f"{descriptor.provider_name}.{descriptor.tool_name}"
+                for descriptor in selected_catalog.selected_descriptors
+            }
+            configured_capabilities = [
+                capability
+                for capability in configured_capabilities
+                if any(tool in allowed_tools for tool in capability.tools)
+            ]
+        elif settings.tools_allowlist is not None:
             allowed_tools = {
                 PUBLIC_TO_INTERNAL.get(name, name) for name in settings.tools_allowlist
             }
@@ -583,6 +649,7 @@ class RelayAgent:
                 for capability in configured_capabilities
                 if any(tool in allowed_tools for tool in capability.tools)
             ]
+        self._catalog = selected_catalog
         self._capabilities = self._index_capabilities(
             configured_capabilities, allowed_tools=allowed_tools
         )
@@ -772,7 +839,7 @@ class RelayAgent:
                 if receive in done:
                     message = receive.result()
                     receive = asyncio.create_task(self._receive(socket))
-                    if isinstance(message, InvokeMessage.__args__):
+                    if isinstance(message, InvokeMessage):
                         if action is not None:
                             await self._send_error(socket, message.request_id, "busy", "an action is already running")
                         else:
@@ -801,15 +868,27 @@ class RelayAgent:
         while not self._stop_event.is_set():
             await self._sleep_or_stop(self.settings.heartbeat_interval_seconds)
             if not self._stop_event.is_set():
-                await self._send(socket, Heartbeat(version=1, type="heartbeat").model_dump(mode="json"))
+                await self._send(socket, Heartbeat(version=2, type="heartbeat").model_dump(mode="json"))
 
     async def _perform(self, socket: TextSocket, message: InvokeMessage) -> None:
         try:
-            capability = self._capabilities.get(message.tool)
+            capability = self._capabilities.get(message.tool_name)
             if capability is None:
                 raise ValueError("unsupported local capability")
-            result = await capability.invoke(message)
-            await self._send(socket, AgentResult(version=1, type="result", request_id=message.request_id, result=result).model_dump(mode="json"))
+            legacy_message = _adapt_legacy_invoke(message)
+            result = await capability.invoke(legacy_message)
+            provider_result = ProviderToolResult(
+                content=[], structuredContent=result
+            )
+            await self._send(
+                socket,
+                AgentResult(
+                    version=2,
+                    type="result",
+                    request_id=message.request_id,
+                    result=provider_result,
+                ).model_dump(mode="json", by_alias=True),
+            )
         except asyncio.CancelledError:
             raise
         except CommandFailedError:
@@ -836,7 +915,15 @@ class RelayAgent:
             await socket.send(payload)
 
     async def _send_error(self, socket: TextSocket, request_id: str, code: str, message: str) -> None:
-        await self._send(socket, AgentError(version=1, type="error", request_id=request_id, error={"code": code, "message": message}).model_dump(mode="json"))
+        await self._send(
+            socket,
+            AgentError(
+                version=2,
+                type="error",
+                request_id=request_id,
+                error={"code": code, "message": message},
+            ).model_dump(mode="json"),
+        )
 
 async def _run_with_signal_handlers(agent: RelayAgent) -> None:
     loop = asyncio.get_running_loop()
@@ -850,7 +937,11 @@ async def _run_with_signal_handlers(agent: RelayAgent) -> None:
     await agent.run()
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> None:
     parser = argparse.ArgumentParser(description="Agent Relay outbound agent")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--agent-token", help=argparse.SUPPRESS)
@@ -862,14 +953,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     try:
         settings = (
-            load_agent_settings(args.config)
+            load_agent_settings(args.config, catalog=catalog)
             if args.config is not None
             else AgentSettings.from_environment()
         )
     except (ConfigurationError, ValueError):
         parser.error("invalid agent configuration")
     try:
-        asyncio.run(_run_with_signal_handlers(RelayAgent(settings)))
+        asyncio.run(_run_with_signal_handlers(RelayAgent(settings, catalog=catalog)))
     except BrowserStartupError:
         parser.exit(1, "agent browser startup failed\n")
 

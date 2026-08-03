@@ -1,5 +1,6 @@
 .env
 .venv/
+.hermes/
 __pycache__/
 *.py[cod]
 .pytest_cache/

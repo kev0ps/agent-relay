@@ -22,6 +22,7 @@ from .output_models import (
     ComputerElementId,
     Output,
     PingOutput,
+    ProviderToolResult,
     TerminalExecOutput,
 )
 from .protocol import (
@@ -29,22 +30,9 @@ from .protocol import (
     MAX_BROWSER_FILL_VALUE_LENGTH,
     MAX_BROWSER_TYPE_TEXT_LENGTH,
     MAX_BROWSER_URL_LENGTH,
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
     CommandId,
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
     ComputerTypeText,
     InvokeMessage,
-    SystemPingInvoke,
-    TerminalExecInvoke,
 )
 from .registry import (
     DeviceBusyError,
@@ -160,11 +148,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_system_ping() -> PingOutput:
         """Invoke the fixed system ping capability on the configured device."""
-        message = SystemPingInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="system.ping",
+            tool_name="system.ping",
+            arguments={},
         )
         result = await _invoke(registry, device_id, message, timeout_seconds)
         return _validate_output(PingOutput, result)
@@ -172,12 +161,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_terminal_exec(command_id: CommandId) -> TerminalExecOutput:
         """Run one fixed, argument-free terminal command on the configured device."""
-        message = TerminalExecInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="terminal.exec",
-            command_id=command_id,
+            tool_name="terminal.exec",
+            arguments={"command_id": command_id},
         )
         result = await _invoke(registry, device_id, message, timeout_seconds)
         return _validate_output(TerminalExecOutput, result)
@@ -185,11 +174,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_browser_list_tabs() -> BrowserTabsOutput:
         """List the bounded set of browser tabs available to the device."""
-        message = BrowserListTabsInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.list_tabs",
+            tool_name="browser.list_tabs",
+            arguments={},
         )
         return _validate_output(
             BrowserTabsOutput,
@@ -201,12 +191,12 @@ def create_mcp_facade(
         url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)],
     ) -> BrowserActionOutput:
         """Navigate the active browser tab to a bounded URL."""
-        message = BrowserNavigateInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.navigate",
-            url=url,
+            tool_name="browser.navigate",
+            arguments={"url": url},
         )
         return _validate_output(
             BrowserActionOutput,
@@ -216,11 +206,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_browser_snapshot() -> BrowserPageOutput:
         """Return bounded semantic content from the active browser page."""
-        message = BrowserSnapshotInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.snapshot",
+            tool_name="browser.snapshot",
+            arguments={},
         )
         return _validate_output(
             BrowserPageOutput,
@@ -237,13 +228,12 @@ def create_mcp_facade(
         ],
     ) -> BrowserActionOutput:
         """Fill one opaque semantic browser element with a bounded value."""
-        message = BrowserFillInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.fill",
-            element_id=element_id,
-            value=value,
+            tool_name="browser.fill",
+            arguments={"element_id": element_id, "value": value},
         )
         return _validate_output(
             BrowserActionOutput,
@@ -257,12 +247,12 @@ def create_mcp_facade(
         ],
     ) -> BrowserActionOutput:
         """Click one opaque semantic browser element."""
-        message = BrowserClickInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.click",
-            element_id=element_id,
+            tool_name="browser.click",
+            arguments={"element_id": element_id},
         )
         return _validate_output(
             BrowserActionOutput,
@@ -272,12 +262,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_browser_scroll(direction: Literal["up", "down"]) -> BrowserActionOutput:
         """Scroll the active browser page by one viewport in a bounded direction."""
-        message = BrowserScrollInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.scroll",
-            direction=direction,
+            tool_name="browser.scroll",
+            arguments={"direction": direction},
         )
         return _validate_output(
             BrowserActionOutput,
@@ -294,13 +284,12 @@ def create_mcp_facade(
         ],
     ) -> BrowserActionOutput:
         """Type bounded text into one opaque semantic browser element."""
-        message = BrowserTypeInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.type",
-            element_id=element_id,
-            text=text,
+            tool_name="browser.type",
+            arguments={"element_id": element_id, "text": text},
         )
         return _validate_output(
             BrowserActionOutput,
@@ -310,11 +299,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_browser_back() -> BrowserActionOutput:
         """Navigate the active browser tab one step back in its history."""
-        message = BrowserBackInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="browser.back",
+            tool_name="browser.back",
+            arguments={},
         )
         return _validate_output(
             BrowserActionOutput,
@@ -324,11 +314,12 @@ def create_mcp_facade(
     @mcp.tool(structured_output=True)
     async def relay_computer_capture() -> ComputerCaptureOutput:
         """Capture bounded accessibility metadata and semantic elements."""
-        message = ComputerCaptureInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="computer.capture",
+            tool_name="computer.capture",
+            arguments={},
         )
         return _validate_output(
             ComputerCaptureOutput,
@@ -340,12 +331,12 @@ def create_mcp_facade(
         element_id: ComputerElementId,
     ) -> ComputerActionOutput:
         """Click one opaque element from the most recent capture generation."""
-        message = ComputerClickInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="computer.click",
-            element_id=element_id,
+            tool_name="computer.click",
+            arguments={"element_id": element_id},
         )
         return _validate_output(
             ComputerActionOutput,
@@ -358,13 +349,12 @@ def create_mcp_facade(
         text: ComputerTypeText,
     ) -> ComputerActionOutput:
         """Type bounded text into one opaque element from the latest capture."""
-        message = ComputerTypeInvoke(
-            version=1,
+        message = InvokeMessage(
+            version=2,
             type="invoke",
             request_id=uuid.uuid4().hex,
-            tool="computer.type",
-            element_id=element_id,
-            text=text,
+            tool_name="computer.type",
+            arguments={"element_id": element_id, "text": text},
         )
         return _validate_output(
             ComputerActionOutput,
@@ -415,7 +405,7 @@ async def _invoke(
     device_id: str | None,
     message: InvokeMessage,
     timeout_seconds: float,
-) -> dict[str, object]:
+) -> ProviderToolResult:
     try:
         return await registry.invoke(device_id, message, timeout_seconds)
     except UnknownDeviceError:
@@ -434,8 +424,10 @@ async def _invoke(
         raise ToolError("internal relay error") from None
 
 
-def _validate_output(output_type: type[Output], result: object) -> Output:
+def _validate_output(
+    output_type: type[Output], result: ProviderToolResult
+) -> Output:
     try:
-        return output_type.model_validate(result)
+        return output_type.model_validate(result.structured_content)
     except ValidationError:
         raise ToolError("device returned an invalid result") from None

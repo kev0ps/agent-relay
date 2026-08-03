@@ -5,14 +5,14 @@ import inspect
 
 import pytest
 
+from agent_relay.output_models import ProviderToolResult
 from agent_relay.protocol import (
     AgentError,
     AgentResult,
     Capabilities,
+    InvokeMessage,
     Progress,
     Register,
-    SystemPingInvoke,
-    TerminalExecInvoke,
 )
 from agent_relay.registry import (
     AuthenticationError,
@@ -88,6 +88,10 @@ def run(coro: object) -> object:
     return asyncio.run(coro)  # type: ignore[arg-type]
 
 
+def provider_result(value: dict[str, object] | None = None) -> ProviderToolResult:
+    return ProviderToolResult(content=[], structuredContent=value or {})
+
+
 def register(registry: RelayRegistry, socket: FakeSocket) -> None:
     run(
         registry.register(
@@ -106,19 +110,23 @@ def declare_ping(registry: RelayRegistry, socket: FakeSocket) -> None:
     )
 
 
-def ping(request_id: str) -> SystemPingInvoke:
-    return SystemPingInvoke(
-        version=1, type="invoke", request_id=request_id, tool="system.ping"
+def ping(request_id: str) -> InvokeMessage:
+    return InvokeMessage(
+        version=2,
+        type="invoke",
+        request_id=request_id,
+        tool_name="system.ping",
+        arguments={},
     )
 
 
-def terminal(request_id: str, command_id: str = "pwd") -> TerminalExecInvoke:
-    return TerminalExecInvoke(
-        version=1,
+def terminal(request_id: str, command_id: str = "pwd") -> InvokeMessage:
+    return InvokeMessage(
+        version=2,
         type="invoke",
         request_id=request_id,
-        tool="terminal.exec",
-        command_id=command_id,
+        tool_name="terminal.exec",
+        arguments={"command_id": command_id},
     )
 
 
@@ -131,6 +139,45 @@ def test_invoke_signature_accepts_only_a_typed_message() -> None:
         "timeout_seconds",
     ]
     assert signature.parameters["message"].annotation == "InvokeMessage"
+
+
+def test_registry_serializes_generic_v2_and_returns_provider_result() -> None:
+    async def scenario() -> None:
+        registry = RelayRegistry(device_id="one", agent_token="agent-token")
+        socket = FakeSocket()
+        await registry.register(socket, Register(version=1, type="register", device_id="one"))
+        await registry.set_capabilities(
+            socket,
+            Capabilities(version=1, type="capabilities", tools=["system.ping"]),
+        )
+        pending = asyncio.create_task(
+            registry.invoke(
+                "one",
+                InvokeMessage(
+                    version=2,
+                    type="invoke",
+                    request_id="generic",
+                    tool_name="system.ping",
+                    arguments={},
+                ),
+                1,
+            )
+        )
+        await asyncio.sleep(0)
+        assert socket.messages[-1] == {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "generic",
+            "tool_name": "system.ping",
+            "arguments": {},
+        }
+        expected = ProviderToolResult(content=[{"type": "text", "text": "ok"}])
+        await registry.handle_result(
+            AgentResult(version=2, type="result", request_id="generic", result=expected)
+        )
+        assert await pending == expected
+
+    asyncio.run(scenario())
 
 
 def test_status_snapshot_is_safe_and_offline() -> None:
@@ -198,7 +245,7 @@ def test_status_snapshot_captures_busy_progress_under_registry_lock() -> None:
         await asyncio.sleep(0)
         await registry.handle_progress(
             Progress(
-                version=1,
+                version=2,
                 type="progress",
                 request_id="snapshot",
                 progress=40,
@@ -210,9 +257,9 @@ def test_status_snapshot_captures_busy_progress_under_registry_lock() -> None:
         assert snapshot.invocation_state == "busy"
         assert snapshot.progress == 40
         await registry.handle_result(
-            AgentResult(version=1, type="result", request_id="snapshot", result={})
+            AgentResult(version=2, type="result", request_id="snapshot", result=provider_result())
         )
-        assert await pending == {}
+        assert await pending == provider_result()
 
     run(scenario())
 
@@ -292,16 +339,16 @@ def test_every_tool_requires_a_declared_capability() -> None:
         )
         await asyncio.sleep(0)
         assert socket.messages[-1] == {
-            "version": 1,
+            "version": 2,
             "type": "invoke",
             "request_id": "a",
-            "tool": "terminal.exec",
-            "command_id": "pwd",
+            "tool_name": "terminal.exec",
+            "arguments": {"command_id": "pwd"},
         }
         await registry.handle_result(
-            AgentResult(version=1, type="result", request_id="a", result={})
+            AgentResult(version=2, type="result", request_id="a", result=provider_result())
         )
-        assert await pending == {}
+        assert await pending == provider_result()
 
     run(scenario())
 
@@ -320,12 +367,12 @@ def test_offline_busy_correlated_and_unknown_results() -> None:
         with pytest.raises(DeviceBusyError):
             await registry.invoke("one", ping("b"), 1)
         await registry.handle_result(
-            AgentResult(version=1, type="result", request_id="a", result={"ok": True})
+            AgentResult(version=2, type="result", request_id="a", result=provider_result({"ok": True}))
         )
-        assert await first == {"ok": True}
+        assert await first == provider_result({"ok": True})
         with pytest.raises(UnknownRequestError):
             await registry.handle_result(
-                AgentResult(version=1, type="result", request_id="missing", result={})
+                AgentResult(version=2, type="result", request_id="missing", result=provider_result())
             )
 
     run(scenario())
@@ -348,7 +395,7 @@ def test_duplicate_timeout_cancellation_and_disconnect_always_clean_up() -> None
             await task
         assert registry.pending_count == 0
         assert socket.messages[-1] == {
-            "version": 1,
+            "version": 2,
             "type": "cancel",
             "request_id": "a",
             "reason": "control request cancelled or timed out",
@@ -363,7 +410,7 @@ def test_duplicate_timeout_cancellation_and_disconnect_always_clean_up() -> None
             await waiting
         assert registry.pending_count == 0
         assert socket.messages[-1] == {
-            "version": 1,
+            "version": 2,
             "type": "cancel",
             "request_id": "b",
             "reason": "control request cancelled or timed out",
@@ -391,17 +438,17 @@ def test_progress_and_correlated_error_affect_only_the_in_flight_invocation() ->
         pending = asyncio.create_task(registry.invoke("one", ping("a"), 1))
         await asyncio.sleep(0)
         await registry.handle_progress(
-            Progress(version=1, type="progress", request_id="a", progress=45, message="work")
+            Progress(version=2, type="progress", request_id="a", progress=45, message="work")
         )
         assert registry.current_progress == 45
         with pytest.raises(UnknownRequestError):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id="missing", progress=100)
+                Progress(version=2, type="progress", request_id="missing", progress=100)
             )
         assert registry.current_progress == 45
         await registry.handle_error(
             AgentError(
-                version=1,
+                version=2,
                 type="error",
                 request_id="a",
                 error={"code": "failed", "message": "agent failed"},
@@ -426,19 +473,19 @@ def test_duplicate_and_late_responses_are_rejected_without_touching_new_work() -
         )
         await asyncio.sleep(0)
         result = AgentResult(
-            version=1, type="result", request_id="result", result={"ok": True}
+            version=2, type="result", request_id="result", result=provider_result({"ok": True})
         )
         await registry.handle_result(result)
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_result(result)
-        assert await result_waiter == {"ok": True}
+        assert await result_waiter == provider_result({"ok": True})
 
         error_waiter = asyncio.create_task(
             registry.invoke("one", ping("error"), 1)
         )
         await asyncio.sleep(0)
         error = AgentError(
-            version=1,
+            version=2,
             type="error",
             request_id="error",
             error={"code": "failed", "message": "agent failed"},
@@ -457,10 +504,10 @@ def test_duplicate_and_late_responses_are_rejected_without_touching_new_work() -
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_result(
                 AgentResult(
-                    version=1,
+                    version=2,
                     type="result",
                     request_id="timed-out",
-                    result={"too": "late"},
+                    result=provider_result({"too": "late"}),
                 )
             )
 
@@ -474,10 +521,10 @@ def test_duplicate_and_late_responses_are_rejected_without_touching_new_work() -
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_result(
                 AgentResult(
-                    version=1,
+                    version=2,
                     type="result",
                     request_id="cancelled",
-                    result={"too": "late"},
+                    result=provider_result({"too": "late"}),
                 )
             )
 
@@ -488,17 +535,17 @@ def test_duplicate_and_late_responses_are_rejected_without_touching_new_work() -
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_result(
                 AgentResult(
-                    version=1,
+                    version=2,
                     type="result",
                     request_id="cancelled",
-                    result={"wrong": "invocation"},
+                    result=provider_result({"wrong": "invocation"}),
                 )
             )
         assert registry.pending_count == 1
         await registry.handle_result(
-            AgentResult(version=1, type="result", request_id="next", result={})
+            AgentResult(version=2, type="result", request_id="next", result=provider_result())
         )
-        assert await next_waiter == {}
+        assert await next_waiter == provider_result()
         assert registry.pending_count == 0
         assert registry.current_progress is None
 
@@ -517,16 +564,16 @@ def test_progress_after_terminal_result_or_error_is_rejected() -> None:
         )
         await asyncio.sleep(0)
         await registry.handle_result(
-            AgentResult(version=1, type="result", request_id="result", result={})
+            AgentResult(version=2, type="result", request_id="result", result=provider_result())
         )
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id="result", progress=100)
+                Progress(version=2, type="progress", request_id="result", progress=100)
             )
-        assert await result_waiter == {}
+        assert await result_waiter == provider_result()
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id="result", progress=100)
+                Progress(version=2, type="progress", request_id="result", progress=100)
             )
 
         error_waiter = asyncio.create_task(
@@ -535,7 +582,7 @@ def test_progress_after_terminal_result_or_error_is_rejected() -> None:
         await asyncio.sleep(0)
         await registry.handle_error(
             AgentError(
-                version=1,
+                version=2,
                 type="error",
                 request_id="error",
                 error={"code": "failed", "message": "agent failed"},
@@ -543,13 +590,13 @@ def test_progress_after_terminal_result_or_error_is_rejected() -> None:
         )
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id="error", progress=100)
+                Progress(version=2, type="progress", request_id="error", progress=100)
             )
         with pytest.raises(Exception, match="agent failed"):
             await error_waiter
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id="error", progress=100)
+                Progress(version=2, type="progress", request_id="error", progress=100)
             )
 
     run(scenario())
@@ -564,7 +611,7 @@ def test_progress_during_and_after_timeout_or_cancellation_is_rejected() -> None
     async def assert_late_progress(request_id: str) -> None:
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id=request_id, progress=100)
+                Progress(version=2, type="progress", request_id=request_id, progress=100)
             )
 
     async def scenario() -> None:
@@ -616,17 +663,17 @@ def test_progress_tombstones_are_bounded_and_do_not_affect_next_invocation() -> 
         await asyncio.sleep(0)
         with pytest.raises(LateResponseError, match="late or duplicate"):
             await registry.handle_progress(
-                Progress(version=1, type="progress", request_id="old-1", progress=100)
+                Progress(version=2, type="progress", request_id="old-1", progress=100)
             )
         assert registry.current_progress is None
         await registry.handle_progress(
-            Progress(version=1, type="progress", request_id="next", progress=50)
+            Progress(version=2, type="progress", request_id="next", progress=50)
         )
         assert registry.current_progress == 50
         await registry.handle_result(
-            AgentResult(version=1, type="result", request_id="next", result={})
+            AgentResult(version=2, type="result", request_id="next", result=provider_result())
         )
-        assert await next_waiter == {}
+        assert await next_waiter == provider_result()
 
     run(scenario())
 

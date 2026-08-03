@@ -36,6 +36,55 @@ from agent_relay.protocol import (
 )
 
 
+def test_v2_generic_invoke_and_provider_result_are_the_only_application_frames() -> None:
+    invoke = parse_server_message(
+        {
+            "version": 2,
+            "type": "invoke",
+            "request_id": "r-1",
+            "tool_name": "cua.get_accessibility_tree",
+            "arguments": {},
+        }
+    )
+    assert isinstance(invoke, InvokeMessage)
+    assert invoke.tool_name == "cua.get_accessibility_tree"
+    assert invoke.arguments == {}
+
+    result = parse_agent_message(
+        {
+            "version": 2,
+            "type": "result",
+            "request_id": "r-1",
+            "result": {
+                "content": [
+                    {"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"}
+                ],
+                "structuredContent": {"ok": True},
+                "isError": False,
+            },
+        }
+    )
+    assert isinstance(result, AgentResult)
+    assert result.result.structured_content == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"version": 1, "type": "invoke", "request_id": "r", "tool": "system.ping"},
+        {"version": 2, "type": "invoke", "request_id": "r", "arguments": {}},
+        {"version": 2, "type": "invoke", "request_id": "r", "tool_name": "bad/name", "arguments": {}},
+        {"version": 2, "type": "invoke", "request_id": "r", "tool_name": "x.y", "arguments": []},
+        {"version": 2, "type": "invoke", "request_id": "r", "tool_name": "x.y", "arguments": {}, "handler": "x"},
+    ],
+)
+def test_v2_generic_invoke_rejects_legacy_malformed_and_executable_fields(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        parse_server_message(payload)
+
+
 def test_parses_strict_versioned_token_free_register() -> None:
     message = parse_agent_message(
         {"version": 1, "type": "register", "device_id": "device-a"}
@@ -91,20 +140,8 @@ def test_terminal_exec_only_allows_closed_command_ids() -> None:
 
 
 def test_invoke_message_is_an_explicit_closed_union() -> None:
-    assert set(InvokeMessage.__args__) == {
-        SystemPingInvoke,
-        TerminalExecInvoke,
-        BrowserListTabsInvoke,
-        BrowserNavigateInvoke,
-        BrowserSnapshotInvoke,
-        BrowserFillInvoke,
-        BrowserClickInvoke,
-        BrowserScrollInvoke,
-        BrowserTypeInvoke,
-        BrowserBackInvoke,
-        ComputerCaptureInvoke,
-        ComputerClickInvoke,
-        ComputerTypeInvoke,
+    assert InvokeMessage.model_fields.keys() == {
+        "version", "type", "request_id", "tool_name", "arguments"
     }
 
 
@@ -244,7 +281,9 @@ def test_invoke_message_is_an_explicit_closed_union() -> None:
 def test_invoke_parsing_is_discriminated_by_type_and_tool(
     payload: dict[str, object], expected_type: type[object]
 ) -> None:
-    assert isinstance(parse_server_message(payload), expected_type)
+    del expected_type
+    with pytest.raises((ValidationError, ValueError)):
+        parse_server_message(payload)
 
 
 @pytest.mark.parametrize(
@@ -367,15 +406,15 @@ def test_computer_invokes_are_closed_bounded_and_preserve_semantic_target() -> N
             "text": "x" * MAX_COMPUTER_TYPE_TEXT_LENGTH,
         }
     )
-    accepted = parse_server_message(
-        base
-        | {
-            "tool": "computer.type",
-            "element_id": "opaque-id",
-            "text": "launch \U0001f680",
-        }
-    )
-    assert isinstance(accepted, ComputerTypeInvoke)
+    with pytest.raises((ValidationError, ValueError)):
+        parse_server_message(
+            base
+            | {
+                "tool": "computer.type",
+                "element_id": "opaque-id",
+                "text": "launch \U0001f680",
+            }
+        )
 
     rejected = [
         {"tool": "computer.capture", "coordinates": [1, 2]},
@@ -408,6 +447,19 @@ def test_register_frame_has_no_credential_field_or_secret_repr() -> None:
     assert "token" not in json.dumps(message.model_dump(mode="json"))
 
 
+def test_agent_result_carries_bounded_provider_result() -> None:
+    result = AgentResult(
+        version=2,
+        type="result",
+        request_id="request",
+        result={
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": {"command_id": "pwd"},
+        },
+    )
+    assert result.result.structured_content == {"command_id": "pwd"}
+
+
 def test_protocol_rejects_register_frame_credentials_and_bounds_agent_payloads() -> None:
     with pytest.raises(ValidationError):
         Register(
@@ -420,10 +472,10 @@ def test_protocol_rejects_register_frame_credentials_and_bounds_agent_payloads()
         Capabilities(version=1, type="capabilities", tools=["system.ping"] * 17)
     with pytest.raises(ValidationError):
         AgentResult(
-            version=1,
+            version=2,
             type="result",
             request_id="request",
-            result={"blob": "x" * MAX_RESULT_JSON_BYTES},
+            result={"content": [{"type": "text", "text": "x" * MAX_RESULT_JSON_BYTES}]},
         )
     deeply_nested: dict[str, object] = {}
     cursor = deeply_nested
@@ -433,18 +485,21 @@ def test_protocol_rejects_register_frame_credentials_and_bounds_agent_payloads()
         cursor = child
     with pytest.raises(ValidationError):
         AgentResult(
-            version=1, type="result", request_id="request", result=deeply_nested
+            version=2,
+            type="result",
+            request_id="request",
+            result={"content": [], "structuredContent": deeply_nested},
         )
     with pytest.raises(ValidationError):
         AgentError(
-            version=1,
+            version=2,
             type="error",
             request_id="request",
             error={"code": "failed", "message": "x" * 513},
         )
     with pytest.raises(ValidationError):
         Progress(
-            version=1,
+            version=2,
             type="progress",
             request_id="request",
             progress=1,
