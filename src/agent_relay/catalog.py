@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -458,6 +458,8 @@ def _in_process_catalog_client(
 
 def _configured_cua_catalog_client(
     env: Mapping[str, str],
+    *,
+    allowed_tool_names: Collection[str] | None = None,
 ) -> ProviderToolClient | None:
     driver_path = env.get("RELAY_AGENT_COMPUTER_DRIVER_PATH")
     app_name = env.get("RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME")
@@ -488,6 +490,7 @@ def _configured_cua_catalog_client(
                 "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS", 3.0
             ),
             environ=dict(env),
+            allowed_tool_names=allowed_tool_names,
         )
     except (OSError, TypeError, ValueError):
         return None
@@ -497,6 +500,8 @@ def _configured_cua_catalog_client(
 def local_provider_registrations(
     env: Mapping[str, str] | None = None,
     providers: Mapping[str, ProviderToolClient] | None = None,
+    *,
+    allowlist: Sequence[str] | None = None,
 ) -> tuple[ProviderRegistration, ...]:
     """Build the production local provider registry for catalog discovery.
 
@@ -508,6 +513,7 @@ def local_provider_registrations(
     """
     effective_env = {} if env is None else dict(env)
     tools = _local_reference_tools()
+    selected_cua_tools = _selected_cua_tool_names(allowlist)
     runtime_providers = {} if providers is None else dict(providers)
     unknown = set(runtime_providers) - set(tools)
     if unknown:
@@ -527,8 +533,14 @@ def local_provider_registrations(
             # an explicitly configured profile. The Agent starts the real
             # Playwright provider before announcing the selected descriptors.
             client = _in_process_catalog_client(descriptors)
-        if client is None and provider_name == "cua":
-            client = _configured_cua_catalog_client(effective_env)
+        if (
+            client is None
+            and provider_name == "cua"
+            and (selected_cua_tools is None or selected_cua_tools)
+        ):
+            client = _configured_cua_catalog_client(
+                effective_env, allowed_tool_names=selected_cua_tools
+            )
         registrations.append(
             ProviderRegistration(
                 provider_name,
@@ -543,7 +555,7 @@ def local_provider_registrations(
 def discover_local_catalog(
     *,
     env: Mapping[str, str] | None = None,
-    allowlist: Sequence[str] = (),
+    allowlist: Sequence[str] | None = None,
     providers: Mapping[str, ProviderToolClient] | None = None,
 ) -> CatalogSnapshot:
     """Synchronously discover the local provider catalog for CLI boundaries."""
@@ -553,8 +565,22 @@ def discover_local_catalog(
         pass
     else:
         raise RuntimeError("discover_local_catalog cannot run inside an event loop")
-    service = CatalogService(local_provider_registrations(env, providers))
-    return asyncio.run(service.discover(allowlist))
+    service = CatalogService(
+        local_provider_registrations(env, providers, allowlist=allowlist)
+    )
+    return asyncio.run(service.discover(() if allowlist is None else allowlist))
+
+
+def _selected_cua_tool_names(
+    allowlist: Sequence[str] | None,
+) -> frozenset[str] | None:
+    if allowlist is None:
+        return None
+    return frozenset(
+        descriptor.tool_name
+        for descriptor in CUA_REFERENCE_DESCRIPTORS
+        if public_tool_name("cua", descriptor.tool_name) in allowlist
+    )
 
 
 def public_tool_name(provider_name: str, tool_name: str) -> str:

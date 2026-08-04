@@ -9,7 +9,7 @@ import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +219,7 @@ class ComputerCapability:
         shutdown_timeout_seconds: float = 3,
         max_elements: int = 300,
         environ: dict[str, str] | None = None,
+        allowed_tool_names: Collection[str] | None = None,
     ) -> None:
         self._path = validate_driver_executable(driver_path)
         if not app_name or len(app_name) > MAX_COMPUTER_APP_LENGTH:
@@ -238,6 +239,13 @@ class ComputerCapability:
         self._action_timeout = float(action_timeout_seconds)
         self._shutdown_timeout = float(shutdown_timeout_seconds)
         self._max_elements = max_elements
+        if allowed_tool_names is not None and any(
+            not isinstance(name, str) or not name for name in allowed_tool_names
+        ):
+            raise ValueError("allowed_tool_names must contain non-empty strings")
+        self._allowed_tool_names = (
+            None if allowed_tool_names is None else frozenset(allowed_tool_names)
+        )
         self._env = safe_driver_environment(
             dict(os.environ if environ is None else environ)
         )
@@ -361,6 +369,7 @@ class ComputerCapability:
             risk="interaction",
             timeout_seconds=self._action_timeout,
             close_timeout_seconds=self._shutdown_timeout,
+            allowed_tool_names=self._allowed_tool_names,
         )
         await self._client.list_tools()
 

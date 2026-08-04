@@ -566,6 +566,17 @@ class RelayAgent:
             from .capabilities.computer import ComputerCapability
             assert settings.computer_allowed_app_name is not None
             assert settings.computer_allowed_window_title is not None
+            allowed_cua_tools = (
+                None
+                if settings.tools_allowlist is None
+                else frozenset(
+                    internal_name.removeprefix("cua.")
+                    for public_name in settings.tools_allowlist
+                    if (
+                        internal_name := PUBLIC_TO_INTERNAL.get(public_name, "")
+                    ).startswith("cua.")
+                )
+            )
             configured_capabilities.append(ComputerCapability(
                 settings.computer_driver_path,
                 settings.computer_allowed_app_name,
@@ -574,6 +585,7 @@ class RelayAgent:
                 action_timeout_seconds=settings.computer_action_timeout_seconds,
                 shutdown_timeout_seconds=settings.computer_shutdown_timeout_seconds,
                 max_elements=settings.computer_max_elements,
+                allowed_tool_names=allowed_cua_tools,
             ))
         if capabilities is None and settings.browser_user_data_dir is not None:
             from .capabilities.browser import BrowserCapability

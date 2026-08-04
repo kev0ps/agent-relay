@@ -342,6 +342,46 @@ def test_mcp_adapter_maps_inventory_and_passes_native_result() -> None:
     asyncio.run(scenario())
 
 
+def test_mcp_adapter_filters_unselected_provider_schemas_before_validation() -> None:
+    class ProviderWithBlockedUnselectedTool(FakeMcpTransport):
+        async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+            return {
+                "tools": [
+                    {
+                        "name": "capture",
+                        "description": "Capture the synthetic desktop",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"opaque": _OPAQUE_SCHEMA},
+                            "additionalProperties": False,
+                        },
+                    },
+                    {
+                        "name": "execute_javascript",
+                        "description": "Blocked unselected tool",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "javascript": {"type": "string", "maxLength": 256}
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                ]
+            }
+
+    async def scenario() -> None:
+        client = McpProviderToolClient(
+            ProviderWithBlockedUnselectedTool(),
+            provider_name="cua-driver",
+            risk="interaction",
+            allowed_tool_names={"capture"},
+        )
+        assert [tool.tool_name for tool in await client.list_tools()] == ["capture"]
+
+    asyncio.run(scenario())
+
+
 def test_native_mcp_session_transport_actor_forwards_and_exits_once() -> None:
     class FakeSession:
         def __init__(self) -> None:

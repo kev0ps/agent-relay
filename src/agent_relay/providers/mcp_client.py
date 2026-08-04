@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -209,9 +209,17 @@ class McpProviderToolClient:
         risk: ProviderRiskClass = "blocked",
         timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         close_timeout_seconds: float = DEFAULT_PROVIDER_CLOSE_TIMEOUT_SECONDS,
+        allowed_tool_names: Collection[str] | None = None,
     ) -> None:
         self._transport = transport
         self._provider_name = provider_name
+        if allowed_tool_names is not None and any(
+            not isinstance(name, str) or not name for name in allowed_tool_names
+        ):
+            raise ValueError("allowed_tool_names must contain non-empty strings")
+        self._allowed_tool_names = (
+            None if allowed_tool_names is None else frozenset(allowed_tool_names)
+        )
         self._risk = risk
         self._timeout_seconds = validate_timeout(
             timeout_seconds, label="timeout_seconds"
@@ -275,10 +283,19 @@ class McpProviderToolClient:
                         raw_tools = _field(response, "tools")
                         if not isinstance(raw_tools, (list, tuple)):
                             raise ValueError
-                        descriptors.extend(
-                            _descriptor(self._provider_name, self._risk, tool)
-                            for tool in raw_tools
-                        )
+                        for tool in raw_tools:
+                            if self._allowed_tool_names is not None:
+                                # Unselected CUA tools may carry blocked or executable
+                                # schemas; never validate or expose those descriptors.
+                                raw_name = _field(tool, "name")
+                                if (
+                                    not isinstance(raw_name, str)
+                                    or raw_name not in self._allowed_tool_names
+                                ):
+                                    continue
+                            descriptors.append(
+                                _descriptor(self._provider_name, self._risk, tool)
+                            )
                         if len(descriptors) > MAX_PROVIDER_TOOLS:
                             raise ValueError
                         next_cursor = _field(
