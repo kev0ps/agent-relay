@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -265,13 +264,12 @@ class MCPClientSession:
             _validate_tool_schema(tool)
         discovered = tuple(tool.name for tool in listed)
         if not _valid_tool_inventory(discovered):
-            if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-                print(
-                    "mcp contract diagnostic: inventory="
-                    f"{_tool_inventory_mismatch_category(discovered)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            print(
+                "mcp contract diagnostic: inventory="
+                f"{_tool_inventory_mismatch_category(discovered)}",
+                file=sys.stderr,
+                flush=True,
+            )
             raise MCPContractError("unexpected MCP tools")
         return discovered
 
