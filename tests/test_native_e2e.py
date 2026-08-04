@@ -58,6 +58,21 @@ def test_native_commands_use_fixed_module_entrypoints(tmp_path: Path) -> None:
     assert "--shell" not in server + agent
 
 
+def test_minimal_environment_preserves_only_cua_driver_runtime_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _load_harness()
+    monkeypatch.setenv("CUA_DRIVER_RS_HOME", str(tmp_path / "driver-home"))
+    monkeypatch.setenv("CUA_DRIVER_RS_INSTALL_DIR", str(tmp_path / "driver-bin"))
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross-boundary")
+
+    environment = harness._minimal_environment(tmp_path / "child-home", {})
+
+    assert environment["CUA_DRIVER_RS_HOME"] == str(tmp_path / "driver-home")
+    assert environment["CUA_DRIVER_RS_INSTALL_DIR"] == str(tmp_path / "driver-bin")
+    assert "OPENAI_API_KEY" not in environment
+
+
 def test_lifecycle_preserves_primary_failure_when_cleanup_fails() -> None:
     harness = _load_harness()
     lifecycle = harness.NativeLifecycle()
