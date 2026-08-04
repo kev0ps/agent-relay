@@ -62,6 +62,16 @@ def test_mcp_client_accepts_ordered_announced_tool_subsets() -> None:
     assert not client._valid_tool_inventory((*expected, "relay_unexpected_tool"))
 
 
+def test_mcp_client_classifies_inventory_drift_without_tool_payloads() -> None:
+    client = _load_mcp_client()
+    expected = client.EXPECTED_MCP_TOOLS
+
+    assert client._tool_inventory_mismatch_category(()) == "server-tool"
+    assert client._tool_inventory_mismatch_category(("relay_device_status", "relay_device_status")) == "duplicate"
+    assert client._tool_inventory_mismatch_category((*expected, "relay_unexpected_tool")) == "unexpected-tool"
+    assert client._tool_inventory_mismatch_category((expected[0], expected[2], expected[1])) == "order"
+
+
 def test_mcp_client_inventory_uses_generic_cua_public_names() -> None:
     client = _load_mcp_client()
     assert "relay_cua_list_windows" in client.EXPECTED_MCP_TOOLS

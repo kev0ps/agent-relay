@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any, Final, Mapping
@@ -66,6 +68,17 @@ def _valid_tool_inventory(discovered: tuple[str, ...]) -> bool:
     if any(name not in EXPECTED_MCP_TOOLS for name in discovered):
         return False
     return discovered == tuple(name for name in EXPECTED_MCP_TOOLS if name in discovered)
+
+
+def _tool_inventory_mismatch_category(discovered: tuple[str, ...]) -> str:
+    """Classify inventory drift without exposing tool names or raw payloads."""
+    if not discovered or discovered[0] != SERVER_MCP_TOOLS[0]:
+        return "server-tool"
+    if len(discovered) != len(set(discovered)):
+        return "duplicate"
+    if any(name not in EXPECTED_MCP_TOOLS for name in discovered):
+        return "unexpected-tool"
+    return "order"
 
 
 def _validate_tool_schema(tool: Any) -> None:
@@ -252,6 +265,13 @@ class MCPClientSession:
             _validate_tool_schema(tool)
         discovered = tuple(tool.name for tool in listed)
         if not _valid_tool_inventory(discovered):
+            if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+                print(
+                    "mcp contract diagnostic: inventory="
+                    f"{_tool_inventory_mismatch_category(discovered)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             raise MCPContractError("unexpected MCP tools")
         return discovered
 
