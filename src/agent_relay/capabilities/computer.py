@@ -419,6 +419,15 @@ class ComputerCapability:
             await self._kill_process(process)
             raise
         if process.returncode != 0:
+            if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+                print(
+                    "computer privacy command failed: "
+                    f"phase={self._startup_phase or 'unknown'} "
+                    f"exit={process.returncode} "
+                    f"driver_home={'present' if self._env.get('CUA_DRIVER_RS_HOME') else 'absent'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             raise ValueError
         return stdout.decode("utf-8")
 
