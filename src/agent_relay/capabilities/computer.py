@@ -534,7 +534,6 @@ class ComputerCapability:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
-            **_process_creation_options(windows=self._windows),
             limit=MAX_MCP_FRAME_BYTES + 1,
         )
         self._reader_task = asyncio.create_task(self._read_responses())
