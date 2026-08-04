@@ -105,6 +105,11 @@ def _startup_failure_category(error: BaseException) -> str:
     if isinstance(error, ProviderTimeoutError):
         return "provider-timeout"
     if isinstance(error, ProviderToolError):
+        error_text = str(error)
+        if error_text == "provider request failed":
+            return "provider-request-error"
+        if error_text == "invalid provider tool inventory":
+            return "provider-invalid-inventory"
         return "provider-tool"
     if isinstance(error, asyncio.TimeoutError):
         return "timeout"
@@ -354,9 +359,7 @@ class ComputerCapability:
             self._startup_phase = "privacy-environment"
 
         self._startup_phase = "process-spawn"
-        driver_args = ["mcp", "--no-overlay"]
-        if not self._windows:
-            driver_args.append("--no-daemon-relaunch")
+        driver_args = ["mcp", "--no-overlay", "--no-daemon-relaunch"]
         self._process = await asyncio.create_subprocess_exec(
             str(self._path),
             *driver_args,
