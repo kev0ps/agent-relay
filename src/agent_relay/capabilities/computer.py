@@ -39,7 +39,42 @@ WINDOWS_CUA_DRIVER_PIPE = r"\\.\pipe\cua-driver"
 
 class _ProcessWithReturncode(Protocol):
     @property
+    def pid(self) -> int: ...
+
+    @property
     def returncode(self) -> int | None: ...
+
+
+class _AsyncManagedProcess(_ProcessWithReturncode, Protocol):
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    async def wait(self) -> int: ...
+
+
+class _AsyncPopenProcess:
+    """Adapt a synchronous Windows daemon process to the async cleanup API."""
+
+    def __init__(self, process: subprocess.Popen[Any]) -> None:
+        self._process = process
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid
+
+    @property
+    def returncode(self) -> int | None:
+        return self._process.poll()
+
+    def terminate(self) -> None:
+        self._process.terminate()
+
+    def kill(self) -> None:
+        self._process.kill()
+
+    async def wait(self) -> int:
+        return await asyncio.to_thread(self._process.wait)
 
 
 def windows_daemon_pipe_ready() -> bool:
@@ -365,7 +400,7 @@ class ComputerCapability:
         )
         self._windows = os.name == "nt"
         self._process: asyncio.subprocess.Process | None = None
-        self._daemon: asyncio.subprocess.Process | None = None
+        self._daemon: _AsyncManagedProcess | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._exit_task: asyncio.Task[None] | None = None
@@ -540,16 +575,20 @@ class ComputerCapability:
     async def _start_windows_daemon(self) -> None:
         """Start the Windows UIA daemon used by the MCP proxy path."""
         self._startup_phase = "windows-daemon-spawn"
-        self._daemon = await asyncio.create_subprocess_exec(
-            str(self._path),
-            "serve",
-            "--no-overlay",
-            "--no-permissions-gate",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=self._env,
-            **_process_creation_options(windows=True),
+        self._daemon = _AsyncPopenProcess(
+            subprocess.Popen(
+                [
+                    str(self._path),
+                    "serve",
+                    "--no-overlay",
+                    "--no-permissions-gate",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=self._env,
+                **_process_creation_options(windows=True),
+            )
         )
         await asyncio.sleep(0)
         if self._daemon.returncode is not None:
@@ -808,7 +847,7 @@ class ComputerCapability:
             self._closing = False
 
     @staticmethod
-    async def _kill_process(process: asyncio.subprocess.Process) -> None:
+    async def _kill_process(process: _AsyncManagedProcess) -> None:
         if process.returncode is not None:
             return
         try:
@@ -841,4 +880,5 @@ __all__ = [
     "safe_driver_environment",
     "validate_driver_executable",
     "validate_windows_health",
+    "windows_daemon_pipe_ready",
 ]

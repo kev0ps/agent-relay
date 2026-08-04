@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from agent_relay.capabilities.computer import (
     ComputerCapability,
     ComputerUnavailableError,
+    _AsyncPopenProcess,
     _driver_stderr_category,
     _driver_stderr_line_category,
     _wait_for_windows_daemon_ready,
@@ -407,3 +410,11 @@ def test_windows_daemon_readiness_wait_is_bounded_and_retries() -> None:
 
     asyncio.run(scenario())
     assert attempts == 3
+
+
+def test_async_popen_process_adapter_waits_without_driver_execution() -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    adapted = _AsyncPopenProcess(process)
+    assert adapted.pid == process.pid
+    assert asyncio.run(adapted.wait()) == 0
+    assert adapted.returncode == 0
