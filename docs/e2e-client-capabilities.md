@@ -90,7 +90,8 @@ The native Linux CUA product E2E proof is the GitHub Actions job
 CUA extras, starts Xvfb, a private D-Bus/AT-SPI session, Openbox, and Chromium,
 then configures the real Relay Agent CUA provider with the pinned `cua-driver`
 executable. The provider discovers MCP descriptors through bounded stdio
-`tools/list`; the shared scenario calls only the selected public descriptors
+`tools/list` and the Agent retains that same owned provider instance for runtime
+dispatch; the shared scenario calls only the selected public descriptors
 `relay_cua_list_windows`, `relay_cua_get_window_state`, `relay_cua_click`, and
 `relay_cua_type_text` through the authenticated MCP endpoint. It requires an
 independent desktop fixture event plus provider snapshot-token refresh and stale

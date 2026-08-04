@@ -39,8 +39,13 @@ from .capabilities.base import (
 from .capabilities.browser import BrowserStartupError
 from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
-from .catalog import CatalogError, CatalogSnapshot
-from .config import PUBLIC_TO_INTERNAL, discover_local_catalog, load_agent_settings
+from .catalog import (
+    CatalogError,
+    CatalogService,
+    CatalogSnapshot,
+    local_provider_registrations,
+)
+from .config import PUBLIC_TO_INTERNAL, load_agent_settings
 from .protocol import (
     MAX_RESULT_JSON_BYTES,
     TOOL_ORDER,
@@ -87,6 +92,43 @@ def _debug_configuration_validation(error: ValidationError) -> None:
 
 class ProviderUnavailableError(ConnectionError):
     """A selected provider became unavailable during an Agent session."""
+
+
+def _selected_cua_tool_names(settings: AgentSettings) -> frozenset[str] | None:
+    if settings.tools_allowlist is None:
+        return None
+    selected: set[str] = set()
+    for public_name in settings.tools_allowlist:
+        internal_name = PUBLIC_TO_INTERNAL.get(public_name, "")
+        if internal_name.startswith("cua."):
+            selected.add(internal_name.removeprefix("cua."))
+        elif public_name.startswith("relay_cua_"):
+            selected.add(public_name.removeprefix("relay_cua_"))
+    return frozenset(selected)
+
+
+def _configured_computer_provider(
+    settings: AgentSettings,
+) -> ProviderToolClient | None:
+    if settings.computer_driver_path is None:
+        return None
+    allowed_tool_names = _selected_cua_tool_names(settings)
+    if allowed_tool_names == frozenset():
+        return None
+    from .capabilities.computer import ComputerCapability
+
+    assert settings.computer_allowed_app_name is not None
+    assert settings.computer_allowed_window_title is not None
+    return ComputerCapability(
+        settings.computer_driver_path,
+        settings.computer_allowed_app_name,
+        settings.computer_allowed_window_title,
+        startup_timeout_seconds=settings.computer_startup_timeout_seconds,
+        action_timeout_seconds=settings.computer_action_timeout_seconds,
+        shutdown_timeout_seconds=settings.computer_shutdown_timeout_seconds,
+        max_elements=settings.computer_max_elements,
+        allowed_tool_names=allowed_tool_names,
+    )
 
 
 class AgentSettings(BaseModel):
@@ -238,10 +280,17 @@ class AgentSettings(BaseModel):
         return self
 
     @classmethod
-    def from_environment(cls, environ: Mapping[str, str] | None = None) -> AgentSettings:
+    def from_environment(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        defer_tool_validation: bool = False,
+    ) -> AgentSettings:
         try:
             env = os.environ if environ is None else environ
-            values = _canonical_agent_values(env)
+            values = _canonical_agent_values(
+                env, defer_tool_validation=defer_tool_validation
+            )
             return cls(**values)
         except (ConfigurationError, OSError, ValueError, TypeError):
             raise ConfigurationError() from None
@@ -354,7 +403,9 @@ def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> N
             values[field] = raw
 
 
-def _canonical_agent_values(env: Mapping[str, str]) -> dict[str, object]:
+def _canonical_agent_values(
+    env: Mapping[str, str], *, defer_tool_validation: bool = False
+) -> dict[str, object]:
     url = env.get("RELAY_URL")
     workspace_value = env.get("RELAY_AGENT_WORKSPACE")
     if not url or not workspace_value:
@@ -380,13 +431,12 @@ def _canonical_agent_values(env: Mapping[str, str]) -> dict[str, object]:
         "allow_insecure_ws": _allow_insecure_ws_from_environment(env),
         "tools_allowlist": tools_allowlist,
     }
-    invalid_tools = [
-        item
-        for item in tools_allowlist
-        if item not in PUBLIC_TO_INTERNAL
-    ]
-    if invalid_tools:
-        raise ValueError("invalid Agent tool allowlist")
+    if not defer_tool_validation:
+        invalid_tools = [
+            item for item in tools_allowlist if item not in PUBLIC_TO_INTERNAL
+        ]
+        if invalid_tools:
+            raise ValueError("invalid Agent tool allowlist")
     _apply_agent_options(values, env)
     return values
 
@@ -570,6 +620,7 @@ class RelayAgent:
         provider_clients: Mapping[str, ProviderToolClient] | None = None,
     ) -> None:
         self.settings = settings
+        supplied_provider_clients = dict(provider_clients or {})
         configured_runner = runner or CommandRunner(settings.workspace, timeout_seconds=settings.command_timeout_seconds, stdout_limit=settings.stdout_limit, stderr_limit=settings.stderr_limit)
         configured_capabilities = (
             [
@@ -581,31 +632,14 @@ class RelayAgent:
         )
         # Bind Computer to the allowlisted desktop before Browser creates an
         # additional Chromium context/window that is also visible to AT-SPI.
-        if capabilities is None and settings.computer_driver_path:
-            from .capabilities.computer import ComputerCapability
-            assert settings.computer_allowed_app_name is not None
-            assert settings.computer_allowed_window_title is not None
-            allowed_cua_tools = (
-                None
-                if settings.tools_allowlist is None
-                else frozenset(
-                    internal_name.removeprefix("cua.")
-                    for public_name in settings.tools_allowlist
-                    if (
-                        internal_name := PUBLIC_TO_INTERNAL.get(public_name, "")
-                    ).startswith("cua.")
-                )
-            )
-            configured_capabilities.append(ComputerCapability(
-                settings.computer_driver_path,
-                settings.computer_allowed_app_name,
-                settings.computer_allowed_window_title,
-                startup_timeout_seconds=settings.computer_startup_timeout_seconds,
-                action_timeout_seconds=settings.computer_action_timeout_seconds,
-                shutdown_timeout_seconds=settings.computer_shutdown_timeout_seconds,
-                max_elements=settings.computer_max_elements,
-                allowed_tool_names=allowed_cua_tools,
-            ))
+        if (
+            capabilities is None
+            and settings.computer_driver_path
+            and "cua" not in supplied_provider_clients
+        ):
+            computer_provider = _configured_computer_provider(settings)
+            if computer_provider is not None:
+                configured_capabilities.append(cast(LocalCapability, computer_provider))
         if capabilities is None and settings.browser_user_data_dir is not None:
             from .capabilities.browser import BrowserCapability
             configured_capabilities.append(
@@ -664,7 +698,7 @@ class RelayAgent:
             )
         ]
         self._catalog = selected_catalog
-        effective_provider_clients = dict(provider_clients or {})
+        effective_provider_clients = supplied_provider_clients
         if selected_catalog is not None:
             for capability in configured_capabilities:
                 provider_name = getattr(capability, "provider_name", None)
@@ -1138,6 +1172,56 @@ async def _run_with_signal_handlers(agent: RelayAgent) -> None:
     await agent.run()
 
 
+def _runtime_catalog_environment(settings: AgentSettings) -> dict[str, str]:
+    """Expose only non-secret provider configuration to catalog discovery."""
+    environment: dict[str, str] = {}
+    if settings.browser_user_data_dir is not None:
+        environment["RELAY_AGENT_BROWSER_USER_DATA_DIR"] = str(
+            settings.browser_user_data_dir
+        )
+    return environment
+
+
+async def _run_with_runtime_catalog(
+    settings: AgentSettings,
+    catalog: CatalogSnapshot | None = None,
+) -> None:
+    """Discover and run with one shared CUA provider lifecycle."""
+    provider = None if catalog is not None else _configured_computer_provider(settings)
+    provider_clients: dict[str, ProviderToolClient] = {}
+    agent: RelayAgent | None = None
+    try:
+        if catalog is None:
+            if provider is not None:
+                try:
+                    start = cast(Callable[[], Coroutine[Any, Any, None]], provider.start)  # type: ignore[attr-defined]
+                    await start()
+                except Exception:
+                    await provider.close()
+                    provider = None
+                else:
+                    provider_clients["cua"] = provider
+            registrations = local_provider_registrations(
+                _runtime_catalog_environment(settings),
+                provider_clients,
+                allowlist=settings.tools_allowlist,
+            )
+            catalog = await CatalogService(registrations).discover(
+                settings.tools_allowlist or ()
+            )
+        agent = RelayAgent(
+            settings,
+            catalog=catalog,
+            provider_clients=provider_clients,
+        )
+        await _run_with_signal_handlers(agent)
+    finally:
+        if agent is not None:
+            await agent.aclose()
+        elif provider is not None:
+            await provider.close()
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -1154,19 +1238,21 @@ def main(
         )
     try:
         if args.config is not None:
-            selected_catalog = catalog or discover_local_catalog(args.config)
-            settings = load_agent_settings(args.config, catalog=selected_catalog)
+            settings = load_agent_settings(
+                args.config,
+                catalog=catalog,
+                defer_tool_validation=catalog is None,
+            )
         else:
-            settings = AgentSettings.from_environment()
-            selected_catalog = catalog or discover_local_catalog(None)
+            settings = AgentSettings.from_environment(
+                defer_tool_validation=catalog is None
+            )
     except (ConfigurationError, ValueError):
         parser.error("invalid agent configuration")
     try:
-        asyncio.run(
-            _run_with_signal_handlers(
-                RelayAgent(settings, catalog=catalog or selected_catalog)
-            )
-        )
+        asyncio.run(_run_with_runtime_catalog(settings, catalog))
+    except (ConfigurationError, ValueError):
+        parser.error("invalid agent configuration")
     except BrowserStartupError:
         parser.exit(1, "agent browser startup failed\n")
 

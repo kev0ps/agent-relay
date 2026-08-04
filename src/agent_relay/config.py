@@ -811,6 +811,7 @@ def _validate_agent(
     *,
     require: bool,
     catalog: CatalogSnapshot | None = None,
+    defer_tool_validation: bool = False,
 ) -> ValidationReport:
     issues: list[ValidationIssue] = []
     _validate_root(document, issues)
@@ -868,7 +869,7 @@ def _validate_agent(
                 catalog.validate_allowlist(allowlist)
             except CatalogError as exc:
                 issues.append(ValidationIssue("ERROR", str(exc)))
-        else:
+        elif not defer_tool_validation:
             for name in allowlist:
                 if name == SERVER_LOCAL_TOOL:
                     issues.append(ValidationIssue("ERROR", "relay_device_status is server-local and cannot be selected"))
@@ -1454,6 +1455,7 @@ def load_agent_settings(
     *,
     env: Mapping[str, str] | None = None,
     catalog: CatalogSnapshot | None = None,
+    defer_tool_validation: bool = False,
 ) -> Any:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
@@ -1474,6 +1476,7 @@ def load_agent_settings(
         effective_env,
         require=True,
         catalog=catalog,
+        defer_tool_validation=defer_tool_validation,
     )
     if not report.valid:
         raise ConfigError("invalid agent configuration")

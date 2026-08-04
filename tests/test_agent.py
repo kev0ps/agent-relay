@@ -18,6 +18,7 @@ from agent_relay.agent import (
     _private_local_path,
     _read_agent_id_file,
     _read_token_file,
+    _run_with_runtime_catalog,
     _run_with_signal_handlers,
     main,
 )
@@ -54,6 +55,22 @@ def _load_canonical_agent_settings(environment: dict[str, str]) -> AgentSettings
     except ConfigurationError as exc:
         pytest.fail(f"canonical Agent environment was rejected: {exc}")
     raise AssertionError("unreachable")
+
+
+def test_environment_tool_validation_can_be_deferred_to_runtime_catalog(
+    tmp_path: Path,
+) -> None:
+    environment, _ = _canonical_agent_environment(tmp_path)
+    environment["RELAY_AGENT_TOOLS"] = "relay_cua_provider_added_later"
+
+    with pytest.raises(ConfigurationError):
+        AgentSettings.from_environment(environment)
+
+    settings = AgentSettings.from_environment(
+        environment,
+        defer_tool_validation=True,
+    )
+    assert settings.tools_allowlist == ("relay_cua_provider_added_later",)
 
 
 def test_agent_dispatches_selected_descriptor_through_provider_client(
@@ -825,7 +842,7 @@ def test_environment_and_cli_configuration_errors_never_echo_agent_token(
     assert secret not in capsys.readouterr().err
 
 
-def test_agent_main_discovers_local_catalog_before_starting_runtime(
+def test_agent_main_uses_supplied_catalog_before_starting_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = AgentSettings(
@@ -841,14 +858,88 @@ def test_agent_main_discovers_local_catalog_before_starting_runtime(
     async def fake_run(agent: RelayAgent) -> None:
         observed.append(agent._catalog)
 
-    monkeypatch.setattr("agent_relay.agent.AgentSettings.from_environment", lambda: settings)
-    monkeypatch.setattr("agent_relay.agent.discover_local_catalog", lambda _path: snapshot)
+    monkeypatch.setattr(
+        "agent_relay.agent.AgentSettings.from_environment",
+        lambda **_kwargs: settings,
+    )
     monkeypatch.setattr("agent_relay.agent._run_with_signal_handlers", fake_run)
     monkeypatch.setattr(sys, "argv", ["agent-relay-agent"])
 
-    main()
+    main(catalog=snapshot)
 
     assert observed == [snapshot]
+
+
+def test_runtime_catalog_reuses_one_started_cua_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = tmp_path / "cua-driver"
+    driver.write_text("#!/bin/sh\n", encoding="utf-8")
+    driver.chmod(0o755)
+    settings = AgentSettings(
+        server_url="ws://localhost/ws/agent",
+        device_id="catalog-agent",
+        agent_token="[REDACTED]",
+        workspace=tmp_path,
+        tools_allowlist=("relay_cua_provider_added_later",),
+        computer_driver_path=driver,
+        computer_allowed_app_name="Fixture",
+        computer_allowed_window_title="Fixture Window",
+    )
+
+    class Provider:
+        provider_name = "cua"
+        starts = 0
+        closes = 0
+
+        async def start(self) -> None:
+            self.starts += 1
+
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [
+                ProviderToolDescriptor(
+                    provider_name="cua",
+                    tool_name="provider_added_later",
+                    public_name="provider_added_later",
+                    description="provider-added tool",
+                    input_schema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    risk="interaction",
+                )
+            ]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            raise AssertionError("runtime dispatch is outside this startup test")
+
+        async def close(self) -> None:
+            self.closes += 1
+
+        async def wait_unavailable(self) -> None:
+            await asyncio.Event().wait()
+
+    provider = Provider()
+    observed: list[RelayAgent] = []
+
+    async def fake_run(agent: RelayAgent) -> None:
+        observed.append(agent)
+
+    monkeypatch.setattr(
+        "agent_relay.agent._configured_computer_provider",
+        lambda _settings: provider,
+    )
+    monkeypatch.setattr("agent_relay.agent._run_with_signal_handlers", fake_run)
+
+    asyncio.run(_run_with_runtime_catalog(settings))
+
+    assert provider.starts == 1
+    assert provider.closes == 1
+    assert observed[0]._provider_routes["cua.provider_added_later"][0] is provider
+    assert id(provider) not in observed[0]._unique_capabilities
 
 
 class _Connection(AbstractAsyncContextManager["_Socket"]):
