@@ -10,7 +10,11 @@ import anyio
 import pytest
 from mcp import ClientSession
 
-from agent_relay.json_bounds import MAX_JSON_BYTES, JsonValue
+from agent_relay.json_bounds import (
+    MAX_JSON_BYTES,
+    MAX_JSON_COLLECTION_ITEMS,
+    JsonValue,
+)
 from agent_relay.output_models import ProviderToolResult
 from agent_relay.provider_tools import (
     MAX_PROVIDER_DESCRIPTION_LENGTH,
@@ -814,6 +818,42 @@ def test_provider_description_is_bounded_before_descriptor_validation() -> None:
         tools = await client.list_tools()
         assert len(tools) == 1
         assert len(tools[0].description) == MAX_PROVIDER_DESCRIPTION_LENGTH
+
+    asyncio.run(scenario())
+
+
+def test_cua_array_schema_gets_shared_bound_before_validation() -> None:
+    class UnboundedCuaArrayTransport(FakeMcpTransport):
+        async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+            return {
+                "tools": [
+                    {
+                        "name": "click",
+                        "description": "click",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "modifier": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                }
+                            },
+                            "additionalProperties": False,
+                        },
+                    }
+                ]
+            }
+
+    async def scenario() -> None:
+        client = McpProviderToolClient(
+            UnboundedCuaArrayTransport(), provider_name="cua"
+        )
+        tools = await client.list_tools()
+        properties = tools[0].input_schema.get("properties")
+        assert isinstance(properties, Mapping)
+        modifier = properties["modifier"]
+        assert isinstance(modifier, Mapping)
+        assert modifier["maxItems"] == MAX_JSON_COLLECTION_ITEMS
 
     asyncio.run(scenario())
 

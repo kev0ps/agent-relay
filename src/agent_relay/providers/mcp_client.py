@@ -10,7 +10,12 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from ..json_bounds import JsonBoundsError, JsonValue, validate_json_schema
+from ..json_bounds import (
+    MAX_JSON_COLLECTION_ITEMS,
+    JsonBoundsError,
+    JsonValue,
+    validate_json_schema,
+)
 from ..output_models import ProviderToolResult
 from ..provider_tools import (
     MAX_PROVIDER_DESCRIPTION_LENGTH,
@@ -62,6 +67,24 @@ def _debug_cua_descriptor_failure(provider_name: str, category: str) -> None:
             file=sys.stderr,
             flush=True,
         )
+
+
+def _normalize_cua_schema_bounds(value: object) -> object:
+    """Copy a CUA schema while filling the shared finite collection bounds."""
+    if isinstance(value, list):
+        return [_normalize_cua_schema_bounds(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = {
+        key: _normalize_cua_schema_bounds(child) for key, child in value.items()
+    }
+    items = normalized.get("items")
+    if items is not None and items is not False and "maxItems" not in normalized:
+        normalized["maxItems"] = MAX_JSON_COLLECTION_ITEMS
+    additional = normalized.get("additionalProperties")
+    if isinstance(additional, dict) and "maxProperties" not in normalized:
+        normalized["maxProperties"] = MAX_JSON_COLLECTION_ITEMS
+    return normalized
 
 
 def _schema_failure_category(value: object) -> str | None:
@@ -489,6 +512,12 @@ def _descriptor(
         description = description[:MAX_PROVIDER_DESCRIPTION_LENGTH]
     input_schema = _field(tool, "inputSchema", "input_schema")
     output_schema = _field(tool, "outputSchema", "output_schema", default=None)
+    if provider_name == "cua":
+        # cua-driver 0.8.3 omits some collection bounds; fill them with the
+        # existing Relay limit without changing generic-provider validation.
+        input_schema = _normalize_cua_schema_bounds(input_schema)
+        if output_schema is not None:
+            output_schema = _normalize_cua_schema_bounds(output_schema)
     input_schema_failure = _schema_failure_category(input_schema)
     output_schema_failure = (
         _schema_failure_category(output_schema) if output_schema is not None else None
