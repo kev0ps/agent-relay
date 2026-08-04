@@ -12,7 +12,10 @@ from mcp import ClientSession
 
 from agent_relay.json_bounds import MAX_JSON_BYTES, JsonValue
 from agent_relay.output_models import ProviderToolResult
-from agent_relay.provider_tools import ProviderToolDescriptor
+from agent_relay.provider_tools import (
+    MAX_PROVIDER_DESCRIPTION_LENGTH,
+    ProviderToolDescriptor,
+)
 from agent_relay.providers.base import (
     ProviderCleanupError,
     ProviderConnectionError,
@@ -786,6 +789,30 @@ def test_malformed_mcp_descriptor_is_inventory_error_without_sensitive_context()
             await client.list_tools()
         assert type(caught.value) is ProviderToolError
         assert_sanitized(caught.value, "invalid provider tool inventory")
+
+    asyncio.run(scenario())
+
+
+def test_provider_description_is_bounded_before_descriptor_validation() -> None:
+    class LongDescriptionTransport(FakeMcpTransport):
+        async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+            return {
+                "tools": [
+                    {
+                        "name": "capture",
+                        "description": "x" * (MAX_PROVIDER_DESCRIPTION_LENGTH + 100),
+                        "inputSchema": {"type": "object", "additionalProperties": False},
+                    }
+                ]
+            }
+
+    async def scenario() -> None:
+        client = McpProviderToolClient(
+            LongDescriptionTransport(), provider_name="cua"
+        )
+        tools = await client.list_tools()
+        assert len(tools) == 1
+        assert len(tools[0].description) == MAX_PROVIDER_DESCRIPTION_LENGTH
 
     asyncio.run(scenario())
 

@@ -13,6 +13,7 @@ from typing import Any, Literal, Protocol
 from ..json_bounds import JsonValue
 from ..output_models import ProviderToolResult
 from ..provider_tools import (
+    MAX_PROVIDER_DESCRIPTION_LENGTH,
     MAX_PROVIDER_TOOLS,
     ProviderRiskClass,
     ProviderToolDescriptor,
@@ -458,8 +459,10 @@ def _descriptor(
 ) -> ProviderToolDescriptor:
     name = _field(tool, "name")
     description = _field(tool, "description", default=None)
-    if description is None:
+    if description is None or description == "":
         description = "Provider tool"
+    elif isinstance(description, str):
+        description = description[:MAX_PROVIDER_DESCRIPTION_LENGTH]
     input_schema = _field(tool, "inputSchema", "input_schema")
     output_schema = _field(tool, "outputSchema", "output_schema", default=None)
     annotations = _field(tool, "annotations", default={})
