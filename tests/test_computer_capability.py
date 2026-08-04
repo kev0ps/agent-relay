@@ -310,6 +310,7 @@ def test_safe_driver_environment_excludes_relay_credentials() -> None:
     assert environment == {
         "PATH": "/usr/bin",
         "HOME": "/tmp/home",
+        "CUA_DRIVER_INSTALL_CHANNEL": "python_package",
         "CUA_DRIVER_TELEMETRY": "0",
         "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
     }

@@ -103,6 +103,7 @@ def safe_driver_environment(
 ) -> dict[str, str]:
     """Return only the environment needed by the local CUA driver."""
     result = {key: value for key, value in source.items() if key in _SAFE_ENV}
+    result["CUA_DRIVER_INSTALL_CHANNEL"] = "python_package"
     result["CUA_DRIVER_TELEMETRY"] = "0"
     result["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "0"
     return result
