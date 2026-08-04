@@ -86,3 +86,4 @@ def test_windows_cua_fixture_is_not_a_relay_dispatch_layer() -> None:
     fixture = FIXTURE.read_text(encoding="utf-8")
     assert "RunId" in fixture
     assert "eventpath" in fixture.casefold()
+    assert '$input.AccessibleName = "Name"' in fixture

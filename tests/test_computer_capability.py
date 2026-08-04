@@ -21,7 +21,7 @@ from agent_relay.capabilities.computer import (
     validate_windows_health,
 )
 from agent_relay.catalog import CUA_REFERENCE_TOOL_NAMES
-from agent_relay.output_models import ProviderTextContent
+from agent_relay.output_models import ProviderTextContent, ProviderToolResult
 from agent_relay.providers.base import ProviderTimeoutError, ProviderToolError
 
 _GENERIC_DRIVER = r'''#!/usr/bin/env python3
@@ -179,19 +179,22 @@ def test_driver_stderr_diagnostics_are_closed_and_bounded() -> None:
 
 def test_computer_capability_lists_and_calls_provider_native_tools(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, log = _write_driver(tmp_path)
+        path, log = _write_driver(tmp_path, extra_tool="provider_added_later")
         capability = _configured(path)
         await capability.start()
         descriptors = await capability.list_tools()
-        assert len(descriptors) == 50
-        assert {item.tool_name for item in descriptors} == set(CUA_REFERENCE_TOOL_NAMES)
+        assert len(descriptors) == 51
+        assert {item.tool_name for item in descriptors} == {
+            *CUA_REFERENCE_TOOL_NAMES,
+            "provider_added_later",
+        }
 
-        result = await capability.call_tool("click", {"target": "opaque-target"})
+        result = await capability.call_tool("provider_added_later", {})
         assert isinstance(result.content[0], ProviderTextContent)
         assert result.content[0].text == "provider-result"
         assert result.structured_content == {
-            "tool": "click",
-            "arguments": {"target": "opaque-target"},
+            "tool": "provider_added_later",
+            "arguments": {},
         }
 
         calls = [json.loads(line) for line in log.read_text().splitlines()]
@@ -204,10 +207,178 @@ def test_computer_capability_lists_and_calls_provider_native_tools(tmp_path: Pat
         assert not any("argv" in item for item in calls if "startup_argv" not in item)
         call = next(item for item in calls if item.get("method") == "tools/call")
         assert call["params"] == {
-            "name": "click",
-            "arguments": {"target": "opaque-target"},
+            "name": "provider_added_later",
+            "arguments": {},
         }
         await capability.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_selected_cua_tools_are_scoped_to_the_configured_window(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        path, _ = _write_driver(tmp_path)
+        capability = _configured(path)
+        calls: list[tuple[str, dict[str, object]]] = []
+        snapshot = 0
+
+        class ScopedClient:
+            async def call_tool(
+                self, name: str, arguments: dict[str, object]
+            ) -> ProviderToolResult:
+                nonlocal snapshot
+                calls.append((name, arguments))
+                if name == "list_windows":
+                    return ProviderToolResult(
+                        content=[{"type": "text", "text": "all desktop windows"}],
+                        structuredContent={
+                            "current_space_id": 1,
+                            "windows": [
+                                {
+                                    "pid": 41,
+                                    "window_id": 7,
+                                    "app_name": "Fixture",
+                                    "title": "Relay Desktop Fixture",
+                                    "is_on_screen": True,
+                                    "bounds": {
+                                        "x": 1,
+                                        "y": 2,
+                                        "width": 300,
+                                        "height": 200,
+                                    },
+                                },
+                                {
+                                    "pid": 99,
+                                    "window_id": 8,
+                                    "app_name": "Other",
+                                    "title": "Private window",
+                                    "is_on_screen": True,
+                                    "bounds": {
+                                        "x": 2,
+                                        "y": 3,
+                                        "width": 100,
+                                        "height": 100,
+                                    },
+                                },
+                            ],
+                        },
+                        isError=False,
+                    )
+                if name == "get_window_state":
+                    snapshot += 1
+                    return ProviderToolResult(
+                        content=[{"type": "text", "text": "raw state"}],
+                        structuredContent={
+                            "pid": 41,
+                            "window_id": 7,
+                            "snapshot_id": f"snapshot-{snapshot}",
+                            "screenshot": "must-not-escape",
+                            "elements": [
+                                {
+                                    "element_index": 20,
+                                    "role": "textbox",
+                                    "label": "Name",
+                                    "element_token": f"field-{snapshot}",
+                                    "value": "",
+                                    "bounds": {
+                                        "x": 1,
+                                        "y": 1,
+                                        "width": 10,
+                                        "height": 10,
+                                    },
+                                },
+                                {
+                                    "element_index": 40,
+                                    "role": "button",
+                                    "label": "Apply",
+                                    "element_token": f"button-{snapshot}",
+                                },
+                            ],
+                        },
+                        isError=False,
+                    )
+                return ProviderToolResult(
+                    content=[{"type": "text", "text": "raw action"}],
+                    structuredContent={
+                        "path": "uia",
+                        "verified": True,
+                        "effect": "confirmed",
+                        "private_detail": "must-not-escape",
+                    },
+                    isError=False,
+                )
+
+        client = ScopedClient()
+
+        listed = await capability._call_scoped_tool(client, "list_windows", {})
+        assert listed.content == []
+        assert listed.structured_content == {
+            "windows": [
+                {
+                    "pid": 41,
+                    "window_id": 7,
+                    "app_name": "Fixture",
+                    "title": "Relay Desktop Fixture",
+                    "is_on_screen": True,
+                    "bounds": {"x": 1, "y": 2, "width": 300, "height": 200},
+                }
+            ]
+        }
+
+        state = await capability._call_scoped_tool(
+            client,
+            "get_window_state",
+            {
+                "pid": 41,
+                "window_id": 7,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+        )
+        assert state.content == []
+        assert state.structured_content is not None
+        assert "screenshot" not in state.structured_content
+        assert "bounds" not in state.structured_content["elements"][0]
+        assert state.structured_content["elements"][0]["element_index"] == 0
+
+        action = await capability._call_scoped_tool(
+            client,
+            "click",
+            {"pid": 41, "window_id": 7, "element_token": "field-1"},
+        )
+        assert action.content == []
+        assert action.structured_content == {
+            "path": "uia",
+            "verified": True,
+            "effect": "confirmed",
+        }
+
+        duplicate = await capability._call_scoped_tool(
+            client,
+            "click",
+            {"pid": 41, "window_id": 7, "element_token": "field-1"},
+        )
+        assert duplicate.is_error is True
+
+        await capability._call_scoped_tool(
+            client,
+            "get_window_state",
+            {
+                "pid": 41,
+                "window_id": 7,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+        )
+        rejected = await capability._call_scoped_tool(
+            client,
+            "click",
+            {"pid": 41, "window_id": 7, "element_token": "field-1"},
+        )
+        assert rejected.is_error is True
+
+        assert calls[0] == ("list_windows", {"on_screen_only": True})
+        assert [name for name, _arguments in calls].count("click") == 1
 
     asyncio.run(scenario())
 
@@ -224,10 +395,10 @@ def test_provider_arguments_are_validated_before_tools_call(tmp_path: Path) -> N
                 if '"method":"tools/call"' in line
             ]
         )
-        with pytest.raises(ProviderToolError):
-            await capability.call_tool("click", {})
-        with pytest.raises(ProviderToolError):
+        assert (await capability.call_tool("click", {})).is_error is True
+        assert (
             await capability.call_tool("click", {"target": "ok", "extra": True})
+        ).is_error is True
         after = len(
             [
                 line
@@ -273,11 +444,15 @@ def test_startup_protocol_failures_are_fail_closed(tmp_path: Path, mode: str) ->
 
 def test_provider_error_is_safe_and_closes_idempotently(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, _ = _write_driver(tmp_path, mode="raw_error")
+        path, _ = _write_driver(
+            tmp_path,
+            mode="raw_error",
+            extra_tool="provider_added_later",
+        )
         capability = _configured(path)
         await capability.start()
         with pytest.raises(ProviderToolError) as error:
-            await capability.call_tool("click", {"target": "opaque-target"})
+            await capability.call_tool("provider_added_later", {})
         assert "backend secret" not in str(error.value)
         await capability.aclose()
         await capability.aclose()
@@ -288,14 +463,16 @@ def test_provider_error_is_safe_and_closes_idempotently(tmp_path: Path) -> None:
 
 def test_cancellation_terminates_owned_provider_process(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, _ = _write_driver(tmp_path, mode="hang")
+        path, _ = _write_driver(
+            tmp_path,
+            mode="hang",
+            extra_tool="provider_added_later",
+        )
         capability = _configured(path, action_timeout=10)
         await capability.start()
         process = capability._process
         assert process is not None
-        task = asyncio.create_task(
-            capability.call_tool("click", {"target": "opaque-target"})
-        )
+        task = asyncio.create_task(capability.call_tool("provider_added_later", {}))
         await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -309,13 +486,17 @@ def test_cancellation_terminates_owned_provider_process(tmp_path: Path) -> None:
 
 def test_timeout_terminates_owned_provider_process(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, _ = _write_driver(tmp_path, mode="hang")
+        path, _ = _write_driver(
+            tmp_path,
+            mode="hang",
+            extra_tool="provider_added_later",
+        )
         capability = _configured(path, action_timeout=0.05)
         await capability.start()
         process = capability._process
         assert process is not None
         with pytest.raises(ProviderTimeoutError):
-            await capability.call_tool("click", {"target": "opaque-target"})
+            await capability.call_tool("provider_added_later", {})
         assert process.returncode is not None
         await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
         await capability.aclose()

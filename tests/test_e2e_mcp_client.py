@@ -17,6 +17,8 @@ from types import ModuleType
 
 import pytest
 
+from agent_relay import json_bounds
+
 E2E_DIR = Path(__file__).resolve().parent / "e2e"
 
 
@@ -49,6 +51,17 @@ def test_mcp_client_module_exposes_call_tool_and_explicit_tools_list() -> None:
     assert hasattr(client, "call_tool")
     assert hasattr(client, "call_tool_async")
     assert hasattr(client.MCPClientSession, "list_tools")
+
+
+def test_mcp_client_schema_limits_match_the_product_boundary() -> None:
+    client = _load_mcp_client()
+    assert client.MAX_JSON_BYTES == json_bounds.MAX_JSON_BYTES
+    assert client.MAX_JSON_DEPTH == json_bounds.MAX_JSON_DEPTH
+    assert client.MAX_JSON_NODES == json_bounds.MAX_JSON_NODES
+    assert (
+        client.MAX_JSON_COLLECTION_ITEMS
+        == json_bounds.MAX_JSON_COLLECTION_ITEMS
+    )
 
 
 def test_mcp_client_accepts_ordered_announced_tool_subsets() -> None:
@@ -99,13 +112,37 @@ def test_mcp_client_rejects_unbounded_or_executable_tool_schemas() -> None:
 
     deep: dict[str, object] = {"type": "object"}
     cursor = deep
-    for _ in range(10):
+    for _ in range(client.MAX_JSON_DEPTH + 1):
         child: dict[str, object] = {"type": "object"}
         cursor["properties"] = child
         cursor = child
     setattr(tool, "inputSchema", deep)
     with pytest.raises(client.MCPContractError):
         client._validate_tool_schema(tool)
+
+
+def test_mcp_client_accepts_bounded_driver_schema_with_long_descriptions() -> None:
+    client = _load_mcp_client()
+    tool = type(
+        "Tool",
+        (),
+        {
+            "name": "relay_cua_click",
+            "inputSchema": {
+                "type": "object",
+                "description": "x" * 1096,
+                "properties": {
+                    "element_token": {
+                        "type": "string",
+                        "description": "y" * 1096,
+                    }
+                },
+                "additionalProperties": False,
+            },
+        },
+    )()
+
+    client._validate_tool_schema(tool)
 
 
 def test_mcp_client_exposes_contract_error() -> None:
