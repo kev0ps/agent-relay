@@ -757,6 +757,66 @@ jobs:
           "CUA_DRIVER_RS_HOME=$driverHome" | Add-Content -LiteralPath $env:GITHUB_ENV
           "CUA_DRIVER_RS_INSTALL_DIR=$driverBin" | Add-Content -LiteralPath $env:GITHUB_ENV
 
+      - name: Probe Windows CUA in-process MCP startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          @'
+          import json
+          import os
+          import subprocess
+
+          from agent_relay.capabilities.computer import (
+              _driver_stderr_category,
+              _driver_stderr_line_category,
+              safe_driver_environment,
+          )
+
+          driver = os.environ["RELAY_AGENT_COMPUTER_DRIVER_PATH"]
+          probe_env = safe_driver_environment(os.environ.copy())
+          payload = (
+              b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-probe","version":"1"}}}\n'
+              b'{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+              b'{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+          )
+          process = subprocess.Popen(
+              [driver, "mcp", "--no-overlay", "--no-daemon-relaunch"],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              env=probe_env,
+          )
+          try:
+              stdout, stderr = process.communicate(input=payload, timeout=15)
+          except subprocess.TimeoutExpired:
+              process.kill()
+              stdout, stderr = process.communicate()
+              print("windows cua mcp probe: process-timeout")
+              raise SystemExit(1)
+          if process.returncode != 0:
+              categories = {
+                  category
+                  for line in stderr.splitlines()
+                  if (category := _driver_stderr_line_category(line))
+              }
+              category = _driver_stderr_category(categories, bool(stderr.strip()))
+              print(f"windows cua mcp probe: process-failure category={category or 'unknown'}")
+              raise SystemExit(1)
+          responses = []
+          for line in stdout.splitlines():
+              try:
+                  message = json.loads(line)
+              except (UnicodeDecodeError, json.JSONDecodeError):
+                  continue
+              if isinstance(message, dict) and "id" in message and "result" in message:
+                  responses.append(message)
+          ids = {message["id"] for message in responses}
+          if ids != {1, 2}:
+              print("windows cua mcp probe: response-failure")
+              raise SystemExit(1)
+          print("windows cua mcp probe: spawn=ok initialize=result tools-list=result")
+          '@ | uv run --frozen python -
+
       - name: Check Windows CUA Python quality
         shell: pwsh
         run: uv run --frozen ruff check .
