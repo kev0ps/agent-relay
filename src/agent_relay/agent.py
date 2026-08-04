@@ -40,6 +40,7 @@ from .capabilities.browser import BrowserStartupError
 from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
 from .catalog import (
+    CUA_REFERENCE_TOOL_NAMES,
     CatalogError,
     CatalogService,
     CatalogSnapshot,
@@ -728,17 +729,38 @@ class RelayAgent:
         self._provider_close_objects = {
             id(client): client for client in effective_provider_clients.values()
         }
-        self._announcement_descriptors = (
-            tuple(
-                entry.descriptor.model_copy(update={"public_name": entry.public_name})
+        if selected_catalog is not None:
+            canonical_names = (
+                "system.ping",
+                "terminal.exec",
+                *(f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES),
+            )
+            canonical_order = {
+                name: position for position, name in enumerate(canonical_names)
+            }
+            selected_entries = tuple(
+                entry
                 for entry in selected_catalog.entries
                 if entry.status == "enabled"
                 and f"{entry.descriptor.provider_name}.{entry.descriptor.tool_name}"
                 in self._provider_routes
             )
-            if selected_catalog is not None
-            else ()
-        )
+            ordered_entries = sorted(
+                enumerate(selected_entries),
+                key=lambda item: (
+                    canonical_order.get(
+                        f"{item[1].descriptor.provider_name}.{item[1].descriptor.tool_name}",
+                        len(canonical_order) + item[0],
+                    ),
+                    item[0],
+                ),
+            )
+            self._announcement_descriptors = tuple(
+                entry.descriptor.model_copy(update={"public_name": entry.public_name})
+                for _position, entry in ordered_entries
+            )
+        else:
+            self._announcement_descriptors = ()
         self._announcement_tools = (
             tuple(
                 f"{descriptor.provider_name}.{descriptor.tool_name}"
