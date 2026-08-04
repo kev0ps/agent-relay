@@ -74,11 +74,7 @@ _SAFE_ENV = {
 
 COMPUTER_STARTUP_PHASES = frozenset(
     {
-        "privacy-disable",
-        "privacy-reset",
-        "privacy-status",
-        "privacy-status-json",
-        "privacy-status-values",
+        "privacy-environment",
         "process-spawn",
         "initialize",
         "initialize-response",
@@ -112,6 +108,7 @@ def safe_driver_environment(
     result["CUA_DRIVER_INSTALL_CHANNEL"] = "python_package"
     result["CUA_DRIVER_TELEMETRY"] = "0"
     result["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "0"
+    result["CUA_TELEMETRY_ENABLED"] = "0"
     return result
 
 
@@ -316,23 +313,13 @@ class ComputerCapability:
             self._startup_phase = "windows-privacy-skip"
             await self._start_windows_daemon()
         else:
-            self._startup_phase = "privacy-disable"
-            await self._privacy_command("telemetry", "disable")
-            self._startup_phase = "privacy-reset"
-            await self._privacy_command("telemetry", "reset-id")
-            self._startup_phase = "privacy-status"
-            raw = await self._privacy_command(
-                "telemetry", "status", "--json", capture=True
-            )
-            self._startup_phase = "privacy-status-json"
-            status_result = json.loads(raw)
-            self._startup_phase = "privacy-status-values"
-            if (
-                not isinstance(status_result, dict)
-                or status_result.get("enabled") is not False
-                or status_result.get("installation_id_present") is not False
-            ):
-                raise ValueError
+            # The isolated child environment opts out before the binary starts.
+            # Do not invoke finite telemetry subcommands here: cua-driver's
+            # CLI wrapper can spawn a registration worker and block on hosted
+            # runners before the MCP process is ever available. The telemetry
+            # home is already isolated, so deleting an inherited identity is
+            # neither necessary nor safe.
+            self._startup_phase = "privacy-environment"
 
         self._startup_phase = "process-spawn"
         self._process = await asyncio.create_subprocess_exec(
