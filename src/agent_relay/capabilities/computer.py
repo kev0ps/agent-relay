@@ -587,7 +587,6 @@ class ComputerCapability:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=self._env,
-                **_process_creation_options(windows=True),
             )
         )
         await asyncio.sleep(0)
