@@ -70,6 +70,21 @@ class ConfigurationError(ValueError):
         super().__init__("invalid agent configuration")
 
 
+def _debug_configuration_validation(error: ValidationError) -> None:
+    """Report only rejected field locations when native diagnostics are enabled."""
+    if os.environ.get("RELAY_NATIVE_DEBUG") != "1":
+        return
+    locations = sorted(
+        ".".join(str(part) for part in item.get("loc", ())) or "<root>"
+        for item in error.errors()
+    )
+    print(
+        "agent configuration rejected fields: " + ", ".join(locations),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 class ProviderUnavailableError(ConnectionError):
     """A selected provider became unavailable during an Agent session."""
 
@@ -114,30 +129,34 @@ class AgentSettings(BaseModel):
     def __init__(self, /, **data: object) -> None:
         try:
             super().__init__(**data)
-        except ValidationError:
+        except ValidationError as error:
             # Pydantic's default rendering includes rejected input values.  Those
             # values can be credentials, so never expose the original error.
+            _debug_configuration_validation(error)
             raise ConfigurationError() from None
 
     @classmethod
     def model_validate(cls, *args: object, **kwargs: object) -> AgentSettings:
         try:
             return super().model_validate(*args, **kwargs)
-        except ValidationError:
+        except ValidationError as error:
+            _debug_configuration_validation(error)
             raise ConfigurationError() from None
 
     @classmethod
     def model_validate_json(cls, *args: object, **kwargs: object) -> AgentSettings:
         try:
             return super().model_validate_json(*args, **kwargs)
-        except ValidationError:
+        except ValidationError as error:
+            _debug_configuration_validation(error)
             raise ConfigurationError() from None
 
     @classmethod
     def model_validate_strings(cls, *args: object, **kwargs: object) -> AgentSettings:
         try:
             return super().model_validate_strings(*args, **kwargs)
-        except ValidationError:
+        except ValidationError as error:
+            _debug_configuration_validation(error)
             raise ConfigurationError() from None
 
     @field_validator("server_url")

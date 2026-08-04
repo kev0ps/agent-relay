@@ -449,6 +449,27 @@ def test_agent_settings_validate_url_workspace_and_mask_secret(tmp_path: Path) -
         )
 
 
+def test_agent_configuration_debug_diagnostics_redact_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("RELAY_NATIVE_DEBUG", "1")
+    with pytest.raises(ConfigurationError):
+        AgentSettings(
+            server_url="ws://127.0.0.1/ws/agent",
+            device_id="device-a",
+            agent_token="secret-token",
+            workspace=tmp_path,
+            unexpected="secret-value",
+        )
+
+    diagnostic = capsys.readouterr().err
+    assert "agent configuration rejected fields: unexpected" in diagnostic
+    assert "secret-token" not in diagnostic
+    assert "secret-value" not in diagnostic
+
+
 def test_canonical_agent_environment_uses_private_token_file_and_redacts_secret(
     tmp_path: Path,
 ) -> None:

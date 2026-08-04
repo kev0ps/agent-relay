@@ -358,6 +358,21 @@ jobs:
       - name: Install locked Browser and Computer Use dependencies
         run: uv sync --locked --extra browser --extra computer
 
+      - name: Prepare isolated Linux CUA driver state
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$(uv run --frozen python -c 'from cua_driver.wrapper import get_binary_path; print(get_binary_path())')"
+          test -f "$driver"
+          driver_bin="$(dirname "$driver")"
+          driver_home="$RUNNER_TEMP/agent-relay-cua-driver-home"
+          mkdir -p "$driver_home"
+          {
+            printf 'RELAY_AGENT_COMPUTER_DRIVER_PATH=%s\n' "$driver"
+            printf 'CUA_DRIVER_RS_HOME=%s\n' "$driver_home"
+            printf 'CUA_DRIVER_RS_INSTALL_DIR=%s\n' "$driver_bin"
+          } >> "$GITHUB_ENV"
+
       - name: Check Linux CUA smoke quality
         run: uv run --frozen ruff check .
 
