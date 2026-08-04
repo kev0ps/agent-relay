@@ -364,6 +364,14 @@ jobs:
           set -euo pipefail
           driver="$(uv run --frozen python -c 'from cua_driver.wrapper import get_binary_path; print(get_binary_path())')"
           test -f "$driver"
+          set +e
+          timeout --signal=TERM --kill-after=5s 15s "$driver" --version >/dev/null 2>&1
+          driver_status=$?
+          set -e
+          if [ "$driver_status" -ne 0 ]; then
+            printf 'cua-driver version probe failed with status=%s\n' "$driver_status" >&2
+            exit "$driver_status"
+          fi
           driver_bin="$(dirname "$driver")"
           driver_home="$RUNNER_TEMP/agent-relay-cua-driver-home"
           mkdir -p "$driver_home"

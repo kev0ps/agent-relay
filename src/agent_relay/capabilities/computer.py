@@ -80,6 +80,7 @@ COMPUTER_STARTUP_PHASES = frozenset(
         "initialize-response",
         "tools-list",
         "windows-daemon-spawn",
+        "windows-daemon-ready",
         "windows-privacy-skip",
     }
 )
@@ -416,6 +417,39 @@ class ComputerCapability:
         await asyncio.sleep(0)
         if self._daemon.returncode is not None:
             raise ValueError
+        self._startup_phase = "windows-daemon-ready"
+        await self._wait_for_windows_daemon()
+
+    async def _wait_for_windows_daemon(self) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._startup_timeout
+        while True:
+            daemon = self._daemon
+            if daemon is None or daemon.returncode is not None:
+                raise ValueError
+            probe: asyncio.subprocess.Process | None = None
+            try:
+                probe = await asyncio.create_subprocess_exec(
+                    str(self._path),
+                    "status",
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=self._env,
+                    **_process_creation_options(windows=True),
+                )
+                await asyncio.wait_for(
+                    probe.wait(),
+                    min(self._action_timeout, 1.0),
+                )
+            except asyncio.TimeoutError:
+                if probe is not None:
+                    await self._kill_process(probe)
+            if probe is not None and probe.returncode == 0:
+                return
+            if loop.time() >= deadline:
+                raise TimeoutError
+            await asyncio.sleep(0.1)
 
     async def _privacy_command(self, *args: str, capture: bool = False) -> str:
         process = await asyncio.create_subprocess_exec(
