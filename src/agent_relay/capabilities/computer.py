@@ -79,9 +79,6 @@ COMPUTER_STARTUP_PHASES = frozenset(
         "initialize",
         "initialize-response",
         "tools-list",
-        "windows-daemon-spawn",
-        "windows-daemon-probe",
-        "windows-daemon-ready",
         "windows-privacy-skip",
     }
 )
@@ -348,8 +345,10 @@ class ComputerCapability:
 
     async def _start_owned(self) -> None:
         if self._windows:
+            # The MCP child is forced in-process with --no-daemon-relaunch;
+            # starting an unused serve/status pair only adds a second startup
+            # boundary and can block before Agent registration.
             self._startup_phase = "windows-privacy-skip"
-            await self._start_windows_daemon()
         else:
             # The isolated child environment opts out before the binary starts.
             # Do not invoke finite telemetry subcommands here: cua-driver's
@@ -404,58 +403,6 @@ class ComputerCapability:
             allowed_tool_names=self._allowed_tool_names,
         )
         await self._client.list_tools()
-
-    async def _start_windows_daemon(self) -> None:
-        """Start the Windows UIA daemon required by hosted runner sessions."""
-        self._startup_phase = "windows-daemon-spawn"
-        self._daemon = await asyncio.create_subprocess_exec(
-            str(self._path),
-            "serve",
-            "--no-overlay",
-            "--no-permissions-gate",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=self._env,
-            **_process_creation_options(windows=True),
-        )
-        await asyncio.sleep(0)
-        if self._daemon.returncode is not None:
-            raise ValueError
-        self._startup_phase = "windows-daemon-probe"
-        await self._wait_for_windows_daemon()
-        self._startup_phase = "windows-daemon-ready"
-
-    async def _wait_for_windows_daemon(self) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._startup_timeout
-        while True:
-            daemon = self._daemon
-            if daemon is None or daemon.returncode is not None:
-                raise ValueError
-            probe: asyncio.subprocess.Process | None = None
-            try:
-                probe = await asyncio.create_subprocess_exec(
-                    str(self._path),
-                    "status",
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    env=self._env,
-                    **_process_creation_options(windows=True),
-                )
-                await asyncio.wait_for(
-                    probe.wait(),
-                    min(self._action_timeout, 1.0),
-                )
-            except asyncio.TimeoutError:
-                if probe is not None:
-                    await self._kill_process(probe)
-            if probe is not None and probe.returncode == 0:
-                return
-            if loop.time() >= deadline:
-                raise TimeoutError
-            await asyncio.sleep(0.1)
 
     async def _privacy_command(self, *args: str, capture: bool = False) -> str:
         process = await asyncio.create_subprocess_exec(

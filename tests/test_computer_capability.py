@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import agent_relay.capabilities.computer as computer_module
 from agent_relay.capabilities.computer import (
     ComputerCapability,
     ComputerUnavailableError,
@@ -150,41 +149,6 @@ def _configured(path: Path, *, action_timeout: float = 1, **kwargs: object) -> C
         shutdown_timeout_seconds=1,
         **kwargs,
     )
-
-
-def test_windows_daemon_readiness_waits_for_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeProcess:
-        def __init__(self, returncode: int | None) -> None:
-            self.returncode = returncode
-
-        async def wait(self) -> int | None:
-            return self.returncode
-
-    async def scenario() -> None:
-        capability = object.__new__(ComputerCapability)
-        setattr(capability, "_daemon", FakeProcess(None))
-        setattr(capability, "_path", Path("cua-driver"))
-        setattr(capability, "_env", {})
-        setattr(capability, "_startup_timeout", 1.0)
-        setattr(capability, "_action_timeout", 1.0)
-        statuses = iter((1, 0))
-        calls: list[tuple[object, ...]] = []
-
-        async def fake_create(*args: object, **kwargs: object) -> FakeProcess:
-            del kwargs
-            calls.append(args)
-            return FakeProcess(next(statuses))
-
-        monkeypatch.setattr(
-            computer_module.asyncio,
-            "create_subprocess_exec",
-            fake_create,
-        )
-        await capability._wait_for_windows_daemon()
-        assert len(calls) == 2
-        assert calls[0][1:] == ("status",)
-
-    asyncio.run(scenario())
 
 
 def test_cua_reference_inventory_contains_exactly_fifty_generic_names() -> None:
