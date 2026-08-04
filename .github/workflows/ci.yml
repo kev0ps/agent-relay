@@ -397,6 +397,14 @@ jobs:
           import sys
 
           DRIVER = os.environ["RELAY_AGENT_COMPUTER_DRIVER_PATH"]
+          PROBE_ENV = os.environ.copy()
+          PROBE_ENV.update(
+              {
+                  "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
+                  "CUA_TELEMETRY_ENABLED": "0",
+                  "CUA_DRIVER_INSTALL_CHANNEL": "python_package",
+              }
+          )
 
           async def main() -> int:
               process = await asyncio.wait_for(
@@ -408,7 +416,7 @@ jobs:
                       stdin=asyncio.subprocess.PIPE,
                       stdout=asyncio.subprocess.PIPE,
                       stderr=asyncio.subprocess.DEVNULL,
-                      env=os.environ.copy(),
+                      env=PROBE_ENV,
                       start_new_session=True,
                       limit=4 * 1024 * 1024 + 1,
                   ),
