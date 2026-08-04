@@ -54,6 +54,15 @@ def _debug_cua_inventory_failure(provider_name: str, category: str) -> None:
         )
 
 
+def _debug_cua_descriptor_failure(provider_name: str, category: str) -> None:
+    if provider_name == "cua" and os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+        print(
+            f"cua provider descriptor failure: category={category}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 class NativeMcpSession(Protocol):
     """The native operations used inside the owner actor's session context."""
 
@@ -456,18 +465,48 @@ def _descriptor(
     annotations = _field(tool, "annotations", default={})
     if annotations is None:
         annotations = {}
-    return ProviderToolDescriptor.model_validate(
-        {
-            "provider_name": provider_name,
-            "tool_name": name,
-            "public_name": name,
-            "description": description,
-            "input_schema": input_schema,
-            "output_schema": output_schema,
-            "annotations": _model_data(annotations),
-            "risk": risk,
-        }
-    )
+    try:
+        return ProviderToolDescriptor.model_validate(
+            {
+                "provider_name": provider_name,
+                "tool_name": name,
+                "public_name": name,
+                "description": description,
+                "input_schema": input_schema,
+                "output_schema": output_schema,
+                "annotations": _model_data(annotations),
+                "risk": risk,
+            }
+        )
+    except Exception as error:
+        category = "model"
+        error_details = getattr(error, "errors", None)
+        if callable(error_details):
+            try:
+                details = error_details()
+                if isinstance(details, list):
+                    for detail in details:
+                        if not isinstance(detail, Mapping):
+                            continue
+                        location = detail.get("loc", ())
+                        if location:
+                            field = str(location[0])
+                            if field in {
+                                "inputSchema",
+                                "input_schema",
+                                "outputSchema",
+                                "output_schema",
+                                "annotations",
+                                "description",
+                                "name",
+                                "tool_name",
+                            }:
+                                category = field.replace("_", "-")
+                                break
+            except Exception:
+                pass
+        _debug_cua_descriptor_failure(provider_name, category)
+        raise
 
 
 async def _list_page(
