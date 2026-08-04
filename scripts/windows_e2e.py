@@ -621,6 +621,12 @@ def _diagnostic_category(path: Path) -> str:
     )
     if discovery_match:
         return f"computer provider discovery: {discovery_match.group(1)}"
+    frame_match = re.search(
+        r"server agent frame diagnostic: category=([a-z-]+)",
+        content,
+    )
+    if frame_match:
+        return f"server agent frame {frame_match.group(1)}"
     lifecycle_matches = re.findall(r"agent lifecycle phase: ([a-z-]+)", content)
     if lifecycle_matches:
         return f"agent lifecycle {lifecycle_matches[-1]}"

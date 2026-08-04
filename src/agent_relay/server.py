@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -57,6 +58,15 @@ from .registry import (
     UnknownRequestError,
     UnsupportedToolError,
 )
+
+
+def _debug_agent_frame(category: str) -> None:
+    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+        print(
+            f"server agent frame diagnostic: category={category}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 class _SerializedWebSocket:
@@ -300,6 +310,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
                     raw = json.loads(text)
                     message = parse_agent_message(raw)
                 except (ValueError, RecursionError, ValidationError):
+                    _debug_agent_frame("protocol-parse")
                     await connection.close(code=1002, reason="invalid protocol message")
                     return
                 if not registered:
@@ -311,9 +322,11 @@ def create_app(settings: RelaySettings) -> FastAPI:
                     try:
                         reply = await registry.register(connection, message)
                     except AuthenticationError:
+                        _debug_agent_frame("register-auth")
                         await connection.close(code=1008, reason="authentication failed")
                         return
                     except DeviceAlreadyConnectedError:
+                        _debug_agent_frame("register-duplicate")
                         await connection.close(code=1013, reason="device already connected")
                         return
                     await registry.send(connection, reply.model_dump(mode="json"))
