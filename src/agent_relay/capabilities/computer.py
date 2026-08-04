@@ -97,20 +97,24 @@ class ComputerUnavailableError(RuntimeError):
 
 def _startup_failure_category(error: BaseException) -> str:
     """Return a closed diagnostic category without exposing exception values."""
+    if isinstance(error, ComputerUnavailableError):
+        return "provider-connection"
+    if isinstance(error, (ProviderConnectionError, ConnectionError, EOFError)):
+        return "provider-connection"
+    if isinstance(error, ProviderTimeoutError):
+        return "provider-timeout"
+    if isinstance(error, ProviderToolError):
+        return "provider-tool"
     if isinstance(error, asyncio.TimeoutError):
         return "timeout"
     if isinstance(error, OSError):
         return "os-error"
     if isinstance(error, json.JSONDecodeError):
         return "json-error"
-    if isinstance(error, ProviderConnectionError):
-        return "provider-connection"
-    if isinstance(error, ProviderTimeoutError):
-        return "provider-timeout"
-    if isinstance(error, ProviderToolError):
-        return "provider-tool"
     if isinstance(error, ValueError):
         return "value-error"
+    if isinstance(error, RuntimeError):
+        return "runtime-error"
     return "other"
 
 
@@ -349,10 +353,12 @@ class ComputerCapability:
             self._startup_phase = "privacy-environment"
 
         self._startup_phase = "process-spawn"
+        driver_args = ["mcp", "--no-overlay"]
+        if not self._windows:
+            driver_args.append("--no-daemon-relaunch")
         self._process = await asyncio.create_subprocess_exec(
             str(self._path),
-            "mcp",
-            "--no-overlay",
+            *driver_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,

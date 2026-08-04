@@ -63,7 +63,8 @@ def schema(name):
 
 
 args = sys.argv[1:]
-if args != ["mcp", "--no-overlay"]:
+log({"startup_argv": args})
+if args not in (["mcp", "--no-overlay"], ["mcp", "--no-overlay", "--no-daemon-relaunch"]):
     log({"argv": args, "env": dict(os.environ)})
     if args == ["telemetry", "status", "--json"]:
         sys.stdout.write(json.dumps({"enabled": False, "installation_id_present": False}) + "\n")
@@ -176,7 +177,13 @@ def test_computer_capability_lists_and_calls_provider_native_tools(tmp_path: Pat
         }
 
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        assert not any("argv" in item for item in calls)
+        startup = next(item for item in calls if "startup_argv" in item)
+        assert startup["startup_argv"] == [
+            "mcp",
+            "--no-overlay",
+            "--no-daemon-relaunch",
+        ]
+        assert not any("argv" in item for item in calls if "startup_argv" not in item)
         call = next(item for item in calls if item.get("method") == "tools/call")
         assert call["params"] == {
             "name": "click",
