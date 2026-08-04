@@ -12,6 +12,7 @@ from agent_relay.capabilities.computer import (
     ComputerUnavailableError,
     _driver_stderr_category,
     _driver_stderr_line_category,
+    _wait_for_windows_daemon_ready,
     safe_driver_environment,
     validate_driver_executable,
     validate_windows_health,
@@ -384,3 +385,25 @@ def test_windows_health_requires_all_required_checks() -> None:
     payload["checks"][-1]["status"] = "fail"
     with pytest.raises(ValueError):
         validate_windows_health(payload)
+
+
+def test_windows_daemon_readiness_wait_is_bounded_and_retries() -> None:
+    class Process:
+        returncode = None
+
+    attempts = 0
+
+    def pipe_ready() -> bool:
+        nonlocal attempts
+        attempts += 1
+        return attempts == 3
+
+    async def scenario() -> None:
+        await _wait_for_windows_daemon_ready(
+            Process(),
+            1,
+            pipe_ready=pipe_ready,
+        )
+
+    asyncio.run(scenario())
+    assert attempts == 3

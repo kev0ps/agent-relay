@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ..catalog import CUA_REFERENCE_TOOL_NAMES
 from ..json_bounds import JsonValue
@@ -33,6 +34,44 @@ MAX_DRIVER_DIAGNOSTIC_LINES = 64
 MAX_DRIVER_DIAGNOSTIC_LINE_BYTES = 4096
 MAX_COMPUTER_APP_LENGTH = 128
 MAX_COMPUTER_WINDOW_TITLE_LENGTH = 256
+WINDOWS_CUA_DRIVER_PIPE = r"\\.\pipe\cua-driver"
+
+
+class _ProcessWithReturncode(Protocol):
+    @property
+    def returncode(self) -> int | None: ...
+
+
+def windows_daemon_pipe_ready() -> bool:
+    """Check the default Windows CUA daemon pipe without consuming it."""
+    if os.name != "nt":
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        wait_named_pipe = kernel32.WaitNamedPipeW
+        wait_named_pipe.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+        wait_named_pipe.restype = ctypes.c_int
+        return bool(wait_named_pipe(WINDOWS_CUA_DRIVER_PIPE, 1))
+    except (AttributeError, OSError):
+        return False
+
+
+async def _wait_for_windows_daemon_ready(
+    process: _ProcessWithReturncode,
+    timeout_seconds: float,
+    *,
+    pipe_ready: Callable[[], bool] = windows_daemon_pipe_ready,
+) -> None:
+    """Wait for the daemon pipe instead of racing the MCP proxy startup."""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        if process.returncode is not None:
+            raise ValueError
+        if pipe_ready():
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError
+        await asyncio.sleep(0.05)
 
 
 def _driver_stderr_line_category(line: bytes) -> str | None:
@@ -515,10 +554,8 @@ class ComputerCapability:
         await asyncio.sleep(0)
         if self._daemon.returncode is not None:
             raise ValueError
-        # The MCP proxy performs its own named-pipe probe. Do not run the
-        # finite `status` command here: it adds a second CLI startup path and
-        # may be delayed by the driver's telemetry wrapper.
         self._startup_phase = "windows-daemon-ready"
+        await _wait_for_windows_daemon_ready(self._daemon, self._startup_timeout)
 
     async def _privacy_command(self, *args: str, capture: bool = False) -> str:
         process = await asyncio.create_subprocess_exec(
