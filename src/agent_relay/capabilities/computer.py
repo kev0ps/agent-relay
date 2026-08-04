@@ -95,6 +95,25 @@ class ComputerUnavailableError(RuntimeError):
         )
 
 
+def _startup_failure_category(error: BaseException) -> str:
+    """Return a closed diagnostic category without exposing exception values."""
+    if isinstance(error, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(error, OSError):
+        return "os-error"
+    if isinstance(error, json.JSONDecodeError):
+        return "json-error"
+    if isinstance(error, ProviderConnectionError):
+        return "provider-connection"
+    if isinstance(error, ProviderTimeoutError):
+        return "provider-timeout"
+    if isinstance(error, ProviderToolError):
+        return "provider-tool"
+    if isinstance(error, ValueError):
+        return "value-error"
+    return "other"
+
+
 def safe_driver_environment(
     source: dict[str, str] | os._Environ[str],
 ) -> dict[str, str]:
@@ -285,8 +304,16 @@ class ComputerCapability:
             except asyncio.CancelledError:
                 await asyncio.shield(self._reset())
                 raise
-            except Exception:
+            except Exception as error:
                 startup_phase = self._startup_phase
+                if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+                    print(
+                        "computer startup failed: "
+                        f"phase={startup_phase or 'unknown'} "
+                        f"category={_startup_failure_category(error)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 await self._reset()
                 raise ComputerUnavailableError(startup_phase) from None
             finally:

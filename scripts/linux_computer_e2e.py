@@ -189,6 +189,7 @@ def _stderr_hint(path: Path) -> str | None:
             for marker in (
                 "cua catalog construction failed:",
                 "computer privacy command failed:",
+                "computer startup failed:",
             )
         )
     ]
