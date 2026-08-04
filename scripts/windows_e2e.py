@@ -8,6 +8,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import importlib.util
 import os
+import re
 import secrets
 import signal
 import socket
@@ -585,22 +586,38 @@ def _diagnostic_category(path: Path) -> str:
             ).lower()
     except OSError:
         return "diagnostics unavailable"
+    startup_match = re.search(
+        r"computer startup failed: phase=([a-z-]+) category=([a-z-]+)",
+        content,
+    )
+    if startup_match:
+        return (
+            "computer startup failure: "
+            f"phase={startup_match.group(1)} "
+            f"category={startup_match.group(2)}"
+        )
+    discovery_match = re.search(
+        r"cua provider discovery failed: category=([a-z-]+)",
+        content,
+    )
+    if discovery_match:
+        return f"computer provider discovery: {discovery_match.group(1)}"
     for marker, category in (
-        ("phase-windows-daemon-spawn", "computer startup windows daemon"),
+        ("computer startup phase: windows-daemon-spawn", "computer startup windows daemon"),
         ("cua catalog construction failed:", "computer catalog construction"),
         ("computer privacy command failed:", "computer privacy command"),
         ("computer startup failed:", "computer startup failure"),
-        ("phase-windows-privacy-skip", "computer startup windows privacy skip"),
-        ("phase-privacy-disable", "computer startup privacy disable"),
-        ("phase-privacy-reset", "computer startup privacy reset"),
-        ("phase-privacy-status", "computer startup privacy status"),
-        ("phase-process-spawn", "computer startup process spawn"),
-        ("phase-initialize", "computer startup initialize"),
-        ("phase-tools-list", "computer startup tools list"),
-        ("phase-windows-health", "computer startup windows health"),
-        ("phase-session-start", "computer startup session"),
-        ("phase-window-select", "computer startup window select"),
-        ("phase-capture-readiness", "computer startup capture readiness"),
+        ("computer startup phase: windows-privacy-skip", "computer startup windows privacy skip"),
+        ("computer startup phase: privacy-disable", "computer startup privacy disable"),
+        ("computer startup phase: privacy-reset", "computer startup privacy reset"),
+        ("computer startup phase: privacy-status", "computer startup privacy status"),
+        ("computer startup phase: process-spawn", "computer startup process spawn"),
+        ("computer startup phase: initialize", "computer startup initialize"),
+        ("computer startup phase: tools-list", "computer startup tools list"),
+        ("computer startup phase: windows-health", "computer startup windows health"),
+        ("computer startup phase: session-start", "computer startup session"),
+        ("computer startup phase: window-select", "computer startup window select"),
+        ("computer startup phase: capture-readiness", "computer startup capture readiness"),
         ("invalid agent configuration", "invalid agent configuration"),
         ("connection refused", "connection refused"),
         ("cannot connect", "connection failure"),

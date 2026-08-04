@@ -205,6 +205,23 @@ def test_child_diagnostics_use_closed_categories_without_echoing_exception_names
     assert "token-value" not in category
 
 
+def test_startup_diagnostics_preserve_only_bounded_categories(tmp_path: Path) -> None:
+    harness = _load_harness()
+    diagnostic = tmp_path / "child.stderr.log"
+    diagnostic.write_text(
+        "computer startup failed: phase=process-spawn category=os-error\n"
+        "cua provider discovery failed: category=invalid-inventory\n"
+        "secret-path token-value\n",
+        encoding="utf-8",
+    )
+
+    category = harness._diagnostic_category(diagnostic)
+
+    assert category == "computer startup failure: phase=process-spawn category=os-error"
+    assert "secret-path" not in category
+    assert "token-value" not in category
+
+
 def test_diagnostic_drain_is_bounded(tmp_path: Path) -> None:
     harness = _load_harness()
     diagnostic = tmp_path / "child.stderr.log"

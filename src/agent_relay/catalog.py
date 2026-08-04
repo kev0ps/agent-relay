@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 from collections.abc import Collection, Mapping, Sequence
@@ -20,6 +21,16 @@ from .output_models import ProviderToolResult
 from .provider_tools import ProviderRiskClass, ProviderToolDescriptor
 from .providers.base import ProviderToolClient, ProviderToolError, bounded_descriptors
 from .providers.in_process import InProcessProviderToolClient
+
+
+def _debug_cua_discovery_failure(provider_name: str, category: str) -> None:
+    if provider_name == "cua" and os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+        print(
+            f"cua provider discovery failed: category={category}",
+            file=sys.stderr,
+            flush=True,
+        )
+
 
 CUA_REFERENCE_TOOL_NAMES: tuple[str, ...] = (
     "list_apps",
@@ -388,13 +399,17 @@ class CatalogService:
                     descriptors = bounded_descriptors(raw_tools)
                 except ProviderToolError as exc:
                     if "invalid provider tool inventory" in str(exc):
+                        _debug_cua_discovery_failure(provider.name, "invalid-inventory")
                         raise CatalogError("invalid provider inventory") from None
+                    _debug_cua_discovery_failure(provider.name, "provider-tool")
                     available = False
                     reason = "provider is unavailable"
                     descriptors = _bounded_reference_tools(provider.known_tools)
                 except (ValidationError, TypeError, ValueError) as exc:
+                    _debug_cua_discovery_failure(provider.name, "invalid-inventory")
                     raise CatalogError("invalid provider inventory") from exc
                 except Exception:
+                    _debug_cua_discovery_failure(provider.name, "other")
                     available = False
                     reason = "provider is unavailable"
                     descriptors = _bounded_reference_tools(provider.known_tools)
