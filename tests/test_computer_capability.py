@@ -10,6 +10,8 @@ import pytest
 from agent_relay.capabilities.computer import (
     ComputerCapability,
     ComputerUnavailableError,
+    _driver_stderr_category,
+    _driver_stderr_line_category,
     safe_driver_environment,
     validate_driver_executable,
     validate_windows_health,
@@ -157,6 +159,18 @@ def test_cua_reference_inventory_contains_exactly_fifty_generic_names() -> None:
     assert ComputerCapability.tools == frozenset(
         f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES
     )
+
+
+def test_driver_stderr_diagnostics_are_closed_and_bounded() -> None:
+    assert _driver_stderr_line_category(
+        b"named pipe connection failed: secret-token"
+    ) == "named-pipe"
+    assert _driver_stderr_line_category(
+        b"ConfigurationError: private-path"
+    ) == "configuration"
+    assert _driver_stderr_line_category(b"unclassified secret-value") == "driver-error"
+    assert _driver_stderr_category({"daemon", "named-pipe"}, True) == "named-pipe"
+    assert _driver_stderr_category(set(), False) is None
 
 
 def test_computer_capability_lists_and_calls_provider_native_tools(tmp_path: Path) -> None:

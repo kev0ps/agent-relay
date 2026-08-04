@@ -599,14 +599,21 @@ def _diagnostic_category(path: Path) -> str:
     if inventory_match:
         return f"computer provider inventory: {inventory_match.group(1)}"
     startup_match = re.search(
-        r"computer startup failed: phase=([a-z-]+) category=([a-z-]+)",
+        r"computer startup failed: phase=([a-z-]+) category=([a-z-]+)"
+        r"(?: driver=([a-z-]+))?",
         content,
     )
     if startup_match:
+        driver_hint = (
+            f" driver={startup_match.group(3)}"
+            if startup_match.group(3)
+            else ""
+        )
         return (
             "computer startup failure: "
             f"phase={startup_match.group(1)} "
             f"category={startup_match.group(2)}"
+            f"{driver_hint}"
         )
     discovery_match = re.search(
         r"cua provider discovery failed: category=([a-z-]+)",

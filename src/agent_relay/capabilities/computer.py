@@ -29,8 +29,50 @@ from ..providers.base import (
 from ..providers.mcp_client import McpProviderToolClient, McpTransport
 
 MAX_MCP_FRAME_BYTES = 256 * 1024
+MAX_DRIVER_DIAGNOSTIC_LINES = 64
+MAX_DRIVER_DIAGNOSTIC_LINE_BYTES = 4096
 MAX_COMPUTER_APP_LENGTH = 128
 MAX_COMPUTER_WINDOW_TITLE_LENGTH = 256
+
+
+def _driver_stderr_line_category(line: bytes) -> str | None:
+    """Classify one driver stderr line without returning its contents."""
+    text = line[:MAX_DRIVER_DIAGNOSTIC_LINE_BYTES].decode(
+        "utf-8", errors="replace"
+    ).casefold()
+    if not text.strip():
+        return None
+    if "named pipe" in text or "broken pipe" in text or "pipe" in text:
+        return "named-pipe"
+    if "ui automation" in text or "uia" in text or "accessibility" in text:
+        return "ui-automation"
+    if "permission" in text or "access is denied" in text:
+        return "permission"
+    if "configuration" in text or "invalid agent" in text:
+        return "configuration"
+    if "session" in text or "desktop" in text:
+        return "desktop-session"
+    if "mcp" in text or "json-rpc" in text:
+        return "mcp"
+    if "daemon" in text:
+        return "daemon"
+    return "driver-error"
+
+
+def _driver_stderr_category(categories: set[str], saw_output: bool) -> str | None:
+    """Select one closed driver diagnostic category by stable priority."""
+    for category in (
+        "named-pipe",
+        "ui-automation",
+        "permission",
+        "configuration",
+        "desktop-session",
+        "mcp",
+        "daemon",
+    ):
+        if category in categories:
+            return category
+    return "driver-error" if saw_output else None
 
 _SAFE_ENV = {
     "APPDATA",
@@ -286,6 +328,7 @@ class ComputerCapability:
         self._process: asyncio.subprocess.Process | None = None
         self._daemon: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._exit_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[object]] = {}
         self._counter = 0
@@ -297,6 +340,7 @@ class ComputerCapability:
         self._transport = _ComputerMcpTransport(self)
         self._closing = False
         self._startup_phase: str | None = None
+        self._driver_diagnostic_category: str | None = None
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
@@ -304,6 +348,7 @@ class ComputerCapability:
                 return
             self._unavailable = asyncio.Event()
             self._closing = False
+            self._driver_diagnostic_category = None
             phase_reporter = (
                 asyncio.create_task(self._report_startup_phase())
                 if os.environ.get("RELAY_NATIVE_DEBUG") == "1"
@@ -316,11 +361,17 @@ class ComputerCapability:
                 raise
             except Exception as error:
                 startup_phase = self._startup_phase
+                await self._finish_driver_diagnostics()
                 if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+                    driver_category = self._driver_diagnostic_category
+                    driver_hint = (
+                        f" driver={driver_category}" if driver_category else ""
+                    )
                     print(
                         "computer startup failed: "
                         f"phase={startup_phase or 'unknown'} "
-                        f"category={_startup_failure_category(error)}",
+                        f"category={_startup_failure_category(error)}"
+                        f"{driver_hint}",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -331,6 +382,45 @@ class ComputerCapability:
                 if phase_reporter is not None:
                     phase_reporter.cancel()
                     await asyncio.gather(phase_reporter, return_exceptions=True)
+
+    async def _finish_driver_diagnostics(self) -> None:
+        task = self._stderr_task
+        if task is None or task is asyncio.current_task():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), 0.5)
+        except Exception:
+            pass
+
+    async def _read_driver_stderr(self) -> None:
+        process = self._process
+        if process is None or process.stderr is None:
+            return
+        categories: set[str] = set()
+        saw_output = False
+        try:
+            for _ in range(MAX_DRIVER_DIAGNOSTIC_LINES):
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                category = _driver_stderr_line_category(line)
+                if category is not None:
+                    saw_output = True
+                    categories.add(category)
+            # Continue draining after the retained diagnostic bound so a
+            # noisy child cannot block its stdout protocol pipe.
+            while await process.stderr.readline():
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._driver_diagnostic_category = _driver_stderr_category(
+                categories, saw_output
+            ) or "driver-error"
+            return
+        self._driver_diagnostic_category = _driver_stderr_category(
+            categories, saw_output
+        )
 
     async def _report_startup_phase(self) -> None:
         observed: str | None = None
@@ -368,12 +458,13 @@ class ComputerCapability:
             *driver_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=self._env,
             **_process_creation_options(windows=self._windows),
             limit=MAX_MCP_FRAME_BYTES + 1,
         )
         self._reader_task = asyncio.create_task(self._read_responses())
+        self._stderr_task = asyncio.create_task(self._read_driver_stderr())
         self._exit_task = asyncio.create_task(self._watch_exit())
         self._startup_phase = "initialize"
         initialized = await self._request(
@@ -652,19 +743,25 @@ class ComputerCapability:
                     future.set_exception(ComputerUnavailableError())
             self._pending.clear()
             reader = self._reader_task
+            stderr_reader = self._stderr_task
             exit_task = self._exit_task
             self._reader_task = None
+            self._stderr_task = None
             self._exit_task = None
             process = self._process
             daemon = self._daemon
             self._process = None
             self._daemon = None
             self._client = None
-            for task in (reader, exit_task):
+            for task in (reader, stderr_reader, exit_task):
                 if task is not None and task is not asyncio.current_task():
                     task.cancel()
             await asyncio.gather(
-                *(task for task in (reader, exit_task) if task is not None),
+                *(
+                    task
+                    for task in (reader, stderr_reader, exit_task)
+                    if task is not None
+                ),
                 return_exceptions=True,
             )
             if process is not None:
