@@ -730,9 +730,10 @@ class RelayAgent:
         }
         self._announcement_descriptors = (
             tuple(
-                descriptor
-                for descriptor in selected_catalog.selected_descriptors
-                if f"{descriptor.provider_name}.{descriptor.tool_name}"
+                entry.descriptor.model_copy(update={"public_name": entry.public_name})
+                for entry in selected_catalog.entries
+                if entry.status == "enabled"
+                and f"{entry.descriptor.provider_name}.{entry.descriptor.tool_name}"
                 in self._provider_routes
             )
             if selected_catalog is not None

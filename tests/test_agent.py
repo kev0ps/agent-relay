@@ -939,6 +939,9 @@ def test_runtime_catalog_reuses_one_started_cua_provider(
     assert provider.starts == 1
     assert provider.closes == 1
     assert observed[0]._provider_routes["cua.provider_added_later"][0] is provider
+    assert tuple(
+        descriptor.public_name for descriptor in observed[0]._announcement_descriptors
+    ) == ("relay_cua_provider_added_later",)
     assert id(provider) not in observed[0]._unique_capabilities
 
 
