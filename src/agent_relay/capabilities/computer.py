@@ -79,6 +79,8 @@ COMPUTER_STARTUP_PHASES = frozenset(
         "initialize",
         "initialize-response",
         "tools-list",
+        "windows-daemon-spawn",
+        "windows-daemon-ready",
         "windows-privacy-skip",
     }
 )
@@ -345,10 +347,9 @@ class ComputerCapability:
 
     async def _start_owned(self) -> None:
         if self._windows:
-            # The MCP child is forced in-process with --no-daemon-relaunch;
-            # starting an unused serve/status pair only adds a second startup
-            # boundary and can block before Agent registration.
-            self._startup_phase = "windows-privacy-skip"
+            # The Windows daemon owns the interactive desktop session; the
+            # MCP client must use its proxy path instead of Session 0.
+            await self._start_windows_daemon()
         else:
             # The isolated child environment opts out before the binary starts.
             # Do not invoke finite telemetry subcommands here: cua-driver's
@@ -359,7 +360,9 @@ class ComputerCapability:
             self._startup_phase = "privacy-environment"
 
         self._startup_phase = "process-spawn"
-        driver_args = ["mcp", "--no-overlay", "--no-daemon-relaunch"]
+        driver_args = ["mcp", "--no-overlay"]
+        if not self._windows:
+            driver_args.append("--no-daemon-relaunch")
         self._process = await asyncio.create_subprocess_exec(
             str(self._path),
             *driver_args,
@@ -403,6 +406,28 @@ class ComputerCapability:
             allowed_tool_names=self._allowed_tool_names,
         )
         await self._client.list_tools()
+
+    async def _start_windows_daemon(self) -> None:
+        """Start the Windows UIA daemon used by the MCP proxy path."""
+        self._startup_phase = "windows-daemon-spawn"
+        self._daemon = await asyncio.create_subprocess_exec(
+            str(self._path),
+            "serve",
+            "--no-overlay",
+            "--no-permissions-gate",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=self._env,
+            **_process_creation_options(windows=True),
+        )
+        await asyncio.sleep(0)
+        if self._daemon.returncode is not None:
+            raise ValueError
+        # The MCP proxy performs its own named-pipe probe. Do not run the
+        # finite `status` command here: it adds a second CLI startup path and
+        # may be delayed by the driver's telemetry wrapper.
+        self._startup_phase = "windows-daemon-ready"
 
     async def _privacy_command(self, *args: str, capture: bool = False) -> str:
         process = await asyncio.create_subprocess_exec(
