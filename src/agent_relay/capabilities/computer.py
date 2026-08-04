@@ -80,6 +80,7 @@ COMPUTER_STARTUP_PHASES = frozenset(
         "initialize-response",
         "tools-list",
         "windows-daemon-spawn",
+        "windows-daemon-probe",
         "windows-daemon-ready",
         "windows-privacy-skip",
     }
@@ -406,6 +407,7 @@ class ComputerCapability:
 
     async def _start_windows_daemon(self) -> None:
         """Start the Windows UIA daemon required by hosted runner sessions."""
+        self._startup_phase = "windows-daemon-spawn"
         self._daemon = await asyncio.create_subprocess_exec(
             str(self._path),
             "serve",
@@ -420,8 +422,9 @@ class ComputerCapability:
         await asyncio.sleep(0)
         if self._daemon.returncode is not None:
             raise ValueError
-        self._startup_phase = "windows-daemon-ready"
+        self._startup_phase = "windows-daemon-probe"
         await self._wait_for_windows_daemon()
+        self._startup_phase = "windows-daemon-ready"
 
     async def _wait_for_windows_daemon(self) -> None:
         loop = asyncio.get_running_loop()

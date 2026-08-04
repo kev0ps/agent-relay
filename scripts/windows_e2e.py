@@ -614,6 +614,20 @@ def _diagnostic_category(path: Path) -> str:
     )
     if discovery_match:
         return f"computer provider discovery: {discovery_match.group(1)}"
+    phase_matches = re.findall(r"computer startup phase: ([a-z-]+)", content)
+    if phase_matches:
+        phase_categories = {
+            "windows-privacy-skip": "computer startup windows privacy skip",
+            "windows-daemon-spawn": "computer startup windows daemon spawn",
+            "windows-daemon-probe": "computer startup windows daemon probe",
+            "windows-daemon-ready": "computer startup windows daemon ready",
+            "privacy-environment": "computer startup privacy environment",
+            "process-spawn": "computer startup process spawn",
+            "initialize": "computer startup initialize",
+            "initialize-response": "computer startup initialize response",
+            "tools-list": "computer startup tools list",
+        }
+        return phase_categories.get(phase_matches[-1], "computer startup phase")
     for marker, category in (
         ("computer startup phase: windows-daemon-spawn", "computer startup windows daemon"),
         ("cua catalog construction failed:", "computer catalog construction"),

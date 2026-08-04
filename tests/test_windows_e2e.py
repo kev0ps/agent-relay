@@ -222,6 +222,22 @@ def test_startup_diagnostics_preserve_only_bounded_categories(tmp_path: Path) ->
     assert "token-value" not in category
 
 
+def test_startup_phase_diagnostic_uses_latest_bounded_phase(tmp_path: Path) -> None:
+    harness = _load_harness()
+    diagnostic = tmp_path / "child.stderr.log"
+    diagnostic.write_text(
+        "computer startup phase: windows-privacy-skip\n"
+        "computer startup phase: windows-daemon-spawn\n"
+        "computer startup phase: windows-daemon-probe\n",
+        encoding="utf-8",
+    )
+
+    category = harness._diagnostic_category(diagnostic)
+
+    assert category == "computer startup windows daemon probe"
+    assert "windows-privacy-skip" not in category
+
+
 def test_diagnostic_drain_is_bounded(tmp_path: Path) -> None:
     harness = _load_harness()
     diagnostic = tmp_path / "child.stderr.log"
