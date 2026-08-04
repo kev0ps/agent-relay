@@ -28,6 +28,7 @@ from agent_relay.providers.in_process import InProcessProviderToolClient
 from agent_relay.providers.mcp_client import (
     McpProviderToolClient,
     NativeMcpSessionTransport,
+    _schema_failure_category,
 )
 
 _OPAQUE_SCHEMA = {
@@ -815,6 +816,15 @@ def test_provider_description_is_bounded_before_descriptor_validation() -> None:
         assert len(tools[0].description) == MAX_PROVIDER_DESCRIPTION_LENGTH
 
     asyncio.run(scenario())
+
+
+def test_cua_schema_failure_category_is_bounded() -> None:
+    assert _schema_failure_category(
+        {"type": "array", "items": {"type": "string"}}
+    ) == "array-max-items"
+    assert _schema_failure_category(
+        {"type": "object", "additionalProperties": False}
+    ) is None
 
 
 def test_successful_close_is_idempotent() -> None:

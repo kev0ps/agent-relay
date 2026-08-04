@@ -10,7 +10,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from ..json_bounds import JsonValue
+from ..json_bounds import JsonBoundsError, JsonValue, validate_json_schema
 from ..output_models import ProviderToolResult
 from ..provider_tools import (
     MAX_PROVIDER_DESCRIPTION_LENGTH,
@@ -62,6 +62,30 @@ def _debug_cua_descriptor_failure(provider_name: str, category: str) -> None:
             file=sys.stderr,
             flush=True,
         )
+
+
+def _schema_failure_category(value: object) -> str | None:
+    """Map schema-bound failures to a closed diagnostic category."""
+    try:
+        validate_json_schema(value)
+    except JsonBoundsError as error:
+        detail = str(error)
+        if "maxItems" in detail:
+            return "array-max-items"
+        if "additionalProperties" in detail or "maxProperties" in detail:
+            return "object-properties"
+        if "items" in detail:
+            return "array-items"
+        if "recursive" in detail or "$ref" in detail:
+            return "reference"
+        if "unsupported" in detail:
+            return "unsupported-keyword"
+        if "unbounded" in detail:
+            return "unbounded"
+        return "schema-bounds"
+    except (TypeError, ValueError):
+        return "schema-bounds"
+    return None
 
 
 class NativeMcpSession(Protocol):
@@ -465,6 +489,15 @@ def _descriptor(
         description = description[:MAX_PROVIDER_DESCRIPTION_LENGTH]
     input_schema = _field(tool, "inputSchema", "input_schema")
     output_schema = _field(tool, "outputSchema", "output_schema", default=None)
+    input_schema_failure = _schema_failure_category(input_schema)
+    output_schema_failure = (
+        _schema_failure_category(output_schema) if output_schema is not None else None
+    )
+    schema_failure = None
+    if input_schema_failure is not None:
+        schema_failure = f"input-schema-{input_schema_failure}"
+    elif output_schema_failure is not None:
+        schema_failure = f"output-schema-{output_schema_failure}"
     annotations = _field(tool, "annotations", default={})
     if annotations is None:
         annotations = {}
@@ -482,7 +515,7 @@ def _descriptor(
             }
         )
     except Exception as error:
-        category = "model"
+        category = schema_failure or "model"
         error_details = getattr(error, "errors", None)
         if callable(error_details):
             try:
@@ -503,7 +536,7 @@ def _descriptor(
                                 "description",
                                 "name",
                                 "tool_name",
-                            }:
+                            } and schema_failure is None:
                                 category = field.replace("_", "-")
                                 break
             except Exception:
