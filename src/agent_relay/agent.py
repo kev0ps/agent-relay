@@ -1187,11 +1187,16 @@ async def _run_with_runtime_catalog(
     catalog: CatalogSnapshot | None = None,
 ) -> None:
     """Discover and run with one shared CUA provider lifecycle."""
+    def report(phase: str) -> None:
+        if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+            print(f"agent runtime phase: {phase}", file=sys.stderr, flush=True)
+
     provider = None if catalog is not None else _configured_computer_provider(settings)
     provider_clients: dict[str, ProviderToolClient] = {}
     agent: RelayAgent | None = None
     try:
         if catalog is None:
+            report("provider-start")
             if provider is not None:
                 try:
                     start = cast(Callable[[], Coroutine[Any, Any, None]], provider.start)  # type: ignore[attr-defined]
@@ -1201,6 +1206,7 @@ async def _run_with_runtime_catalog(
                     provider = None
                 else:
                     provider_clients["cua"] = provider
+            report("catalog-discovery")
             registrations = local_provider_registrations(
                 _runtime_catalog_environment(settings),
                 provider_clients,
@@ -1209,11 +1215,14 @@ async def _run_with_runtime_catalog(
             catalog = await CatalogService(registrations).discover(
                 settings.tools_allowlist or ()
             )
+            report("catalog-ready")
+        report("agent-construct")
         agent = RelayAgent(
             settings,
             catalog=catalog,
             provider_clients=provider_clients,
         )
+        report("agent-run")
         await _run_with_signal_handlers(agent)
     finally:
         if agent is not None:
