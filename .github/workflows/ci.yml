@@ -396,15 +396,10 @@ jobs:
           import signal
           import sys
 
+          from agent_relay.capabilities.computer import safe_driver_environment
+
           DRIVER = os.environ["RELAY_AGENT_COMPUTER_DRIVER_PATH"]
-          PROBE_ENV = os.environ.copy()
-          PROBE_ENV.update(
-              {
-                  "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
-                  "CUA_TELEMETRY_ENABLED": "0",
-                  "CUA_DRIVER_INSTALL_CHANNEL": "python_package",
-              }
-          )
+          PROBE_ENV = safe_driver_environment(os.environ.copy())
 
           async def main() -> int:
               process = await asyncio.wait_for(
