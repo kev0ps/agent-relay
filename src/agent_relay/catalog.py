@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -492,7 +493,21 @@ def _configured_cua_catalog_client(
             environ=dict(env),
             allowed_tool_names=allowed_tool_names,
         )
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError) as error:
+        if env.get("RELAY_NATIVE_DEBUG") == "1":
+            category = (
+                "os-error"
+                if isinstance(error, OSError)
+                else "type-error"
+                if isinstance(error, TypeError)
+                else "value-error"
+            )
+            print(
+                "cua catalog construction failed: "
+                f"stage=capability-init category={category}",
+                file=sys.stderr,
+                flush=True,
+            )
         return None
     return _EphemeralCuaCatalogClient(capability)
 

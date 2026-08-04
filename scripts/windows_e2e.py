@@ -587,6 +587,8 @@ def _diagnostic_category(path: Path) -> str:
         return "diagnostics unavailable"
     for marker, category in (
         ("phase-windows-daemon-spawn", "computer startup windows daemon"),
+        ("cua catalog construction failed:", "computer catalog construction"),
+        ("computer privacy command failed:", "computer privacy command"),
         ("phase-windows-privacy-skip", "computer startup windows privacy skip"),
         ("phase-privacy-disable", "computer startup privacy disable"),
         ("phase-privacy-reset", "computer startup privacy reset"),

@@ -10,6 +10,7 @@ from agent_relay.catalog import (
     CatalogPolicy,
     CatalogService,
     ProviderRegistration,
+    _configured_cua_catalog_client,
     discover_local_catalog,
     public_tool_name,
 )
@@ -94,6 +95,25 @@ def test_local_catalog_loader_treats_configured_browser_as_catalog_available() -
 
     assert snapshot.entry("relay_browser_snapshot").status == "disabled"
     assert snapshot.entry("relay_cua_list_apps").status == "unavailable"
+
+
+def test_cua_catalog_construction_debug_is_bounded(tmp_path, capsys) -> None:
+    missing_driver = tmp_path / "missing-driver"
+
+    result = _configured_cua_catalog_client(
+        {
+            "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(missing_driver),
+            "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": "fixture",
+            "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": "Fixture",
+            "RELAY_NATIVE_DEBUG": "1",
+        }
+    )
+
+    assert result is None
+    assert capsys.readouterr().err == (
+        "cua catalog construction failed: "
+        "stage=capability-init category=value-error\n"
+    )
 
 
 def test_local_catalog_loader_uses_injected_runtime_provider_tools_list() -> None:

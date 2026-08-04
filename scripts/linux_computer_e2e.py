@@ -181,7 +181,18 @@ def _stderr_hint(path: Path) -> str | None:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    candidates = [
+    preferred = [
+        line
+        for line in lines
+        if any(
+            marker in line.lower()
+            for marker in (
+                "cua catalog construction failed:",
+                "computer privacy command failed:",
+            )
+        )
+    ]
+    candidates = preferred or [
         line
         for line in lines
         if any(marker in line.lower() for marker in ("error", "fatal", "sandbox", "exception"))
