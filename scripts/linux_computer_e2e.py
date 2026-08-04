@@ -187,6 +187,7 @@ def _stderr_hint(path: Path) -> str | None:
         if any(
             marker in line.lower()
             for marker in (
+                "cua provider inventory failure:",
                 "cua catalog construction failed:",
                 "computer privacy command failed:",
                 "computer startup failed:",

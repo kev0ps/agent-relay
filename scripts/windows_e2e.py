@@ -586,6 +586,12 @@ def _diagnostic_category(path: Path) -> str:
             ).lower()
     except OSError:
         return "diagnostics unavailable"
+    inventory_match = re.search(
+        r"cua provider inventory failure: category=([a-z-]+)",
+        content,
+    )
+    if inventory_match:
+        return f"computer provider inventory: {inventory_match.group(1)}"
     startup_match = re.search(
         r"computer startup failed: phase=([a-z-]+) category=([a-z-]+)",
         content,

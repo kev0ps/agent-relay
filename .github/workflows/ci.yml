@@ -385,6 +385,89 @@ jobs:
       - name: Check Linux CUA smoke quality
         run: uv run --frozen ruff check .
 
+      - name: Probe Linux CUA MCP JSON-RPC startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=5s 20s uv run --frozen python - <<'PY'
+          import asyncio
+          import json
+          import os
+          import signal
+          import sys
+
+          DRIVER = os.environ["RELAY_AGENT_COMPUTER_DRIVER_PATH"]
+
+          async def main() -> int:
+              process = await asyncio.wait_for(
+                  asyncio.create_subprocess_exec(
+                      DRIVER,
+                      "mcp",
+                      "--no-overlay",
+                      "--no-daemon-relaunch",
+                      stdin=asyncio.subprocess.PIPE,
+                      stdout=asyncio.subprocess.PIPE,
+                      stderr=asyncio.subprocess.DEVNULL,
+                      env=os.environ.copy(),
+                      start_new_session=True,
+                      limit=4 * 1024 * 1024 + 1,
+                  ),
+                  5.0,
+              )
+              print("cua-driver mcp probe: spawn=ok", flush=True)
+              try:
+                  assert process.stdin is not None
+                  assert process.stdout is not None
+                  initialize = {
+                      "jsonrpc": "2.0",
+                      "id": 1,
+                      "method": "initialize",
+                      "params": {
+                          "protocolVersion": "2025-06-18",
+                          "capabilities": {},
+                          "clientInfo": {"name": "ci-probe", "version": "1"},
+                      },
+                  }
+                  process.stdin.write((json.dumps(initialize) + "\n").encode())
+                  await process.stdin.drain()
+                  line = await asyncio.wait_for(process.stdout.readline(), 5.0)
+                  if not line:
+                      print("cua-driver mcp probe: initialize=closed", flush=True)
+                      return 1
+                  message = json.loads(line)
+                  if not isinstance(message, dict) or "result" not in message:
+                      print("cua-driver mcp probe: initialize=error", flush=True)
+                      return 1
+                  print("cua-driver mcp probe: initialize=result", flush=True)
+                  process.stdin.write(
+                      b'{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+                  )
+                  process.stdin.write(
+                      b'{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+                  )
+                  await process.stdin.drain()
+                  line = await asyncio.wait_for(process.stdout.readline(), 5.0)
+                  if not line:
+                      print("cua-driver mcp probe: tools-list=closed", flush=True)
+                      return 1
+                  message = json.loads(line)
+                  if not isinstance(message, dict) or "result" not in message:
+                      print("cua-driver mcp probe: tools-list=error", flush=True)
+                      return 1
+                  print("cua-driver mcp probe: tools-list=result", flush=True)
+                  return 0
+              finally:
+                  if process.returncode is None:
+                      os.killpg(process.pid, signal.SIGTERM)
+                      try:
+                          await asyncio.wait_for(process.wait(), 2.0)
+                      except asyncio.TimeoutError:
+                          os.killpg(process.pid, signal.SIGKILL)
+                          await process.wait()
+
+          sys.exit(asyncio.run(main()))
+          PY
+
       - name: Run Linux CUA contract tests
         run: uv run --frozen pytest -q tests/test_linux_computer_e2e.py tests/test_computer_capability.py tests/test_desktop_fixture.py
 

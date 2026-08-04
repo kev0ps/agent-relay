@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -41,6 +43,15 @@ class McpTransport(Protocol):
     ) -> object: ...
 
     async def close(self) -> None: ...
+
+
+def _debug_cua_inventory_failure(provider_name: str, category: str) -> None:
+    if provider_name == "cua" and os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+        print(
+            f"cua provider inventory failure: category={category}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 class NativeMcpSession(Protocol):
@@ -220,7 +231,7 @@ class McpProviderToolClient:
         self._allowed_tool_names = (
             None if allowed_tool_names is None else frozenset(allowed_tool_names)
         )
-        self._risk = risk
+        self._risk: ProviderRiskClass = risk
         self._timeout_seconds = validate_timeout(
             timeout_seconds, label="timeout_seconds"
         )
@@ -279,9 +290,11 @@ class McpProviderToolClient:
                         remaining,
                         self._pending_tasks,
                     )
+                    failure_category = "page-shape"
                     try:
                         raw_tools = _field(response, "tools")
                         if not isinstance(raw_tools, (list, tuple)):
+                            failure_category = "tools-field"
                             raise ValueError
                         for tool in raw_tools:
                             if self._allowed_tool_names is not None:
@@ -293,10 +306,16 @@ class McpProviderToolClient:
                                     or raw_name not in self._allowed_tool_names
                                 ):
                                     continue
-                            descriptors.append(
-                                _descriptor(self._provider_name, self._risk, tool)
-                            )
+                            try:
+                                descriptor = _descriptor(
+                                    self._provider_name, self._risk, tool
+                                )
+                            except Exception:
+                                failure_category = "descriptor"
+                                raise
+                            descriptors.append(descriptor)
                         if len(descriptors) > MAX_PROVIDER_TOOLS:
+                            failure_category = "too-many-tools"
                             raise ValueError
                         next_cursor = _field(
                             response, "nextCursor", "next_cursor", default=None
@@ -308,8 +327,12 @@ class McpProviderToolClient:
                             or next_cursor in seen_cursors
                             or len(seen_cursors) >= MAX_PROVIDER_TOOLS
                         ):
+                            failure_category = "cursor"
                             raise ValueError
                     except (Exception,):
+                        _debug_cua_inventory_failure(
+                            self._provider_name, failure_category
+                        )
                         invalid_inventory = True
                     else:
                         invalid_inventory = False
