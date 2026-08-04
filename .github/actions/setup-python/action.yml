@@ -1,0 +1,35 @@
+name: Set up locked Python environment
+description: Install pinned uv and one closed Agent Relay dependency profile
+
+inputs:
+  profile:
+    description: Closed dependency profile (base, browser, or computer)
+    required: false
+    default: "base"
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv and Python
+      uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+      with:
+        version: "0.11.6"
+        python-version: "3.13.5"
+        enable-cache: true
+        cache-dependency-glob: uv.lock
+
+    - name: Verify committed lockfile
+      shell: bash
+      run: uv lock --check
+
+    - name: Install locked dependencies
+      shell: bash
+      env:
+        RELAY_CI_DEPENDENCY_PROFILE: ${{ inputs.profile }}
+      run: |
+        case "$RELAY_CI_DEPENDENCY_PROFILE" in
+          "base") uv sync --locked ;;
+          "browser") uv sync --locked --extra browser ;;
+          "computer") uv sync --locked --extra browser --extra computer ;;
+          *) exit 1 ;;
+        esac

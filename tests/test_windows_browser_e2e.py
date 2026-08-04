@@ -125,11 +125,12 @@ def test_windows_browser_ci_job_is_persistent_context_and_bounded() -> None:
     assert "needs: python" in job
     assert "runs-on: windows-2025" in job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in job
-    assert "uv sync --locked --extra browser" in job
+    assert "uses: ./.github/actions/setup-python" in job
+    assert "profile: browser" in job
     assert "uv run --frozen playwright install chromium" in job
     assert "uv run --frozen python scripts/windows_browser_e2e.py" in job
-    assert "success.json" in job
-    assert "browser-events.jsonl" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile windows-browser" in job
     assert "screenshot.png" not in job
     assert "remote-debugging" not in job
     assert "docker" not in job.lower()
@@ -140,17 +141,11 @@ def test_windows_browser_ci_job_is_persistent_context_and_bounded() -> None:
     assert "if: always()" in job
 
 
-def test_windows_browser_failure_evidence_does_not_require_success_payloads() -> None:
+def test_windows_browser_evidence_policy_is_externalized() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     job = workflow.split("  e2e-windows-browser:", 1)[1]
 
-    success_branch = job.index(
-        'if ($output -eq "Windows Browser smoke scenario passed.")'
-    )
-    required_event = job.index(
-        'if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf))'
-    )
-
-    assert success_branch < required_event
-    assert 'if (Test-Path -LiteralPath $eventPath -PathType Leaf)' in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile windows-browser" in job
+    assert "browser-events.jsonl" not in job
     assert "screenshot.png" not in job

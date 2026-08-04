@@ -383,11 +383,10 @@ def test_ci_defines_bounded_native_linux_gate_without_container_privileges() -> 
     assert "name: Native Linux Terminal end-to-end" in job
     assert "needs: python" in job
     assert "runs-on: ubuntu-24.04" in job
-    assert "uv lock --check" in job
-    assert "uv sync --locked" in job
+    assert "uses: ./.github/actions/setup-python" in job
     assert "uv run --frozen python scripts/native_e2e.py" in job
-    assert "success.json" in job
-    assert "{\"status\":\"passed\"}" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile linux-terminal" in job
     assert "docker" not in job.lower()
     assert "privileged" not in job.lower()
     assert "docker.sock" not in job.lower()
@@ -396,4 +395,3 @@ def test_ci_defines_bounded_native_linux_gate_without_container_privileges() -> 
     assert "id: validate-native-evidence" in job
     assert "if: always()" in job
     assert "steps.validate-native-evidence.outcome == 'success'" in job
-    assert "grep -vE" in job

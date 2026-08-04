@@ -312,18 +312,16 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "runs-on: windows-2022" not in job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in job
     assert "Verify checked-out commit" in job
-    assert "uv lock --check" in job
-    assert "uv sync --locked" in job
+    assert "uses: ./.github/actions/setup-python" in job
     assert "uv run --frozen ruff check ." in job
     assert "uv run --frozen pytest -q" in job
     assert "tests/test_windows_e2e.py tests/test_runner.py" in job
     assert "git_search_skips_relative_default_path_entries" in job
     assert "uv run --frozen pytest -q -m integration" in job
     assert "uv run --frozen python scripts/windows_e2e.py" in job
-    assert "-cnotmatch" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile windows-terminal" in job
     assert "windows-evidence" in job
-    assert "success.json" in job
-    assert '{"status":"passed"}' in job
     assert "docker" not in job.lower()
     assert "browser" not in job.lower()
     assert "computer" not in job.lower()
