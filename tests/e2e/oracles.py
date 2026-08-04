@@ -162,6 +162,34 @@ def validate_status(
             raise ValueError("invalid status response schema")
 
 
+def classify_status_failure(
+    result: Any,
+    *,
+    device_id: str | None,
+    connected: bool,
+    expected_capabilities: tuple[str, ...],
+) -> str:
+    """Classify status drift without returning response fields or names."""
+    payload = getattr(result, "structuredContent", None)
+    if type(payload) is not dict:
+        return "response-shape"
+    if payload.get("device_id") != device_id:
+        return "device-id"
+    if payload.get("connected") is not connected:
+        return "connection-state"
+    capabilities = payload.get("capabilities")
+    if type(capabilities) is not list:
+        return "capabilities-shape"
+    expected = list(expected_capabilities) if connected else []
+    if len(capabilities) != len(expected):
+        return "capabilities-count"
+    if set(capabilities) != set(expected):
+        return "capabilities-set"
+    if capabilities != expected:
+        return "capabilities-order"
+    return "status-contract"
+
+
 # --- Ping oracle ------------------------------------------------------------
 
 _PING_KEYS: frozenset[str] = frozenset({"pong"})

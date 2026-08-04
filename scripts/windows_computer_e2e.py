@@ -125,13 +125,23 @@ def _status(
         http_timeout=1.0,
         operation_timeout=2.0,
     )
-    windows.portable_oracles.validate_status(
-        result,
-        device_id=None if allow_unenrolled else DEVICE_ID,
-        connected=connected,
-        expected_capabilities=CUA_CAPABILITIES,
-        allow_unenrolled=allow_unenrolled,
-    )
+    try:
+        windows.portable_oracles.validate_status(
+            result,
+            device_id=None if allow_unenrolled else DEVICE_ID,
+            connected=connected,
+            expected_capabilities=CUA_CAPABILITIES,
+            allow_unenrolled=allow_unenrolled,
+        )
+    except ValueError:
+        if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+            print(
+                "Windows CUA status diagnostic: "
+                f"category={windows.portable_oracles.classify_status_failure(result, device_id=None if allow_unenrolled else DEVICE_ID, connected=connected, expected_capabilities=CUA_CAPABILITIES)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
 
 
 def _fixture_ready(path: Path) -> bool:

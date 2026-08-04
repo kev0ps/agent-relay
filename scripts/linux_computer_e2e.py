@@ -95,13 +95,23 @@ def _status(
         http_timeout=1.0,
         operation_timeout=2.0,
     )
-    portable_oracles.validate_status(
-        result,
-        device_id=None if allow_unenrolled else DEVICE_ID,
-        connected=connected,
-        expected_capabilities=CUA_CAPABILITIES,
-        allow_unenrolled=allow_unenrolled,
-    )
+    try:
+        portable_oracles.validate_status(
+            result,
+            device_id=None if allow_unenrolled else DEVICE_ID,
+            connected=connected,
+            expected_capabilities=CUA_CAPABILITIES,
+            allow_unenrolled=allow_unenrolled,
+        )
+    except ValueError:
+        if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+            print(
+                "Linux CUA status diagnostic: "
+                f"category={portable_oracles.classify_status_failure(result, device_id=None if allow_unenrolled else DEVICE_ID, connected=connected, expected_capabilities=CUA_CAPABILITIES)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
 
 
 def _fixture_ready(url: str) -> bool:
