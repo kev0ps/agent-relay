@@ -305,11 +305,13 @@ def test_safe_driver_environment_excludes_relay_credentials() -> None:
             "AGENT_RELAY_AGENT_TOKEN": "[REDACTED]",
             "HTTPS_PROXY": "http://proxy.invalid",
             "CUA_DRIVER_RS_TELEMETRY_ENABLED": "1",
+            "CUA_DRIVER_TELEMETRY_HOME": "/tmp/cua-home",
         }
     )
     assert environment == {
         "PATH": "/usr/bin",
         "HOME": "/tmp/home",
+        "CUA_DRIVER_TELEMETRY_HOME": "/tmp/cua-home",
         "CUA_DRIVER_INSTALL_CHANNEL": "python_package",
         "CUA_DRIVER_TELEMETRY": "0",
         "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",

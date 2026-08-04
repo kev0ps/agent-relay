@@ -370,6 +370,7 @@ jobs:
           {
             printf 'RELAY_AGENT_COMPUTER_DRIVER_PATH=%s\n' "$driver"
             printf 'CUA_DRIVER_RS_HOME=%s\n' "$driver_home"
+            printf 'CUA_DRIVER_TELEMETRY_HOME=%s\n' "$driver_home"
             printf 'CUA_DRIVER_RS_INSTALL_DIR=%s\n' "$driver_bin"
           } >> "$GITHUB_ENV"
 

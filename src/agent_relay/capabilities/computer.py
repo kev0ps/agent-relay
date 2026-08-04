@@ -37,6 +37,7 @@ _SAFE_ENV = {
     "COMSPEC",
     "DISPLAY",
     "DBUS_SESSION_BUS_ADDRESS",
+    "CUA_DRIVER_TELEMETRY_HOME",
     "CUA_DRIVER_RS_HOME",
     "CUA_DRIVER_RS_INSTALL_DIR",
     "PATH",
@@ -103,6 +104,11 @@ def safe_driver_environment(
 ) -> dict[str, str]:
     """Return only the environment needed by the local CUA driver."""
     result = {key: value for key, value in source.items() if key in _SAFE_ENV}
+    telemetry_home = result.get("CUA_DRIVER_TELEMETRY_HOME") or result.get(
+        "CUA_DRIVER_RS_HOME"
+    )
+    if telemetry_home:
+        result["CUA_DRIVER_TELEMETRY_HOME"] = telemetry_home
     result["CUA_DRIVER_INSTALL_CHANNEL"] = "python_package"
     result["CUA_DRIVER_TELEMETRY"] = "0"
     result["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "0"
