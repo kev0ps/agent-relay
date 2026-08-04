@@ -621,6 +621,9 @@ def _diagnostic_category(path: Path) -> str:
     )
     if discovery_match:
         return f"computer provider discovery: {discovery_match.group(1)}"
+    lifecycle_matches = re.findall(r"agent lifecycle phase: ([a-z-]+)", content)
+    if lifecycle_matches:
+        return f"agent lifecycle {lifecycle_matches[-1]}"
     phase_matches = re.findall(r"computer startup phase: ([a-z-]+)", content)
     if phase_matches:
         phase_categories = {

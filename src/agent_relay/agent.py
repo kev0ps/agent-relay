@@ -94,6 +94,11 @@ class ProviderUnavailableError(ConnectionError):
     """A selected provider became unavailable during an Agent session."""
 
 
+def _debug_agent_phase(phase: str) -> None:
+    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+        print(f"agent lifecycle phase: {phase}", file=sys.stderr, flush=True)
+
+
 def _selected_cua_tool_names(settings: AgentSettings) -> frozenset[str] | None:
     if settings.tools_allowlist is None:
         return None
@@ -783,11 +788,15 @@ class RelayAgent:
                 self._session_registered = False
                 self._registered_at = None
                 try:
+                    _debug_agent_phase("capabilities-start")
                     await self._start_capabilities()
+                    _debug_agent_phase("capabilities-ready")
+                    _debug_agent_phase("connect")
                     async with self._connector(
                         self.settings.server_url,
                         **self._connection_options(),
                     ) as socket:
+                        _debug_agent_phase("connected")
                         await self.run_session(socket)
                 except BrowserStartupError:
                     if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
@@ -965,6 +974,7 @@ class RelayAgent:
             pass
 
     async def run_session(self, socket: TextSocket) -> None:
+        _debug_agent_phase("register-send")
         await self._send(
             socket,
             {
@@ -976,6 +986,7 @@ class RelayAgent:
         registered = await self._receive(socket)
         if not isinstance(registered, Registered) or registered.device_id != self.settings.agent_id:
             raise ValueError("server did not confirm registration")
+        _debug_agent_phase("registered")
         self._session_registered = True
         self._registered_at = self._monotonic()
         await self._send(
@@ -991,6 +1002,7 @@ class RelayAgent:
                 ),
             ).model_dump(mode="json", exclude_defaults=True),
         )
+        _debug_agent_phase("capabilities-send")
         heartbeat = asyncio.create_task(self._heartbeat(socket))
         action: asyncio.Task[None] | None = None
         action_request_id: str | None = None
