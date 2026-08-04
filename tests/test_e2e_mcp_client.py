@@ -62,6 +62,42 @@ def test_mcp_client_accepts_ordered_announced_tool_subsets() -> None:
     assert not client._valid_tool_inventory((*expected, "relay_unexpected_tool"))
 
 
+def test_mcp_client_inventory_uses_generic_cua_public_names() -> None:
+    client = _load_mcp_client()
+    assert "relay_cua_list_windows" in client.EXPECTED_MCP_TOOLS
+    assert "relay_cua_get_window_state" in client.EXPECTED_MCP_TOOLS
+    assert "relay_cua_click" in client.EXPECTED_MCP_TOOLS
+    assert "relay_cua_type_text" in client.EXPECTED_MCP_TOOLS
+    assert not any("relay_computer_" in name for name in client.EXPECTED_MCP_TOOLS)
+
+
+def test_mcp_client_rejects_unbounded_or_executable_tool_schemas() -> None:
+    client = _load_mcp_client()
+    tool = type(
+        "Tool",
+        (),
+        {
+            "name": "relay_cua_click",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"handler": {"type": "string"}},
+            },
+        },
+    )()
+    with pytest.raises(client.MCPContractError):
+        client._validate_tool_schema(tool)
+
+    deep: dict[str, object] = {"type": "object"}
+    cursor = deep
+    for _ in range(10):
+        child: dict[str, object] = {"type": "object"}
+        cursor["properties"] = child
+        cursor = child
+    setattr(tool, "inputSchema", deep)
+    with pytest.raises(client.MCPContractError):
+        client._validate_tool_schema(tool)
+
+
 def test_mcp_client_exposes_contract_error() -> None:
     client = _load_mcp_client()
     assert hasattr(client, "MCPContractError")
@@ -255,7 +291,18 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
         async def list_tools(self):
             class _Tools:
                 tools = [
-                    type("T", (), {"name": n})()
+                    type(
+                        "T",
+                        (),
+                        {
+                            "name": n,
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": False,
+                            },
+                        },
+                    )()
                     for n in (
                         "relay_device_status",
                         "relay_system_ping",
@@ -268,9 +315,10 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
                         "relay_browser_scroll",
                         "relay_browser_type",
                         "relay_browser_back",
-                        "relay_computer_capture",
-                        "relay_computer_click",
-                        "relay_computer_type",
+                        "relay_cua_list_windows",
+                        "relay_cua_get_window_state",
+                        "relay_cua_click",
+                        "relay_cua_type_text",
                     )
                 ]
 

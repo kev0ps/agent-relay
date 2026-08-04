@@ -45,8 +45,8 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
         "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE",
     ):
         assert key in source
-    assert "expected_computer_app=COMPUTER_APP_NAME" in source
-    assert "expected_computer_window_title=COMPUTER_WINDOW_TITLE" in source
+    assert "expected_cua_app=COMPUTER_APP_NAME" in source
+    assert "expected_cua_window_title=COMPUTER_WINDOW_TITLE" in source
 
 
 def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:

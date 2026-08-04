@@ -28,8 +28,8 @@ passthrough, caller-supplied filesystem path, or open-ended `execute()` method.
 | Device status | Check whether the configured device is connected | Server-local status only |
 | System | Send a bounded ping through the real Relay Agent | Fixed request and response schema |
 | Terminal | Run a handful of useful workspace commands | Fixed command IDs, no shell or caller-supplied arguments |
-| Browser | Read and interact with an allowlisted web app | Allowed origins and opaque, short-lived element IDs |
-| Computer Use | Capture semantic controls, click and type | Exact app/window identity; no screenshots or coordinates exposed |
+| Browser | Read and interact with an allowlisted web app | Allowed origins and bounded structured locators; no Playwright handles |
+| CUA | Discover and invoke selected desktop-driver tools | Exact app/window identity; bounded provider snapshots; no screenshots or coordinates |
 
 Terminal access is deliberately narrow:
 
@@ -41,8 +41,9 @@ git_status
 git_branch
 ```
 
-Browser and Computer Use stay disabled until their local configuration is
-complete.
+Browser and CUA stay disabled until their local configuration is complete. CUA
+descriptors are discovered from the configured MCP stdio driver; only selected
+descriptors are indexed, announced and routable.
 
 ## How it works
 
@@ -62,7 +63,7 @@ Hermes or another MCP client
              +-- system
              +-- constrained terminal
              +-- allowlisted browser
-             `-- constrained Computer Use
+             `-- selected CUA provider tools
 ```
 
 The server keeps the live device registry and exposes the MCP tools. The Relay
@@ -166,9 +167,10 @@ mcp_servers:
         - relay_browser_scroll
         - relay_browser_type
         - relay_browser_back
-        - relay_computer_capture
-        - relay_computer_click
-        - relay_computer_type
+        - relay_cua_list_windows
+        - relay_cua_get_window_state
+        - relay_cua_click
+        - relay_cua_type_text
 ```
 
 Tool availability still depends on what the Relay Agent has enabled locally.
@@ -190,8 +192,9 @@ access:
   `any` browser origin policy permits only `http://` and `https://` pages and
   still rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
   and other non-Web schemes;
-- Computer Use exposes semantic elements instead of screenshots, coordinates or
-  raw accessibility trees;
+- CUA uses selected generic driver descriptors and bounded snapshot metadata;
+  Relay does not expose screenshots, coordinates, raw accessibility trees,
+  process/window handles, or driver execution controls;
 - the Docker production image builds as non-root for AMD64 and ARM64 and passes
   image-contract and CLI smoke checks.
 
@@ -224,9 +227,9 @@ What is validated today:
 - the packaged Linux application and its server/agent topology;
 - the official MCP facade;
 - constrained terminal behavior;
-- native Linux Terminal, Browser and Computer Use E2E gates;
+- native Linux Terminal, Browser and CUA-provider E2E gates;
 - native Windows Terminal and headless Browser E2E gates;
-- Browser and Computer Use API contracts;
+- Browser locator and generic CUA-provider API contracts;
 - AMD64/ARM64 image build and CLI smoke tests;
 - strict schemas, authentication, bounded outputs and deterministic local
   fixtures.
@@ -250,11 +253,12 @@ Still outside the validated product boundary:
 | [Linux setup](docs/run-linux.md) | Installation, configuration, startup and troubleshooting |
 | [Docker server deployment](docs/run-server-docker.md) | Linux Relay Server container with a remote Windows Agent |
 | [Security](docs/security.md) | Threat model, deployment boundaries and token rotation |
-| [Protocol v1](docs/protocol-v1.md) | Relay WebSocket messages and validation rules |
+| [Protocol v2](docs/protocol-v2.md) | Generic invocation, direct control and MCP result rules |
+| [Protocol v1 (historical)](docs/protocol-v1.md) | Superseded WebSocket reference |
 | [Capability contracts](docs/e2e-client-capabilities.md) | MCP tools, fixture contracts and black-box guarantees |
 | [Windows Terminal E2E](docs/run-windows-e2e.md) | Native Windows core/MCP gate and its boundaries |
 | [Windows Browser E2E](docs/run-windows-browser-e2e.md) | Headless Playwright persistent-context gate and independent evidence |
-| [Windows Computer Use E2E](docs/run-windows-computer-e2e.md) | Experimental full Agent Relay/MCP/UIA candidate gate |
+| [Windows CUA E2E](docs/run-windows-computer-e2e.md) | Experimental full Agent Relay/MCP/UIA candidate gate |
 | [Roadmap](docs/ROADMAP.md) | Current priorities, product direction and exit criteria |
 | [Contributing](CONTRIBUTING.md) | Development setup, checks and pull-request expectations |
 | [Security policy](SECURITY.md) | Private vulnerability-reporting process |

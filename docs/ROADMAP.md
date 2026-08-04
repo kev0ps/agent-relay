@@ -1,7 +1,7 @@
 # Agent Relay Roadmap
 
 **Status:** experimental, pre-1.0
-**Last updated:** 2026-07-29
+**Last updated:** 2026-08-03
 **Source of truth:** this document is the only active roadmap for the repository.
 
 ## Direction
@@ -22,8 +22,8 @@ by others.
 - Authenticated Relay Server and outbound Relay Agent lifecycle.
 - Closed MCP tool surface with typed schemas and bounded results.
 - Constrained Terminal capability without a shell or caller-supplied arguments.
-- Native Linux Terminal, Browser and Computer Use E2E gates with independent
-  fixture oracles.
+- Native Linux Terminal, Browser and generic CUA-provider E2E gates with
+  independent fixture oracles.
 - Native Windows Terminal and headless Browser E2E gates.
 - Docker AMD64/ARM64 image build, image-contract and CLI smoke validation.
 - Shared MCP readiness, cancellation, timeout and cleanup contracts.
@@ -34,11 +34,11 @@ by others.
 
 ### Experimental or incomplete
 
-- Windows Computer Use/UI Automation on the hosted Windows runner.
+- Windows CUA/UI Automation on the hosted Windows runner.
   The complete CI proof is not green yet. The remaining proof is:
 
   ```text
-  capture -> type -> click -> independent fixture event -> cleanup
+  descriptor inventory -> snapshot -> type -> click -> independent fixture event -> cleanup
   ```
 
 - Release automation and a version-tagging process.
@@ -51,9 +51,9 @@ by others.
 - Personal desktops, personal browser profiles, personal workspaces or real
   external websites in acceptance tests.
 - Arbitrary shell execution, arbitrary paths, arbitrary browser control,
-  screenshots/coordinates as a public Computer Use API, or unrestricted
+  screenshots/coordinates as a public CUA API, or unrestricted
   remote desktop behavior.
-- A claim that Windows Computer Use is supported merely because a Windows job
+- A claim that Windows CUA is supported merely because a Windows job
   starts or a driver responds.
 
 ## Priority roadmap
@@ -79,7 +79,7 @@ Scope:
 experimental, how to run the safe local tests, and what must not be used in
 production.
 
-### 2. Close or classify the Windows Computer Use gate
+### 2. Close or classify the Windows CUA gate
 
 **Status:** active technical investigation, not a product acceptance gate.
 
@@ -93,7 +93,7 @@ Scope:
 - run the complete public MCP scenario if the hosted session is usable;
 - require the independent fixture event and bounded cleanup;
 - if hosted Windows cannot provide a repeatable interactive session, classify
-  Windows Computer Use as unsupported/experimental instead of weakening the
+  Windows CUA as unsupported/experimental instead of weakening the
   gate or introducing self-hosted infrastructure into the current path.
 
 **Exit criteria:** either the complete sequence passes on the declared hosted
@@ -132,9 +132,9 @@ CI evidence.
 Scope:
 
 - run the documented Linux quick start;
-- validate the supported MCP, Terminal, Browser and Computer Use paths;
+- validate the supported MCP, Terminal, Browser and Linux CUA paths;
 - confirm the Windows Terminal and Browser gates;
-- keep Windows Computer Use experimental until its complete proof is green;
+- keep Windows CUA experimental until its complete proof is green;
 - verify security boundaries, tokens, cleanup and artifacts;
 - remove the remaining stale or ambiguous claims.
 

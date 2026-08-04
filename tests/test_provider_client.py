@@ -121,25 +121,33 @@ def test_provider_argument_schema_is_checked_before_call() -> None:
         input_schema={
             "type": "object",
             "properties": {
-                "element_id": {"type": "string", "minLength": 1},
+                "locator": {
+                    "type": "object",
+                    "properties": {"role": {"type": "string", "minLength": 1}},
+                    "required": ["role"],
+                    "additionalProperties": False,
+                },
                 "value": {"type": "string", "maxLength": 8},
             },
-            "required": ["element_id", "value"],
+            "required": ["locator", "value"],
             "additionalProperties": False,
         },
         risk="interaction",
     )
 
-    assert validate_provider_arguments(
-        tool, {"element_id": "field", "value": "hello"}
-    ) == {"element_id": "field", "value": "hello"}
-    for invalid in (
+    valid_arguments: dict[str, JsonValue] = {
+        "locator": {"role": "textbox"},
+        "value": "hello",
+    }
+    assert validate_provider_arguments(tool, valid_arguments) == valid_arguments
+    invalid_arguments: tuple[dict[str, JsonValue], ...] = (
         {},
-        {"element_id": "field"},
-        {"element_id": "field", "value": "too long!"},
-        {"element_id": "field", "value": "ok", "extra": True},
-        {"element_id": "field", "value": 1},
-    ):
+        {"locator": {"role": "textbox"}},
+        {"locator": {"role": "textbox"}, "value": "too long!"},
+        {"locator": {"role": "textbox"}, "value": "ok", "extra": True},
+        {"locator": {"role": "textbox"}, "value": 1},
+    )
+    for invalid in invalid_arguments:
         with pytest.raises(ProviderToolError, match="do not match tool schema"):
             validate_provider_arguments(tool, invalid)
 

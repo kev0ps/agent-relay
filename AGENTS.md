@@ -39,7 +39,8 @@ a WebSocket invocation.
   current behavior, then reconcile stale prose rather than weakening a test.
 - `scripts/`: deterministic E2E harnesses and fixtures, not alternate product
   APIs.
-- `docs/protocol-v1.md`: documented WebSocket and compatibility HTTP contract.
+- `docs/protocol-v2.md`: current generic invocation and direct-control contract.
+- `docs/protocol-v1.md`: historical superseded protocol reference only.
 - `docs/security.md`: threat model, deployment boundary, and honest limits.
 - `docs/e2e-client-capabilities.md`: black-box E2E and independent-oracle
   contract.
@@ -87,14 +88,15 @@ quietly choose the interpretation that makes the task easiest.
 
 ### Browser and Computer Use boundaries
 
-- Browser access is operator-enabled and origin-allowlisted. Keep element IDs
-  opaque and short-lived.
+- Browser access is operator-enabled and origin-allowlisted. Use bounded
+  structured locators; never expose Playwright handles or element IDs.
 - Do not expose arbitrary CDP, JavaScript, headers, cookies, browser profile
   selection, downloads, filesystem access, or caller-controlled timeouts.
-- Computer Use exposes bounded semantic controls only. Do not expose
-  screenshots, coordinates, key chords, clipboard contents, raw accessibility
-  trees, process/window handles, or implicit-target typing.
-- Preserve exact app/window identity checks, capture-generation scoping,
+- CUA exposes only selected provider descriptors discovered from the configured
+  driver. Do not expose screenshots, coordinates, key chords, clipboard
+  contents, raw accessibility trees, process/window handles, or implicit-target
+  typing.
+- Preserve exact app/window identity checks, provider snapshot-token scoping,
   stale-element rejection, and at-most-once action dispatch.
 - Tests use synthetic fixtures, temporary workspaces/profiles, and isolated
   desktop sessions. Never use a personal browser profile, desktop session,

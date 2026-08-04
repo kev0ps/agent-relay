@@ -22,7 +22,7 @@ from agent_relay.agent import (
     main,
 )
 from agent_relay.capabilities.terminal import TerminalCapability
-from agent_relay.catalog import CatalogService, ProviderRegistration
+from agent_relay.catalog import CatalogService, CatalogSnapshot, ProviderRegistration
 from agent_relay.json_bounds import JsonValue
 from agent_relay.output_models import ProviderTextContent, ProviderToolResult
 from agent_relay.protocol import InvokeMessage
@@ -802,6 +802,32 @@ def test_environment_and_cli_configuration_errors_never_echo_agent_token(
     with pytest.raises(SystemExit):
         main()
     assert secret not in capsys.readouterr().err
+
+
+def test_agent_main_discovers_local_catalog_before_starting_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = AgentSettings(
+        server_url="ws://localhost/ws/agent",
+        device_id="catalog-agent",
+        agent_token="[REDACTED]",
+        workspace=tmp_path,
+        tools_allowlist=(),
+    )
+    snapshot = CatalogSnapshot((), ())
+    observed: list[CatalogSnapshot | None] = []
+
+    async def fake_run(agent: RelayAgent) -> None:
+        observed.append(agent._catalog)
+
+    monkeypatch.setattr("agent_relay.agent.AgentSettings.from_environment", lambda: settings)
+    monkeypatch.setattr("agent_relay.agent.discover_local_catalog", lambda _path: snapshot)
+    monkeypatch.setattr("agent_relay.agent._run_with_signal_handlers", fake_run)
+    monkeypatch.setattr(sys, "argv", ["agent-relay-agent"])
+
+    main()
+
+    assert observed == [snapshot]
 
 
 class _Connection(AbstractAsyncContextManager["_Socket"]):

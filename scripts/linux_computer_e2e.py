@@ -55,9 +55,10 @@ except ModuleNotFoundError as error:
 
 DEVICE_ID = "linux-cua-e2e-agent"
 CUA_CAPABILITIES = (
-    "computer.capture",
-    "computer.click",
-    "computer.type",
+    "cua.click",
+    "cua.get_window_state",
+    "cua.list_windows",
+    "cua.type_text",
     "system.ping",
     "terminal.exec",
 )
@@ -345,7 +346,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text",
                 "RELAY_NATIVE_DEBUG": "1",
                 "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
@@ -422,13 +423,13 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
 
         native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
         phase = "computer-scenario"
-        portable_scenarios.run_computer_scenario(
+        portable_scenarios.run_cua_scenario(
             runtime,
             value,
             scenario_phase,
             expected_capabilities=CUA_CAPABILITIES,
-            expected_computer_app=COMPUTER_APP_NAME,
-            expected_computer_window_title=COMPUTER_WINDOW_TITLE,
+            expected_cua_app=COMPUTER_APP_NAME,
+            expected_cua_window_title=COMPUTER_WINDOW_TITLE,
         )
         if any(process.poll() is not None for process in (server, fixture, browser, agent)):
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")

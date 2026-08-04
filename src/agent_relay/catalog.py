@@ -12,6 +12,8 @@ from typing import Literal
 from pydantic import ValidationError
 
 from .capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS
+from .capabilities.system import SYSTEM_PROVIDER_DESCRIPTORS
+from .capabilities.terminal import TERMINAL_PROVIDER_DESCRIPTORS
 from .json_bounds import JsonValue
 from .output_models import ProviderToolResult
 from .provider_tools import ProviderRiskClass, ProviderToolDescriptor
@@ -435,59 +437,10 @@ async def _catalog_probe_handler(
     raise ProviderToolError("catalog discovery client does not dispatch")
 
 
-def _reference_descriptor(
-    provider_name: str,
-    tool_name: str,
-    description: str,
-    risk: ProviderRiskClass,
-) -> ProviderToolDescriptor:
-    return ProviderToolDescriptor(
-        provider_name=provider_name,
-        tool_name=tool_name,
-        public_name=tool_name,
-        description=description,
-        input_schema={
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-        risk=risk,
-    )
-
-
 def _local_reference_tools() -> dict[str, tuple[ProviderToolDescriptor, ...]]:
     return {
-        "system": (
-            _reference_descriptor(
-                "system", "ping", "fixed local health check", "read_only"
-            ),
-        ),
-        "terminal": (
-            ProviderToolDescriptor(
-                provider_name="terminal",
-                tool_name="exec",
-                public_name="exec",
-                description="fixed allowlisted terminal command",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "command_id": {
-                            "type": "string",
-                            "enum": [
-                                "pwd",
-                                "whoami",
-                                "python_version",
-                                "git_status",
-                                "git_branch",
-                            ],
-                        }
-                    },
-                    "required": ["command_id"],
-                    "additionalProperties": False,
-                },
-                risk="interaction",
-            ),
-        ),
+        "system": SYSTEM_PROVIDER_DESCRIPTORS,
+        "terminal": TERMINAL_PROVIDER_DESCRIPTORS,
         "browser": BROWSER_PROVIDER_DESCRIPTORS,
         "cua": CUA_REFERENCE_DESCRIPTORS,
     }
@@ -564,6 +517,15 @@ def local_provider_registrations(
         descriptors = tools[provider_name]
         client = runtime_providers.get(provider_name)
         if client is None and provider_name in {"system", "terminal"}:
+            client = _in_process_catalog_client(descriptors)
+        if (
+            client is None
+            and provider_name == "browser"
+            and effective_env.get("RELAY_AGENT_BROWSER_USER_DATA_DIR")
+        ):
+            # Browser descriptors are static, but availability is still tied to
+            # an explicitly configured profile. The Agent starts the real
+            # Playwright provider before announcing the selected descriptors.
             client = _in_process_catalog_client(descriptors)
         if client is None and provider_name == "cua":
             client = _configured_cua_catalog_client(effective_env)

@@ -19,7 +19,7 @@ call.
 Platform-specific native harnesses run the same Relay Agent package and public
 MCP contract on the target operating system. The Dockerfile is validated
 separately through production-image build and CLI smoke checks; a container
-runtime is not treated as Browser or Computer Use product evidence.
+runtime is not treated as Browser or CUA-provider product evidence.
 
 The public action path and the oracle path are deliberately separate:
 
@@ -83,25 +83,27 @@ fixture event, and bounded lifecycle cleanup. The Agent launches Chromium; the
 harness does not expose or attach to a CDP endpoint. It does not use Docker,
 personal profiles, headed desktop automation, or Computer Use.
 
-## Native Linux Computer Use gate
+## Native Linux CUA gate
 
-The native Linux Computer Use product E2E proof is the GitHub Actions job
+The native Linux CUA product E2E proof is the GitHub Actions job
 `e2e-linux-cua` (Native Linux CUA end-to-end). It installs the pinned Browser and
-Computer Use extras, starts Xvfb, a private D-Bus/AT-SPI session, Openbox, and
-Chromium, then configures the real Relay Agent Computer Use capability with the
-pinned `cua-driver` executable. The shared scenario calls
-`relay_computer_capture`, `relay_computer_click`, and `relay_computer_type` through
-the authenticated public MCP endpoint and requires an independent desktop fixture
-event plus stale-element rejection.
+CUA extras, starts Xvfb, a private D-Bus/AT-SPI session, Openbox, and Chromium,
+then configures the real Relay Agent CUA provider with the pinned `cua-driver`
+executable. The provider discovers MCP descriptors through bounded stdio
+`tools/list`; the shared scenario calls only the selected public descriptors
+`relay_cua_list_windows`, `relay_cua_get_window_state`, `relay_cua_click`, and
+`relay_cua_type_text` through the authenticated MCP endpoint. It requires an
+independent desktop fixture event plus provider snapshot-token refresh and stale
+element rejection.
 
 This gate proves the Linux X11/Xvfb/AT-SPI backend only. It does not prove a
-personal desktop, Wayland, Windows UI Automation, or hosted Windows Computer Use.
+personal desktop, Wayland, Windows UI Automation, or hosted Windows CUA.
 The Windows UI Automation backend and full Agent Relay harness exist separately.
 The hosted `e2e-windows-cua` candidate remains experimental
-until it repeatably proves `tools/list`, capture, type, click, one correlated
-fixture event and bounded cleanup on the exact reviewed commit.
+until it repeatably proves the selected descriptor inventory, snapshot, type,
+click, one correlated fixture event and bounded cleanup on the exact reviewed commit.
 
-## Native Windows Computer Use candidate
+## Native Windows CUA candidate
 
 The `e2e-windows-cua` job runs the public MCP path through the native Relay
 Server and Agent, pinned `cua-driver`, Windows UI Automation and a synthetic
@@ -150,44 +152,46 @@ path, or arbitrary executable input.
 ### Browser Use
 
 - `relay_browser_list_tabs()` returns an ordered collection of tab records;
-  each record contains `tab_id`, `title`, and `url`.
-- `relay_browser_navigate(url)` returns an action record containing `tab_id`,
-  `element_id` (null for navigation), `url`, `title`, and `success`.
-- `relay_browser_snapshot()` returns `tab_id`, `title`, `url`, bounded `text`,
-  and a bounded `elements` collection of typed browser element records.
-- `relay_browser_fill(element_id, value)` returns the Browser action record.
-- `relay_browser_click(element_id)` returns the Browser action record.
+  each record contains only bounded `title` and `url` fields.
+- `relay_browser_navigate(url)` returns an action record containing only
+  `url`, `title`, and `success`.
+- `relay_browser_snapshot()` returns `title`, `url`, bounded `text`, and a
+  bounded `elements` collection. Each element contains a structured locator
+  (`by` plus `role`, `name`, `value`, `exact`, `index`, `label`, `placeholder`,
+  `text`, or `test_id` as permitted by the selected strategy),
+  never a Playwright handle or element ID.
+- `relay_browser_fill(locator, value)` returns the Browser action record.
+- `relay_browser_click(locator)` returns the Browser action record.
 - `relay_browser_scroll(direction)` accepts only `up` or `down` and returns the
   Browser action record.
-- `relay_browser_type(element_id, text)` types through the Playwright element
-  handle and returns the Browser action record.
+- `relay_browser_type(locator, text)` resolves the structured locator through
+  Playwright and returns the Browser action record.
 - `relay_browser_back()` returns the Browser action record after going back one
   history entry.
 
-Element IDs are opaque and valid only for their captured page generation. URLs
+Locators are bounded public queries and are re-resolved after navigation. URLs
 are restricted to the allowlisted local fixture origin. Browser tools accept no
 JavaScript, headers, cookies, filesystem paths, browser profiles, or arbitrary
 CDP methods.
 
-### Computer Use
+### Generic CUA provider
 
-- `relay_computer_capture()` returns `app`, `window_title`, `generation`, and a
-  bounded `elements` collection. Every element contains `element_id`, `role`,
-  `name`, `value`, and `enabled`.
-- `relay_computer_click(element_id)` returns `success`, `generation`, and
-  `element_id`.
-- `relay_computer_type(element_id, text)` returns `success`, `generation`, and
-  the targeted `element_id`.
+- `relay_cua_list_windows()` returns selected provider window descriptors with
+  bounded identity and geometry metadata.
+- `relay_cua_get_window_state(pid, window_id, include_screenshot, max_elements)`
+  returns a bounded provider snapshot and fresh `element_token` values.
+- `relay_cua_click(pid, window_id, element_token)` invokes the selected CUA
+  click descriptor.
+- `relay_cua_type_text(pid, window_id, element_token, text)` invokes the selected
+  CUA text descriptor.
 
-Element IDs are opaque and scoped to the latest capture generation. Computer
-Use is restricted to an allowlisted fixture application and window. The first
-version does not expose coordinates, arbitrary key chords, drag, clipboard,
-file dialogs, permission dialogs, system shortcuts, screenshot payloads,
-driver passthrough, process/window identifiers, delivery modes, or arbitrary
-fields. Text is non-empty, bounded, and rejects every Unicode category beginning
-`C`; ordinary astral Unicode remains valid. After each capture, all earlier
-element IDs are stale. The E2E scenario proves their rejection before using a
-freshly resolved Apply target.
+The CUA provider restricts the selected descriptors to an allowlisted fixture
+application and window. Relay validates descriptors, arguments, and results
+before converting them to MCP. Screenshots, coordinates, raw accessibility
+trees, arbitrary driver passthrough, credentials, and unselected tools are not
+published. Provider snapshot tokens are opaque, bounded, and refreshed before
+the scenario attempts the stale-token rejection; text remains bounded and
+rejects control characters.
 
 ## Independent fixture event contract
 
@@ -203,7 +207,7 @@ fields are accepted. A Browser form submission uses this exact shape:
 }
 ```
 
-Computer Use follows the same three-field envelope with `event` set to
+CUA follows the same three-field envelope with `event` set to
 `applied`. The fixture, not the Relay Server response or test harness, emits the
 event as a consequence of the local UI mutation.
 

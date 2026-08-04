@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the native Windows Computer Use Agent Relay E2E scenario."""
+"""Run the experimental native Windows CUA Agent Relay scenario."""
 
 from __future__ import annotations
 
@@ -21,9 +21,10 @@ DEVICE_ID = "windows-cua-e2e-agent"
 COMPUTER_APP_NAME = "powershell"
 COMPUTER_WINDOW_TITLE = "Agent Relay Computer Use Windows Fixture"
 CUA_CAPABILITIES = (
-    "computer.capture",
-    "computer.click",
-    "computer.type",
+    "cua.click",
+    "cua.get_window_state",
+    "cua.list_windows",
+    "cua.type_text",
     "system.ping",
     "terminal.exec",
 )
@@ -183,7 +184,11 @@ def _fixture_command(event_path: Path, ready_path: Path, run_id: str) -> list[st
 def run_scenario(
     evidence_dir: Path | None = None, *, output_file: Path | None = None
 ) -> None:
-    """Run Server + Agent + WinForms fixture through public MCP Computer Use."""
+    """Run Server + Agent + WinForms fixture through public MCP CUA tools.
+
+    Windows remains experimental until the native driver and fixture contract
+    are validated in the supported CI environment.
+    """
     if os.name != "nt":
         raise WindowsCuaE2EError("native Windows CUA harness requires Windows")
     if _current_session_id() == 0:
@@ -241,7 +246,7 @@ def run_scenario(
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text",
                 "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
@@ -378,13 +383,13 @@ def run_scenario(
         reporter = threading.Thread(target=report_scenario_phase, daemon=True)
         reporter.start()
         try:
-            portable_scenarios.run_computer_scenario(
+            portable_scenarios.run_cua_scenario(
                 runtime,
                 value,
                 scenario_markers,
                 expected_capabilities=CUA_CAPABILITIES,
-                expected_computer_app=COMPUTER_APP_NAME,
-                expected_computer_window_title=COMPUTER_WINDOW_TITLE,
+                expected_cua_app=COMPUTER_APP_NAME,
+                expected_cua_window_title=COMPUTER_WINDOW_TITLE,
             )
         finally:
             scenario_stop.set()

@@ -1,4 +1,9 @@
-# Relay protocol v1
+# Relay protocol v1 (superseded)
+
+> **Historical reference:** invocation semantics are now defined by
+> [`protocol-v2.md`](protocol-v2.md). The v1 operation-specific Browser,
+> Computer Use, and direct-control examples below are not a supported public
+> invocation contract.
 
 Transport: UTF-8 JSON text WebSocket, path `/ws/agent`. Objects are strict
 (`version: 1`, unknown fields rejected); binary frames and oversized messages

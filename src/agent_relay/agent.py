@@ -40,7 +40,7 @@ from .capabilities.browser import BrowserStartupError
 from .capabilities.system import SystemCapability
 from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
 from .catalog import CatalogError, CatalogSnapshot
-from .config import PUBLIC_TO_INTERNAL, load_agent_settings
+from .config import PUBLIC_TO_INTERNAL, discover_local_catalog, load_agent_settings
 from .protocol import (
     MAX_RESULT_JSON_BYTES,
     TOOL_ORDER,
@@ -1122,15 +1122,20 @@ def main(
             "RELAY_AGENT_TOKEN, or the YAML secret file"
         )
     try:
-        settings = (
-            load_agent_settings(args.config, catalog=catalog)
-            if args.config is not None
-            else AgentSettings.from_environment()
-        )
+        if args.config is not None:
+            selected_catalog = catalog or discover_local_catalog(args.config)
+            settings = load_agent_settings(args.config, catalog=selected_catalog)
+        else:
+            settings = AgentSettings.from_environment()
+            selected_catalog = catalog or discover_local_catalog(None)
     except (ConfigurationError, ValueError):
         parser.error("invalid agent configuration")
     try:
-        asyncio.run(_run_with_signal_handlers(RelayAgent(settings, catalog=catalog)))
+        asyncio.run(
+            _run_with_signal_handlers(
+                RelayAgent(settings, catalog=catalog or selected_catalog)
+            )
+        )
     except BrowserStartupError:
         parser.exit(1, "agent browser startup failed\n")
 

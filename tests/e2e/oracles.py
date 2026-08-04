@@ -42,9 +42,10 @@ _CONNECTED_CAPABILITIES: tuple[str, ...] = (
     "browser.scroll",
     "browser.snapshot",
     "browser.type",
-    "computer.capture",
-    "computer.click",
-    "computer.type",
+    "cua.click",
+    "cua.get_window_state",
+    "cua.list_windows",
+    "cua.type_text",
     "system.ping",
     "terminal.exec",
 )
@@ -224,10 +225,7 @@ def validate_terminal(result: Any, *, command_id: str, expected: str) -> None:
         raise ValueError("invalid terminal response schema")
 
 
-# --- List tabs oracle -------------------------------------------------------
-
-_LIST_TABS_KEYS: frozenset[str] = frozenset({"tabs"})
-_TAB_KEYS: frozenset[str] = frozenset({"tab_id", "title", "url"})
+# --- Browser inventory oracle ------------------------------------------------
 
 
 def _exact_str(value: Any, *, nonempty: bool = False, maximum: int = 4096) -> bool:
@@ -244,15 +242,10 @@ def _exact_str(value: Any, *, nonempty: bool = False, maximum: int = 4096) -> bo
     )
 
 
-def validate_list_tabs(result: Any) -> str:
-    """Validate a ``relay_browser_list_tabs`` ``CallToolResult``.
-
-    The current product contract requires exactly one tab whose URL is
-    ``about:blank``. The oracle returns the opaque ``tab_id`` so the
-    caller can chain subsequent Browser actions.
-    """
+def validate_list_tabs(result: Any) -> None:
+    """Validate the Browser provider's handle-free tab inventory."""
     payload = _structured(result, "relay_browser_list_tabs")
-    if set(payload) != set(_LIST_TABS_KEYS):
+    if set(payload) != {"tabs"}:
         raise ValueError("invalid relay_browser_list_tabs response schema")
     tabs = payload["tabs"]
     if type(tabs) is not list or len(tabs) != 1:
@@ -260,225 +253,174 @@ def validate_list_tabs(result: Any) -> str:
     tab = tabs[0]
     if (
         type(tab) is not dict
-        or set(tab) != set(_TAB_KEYS)
-        or not _exact_str(tab["tab_id"], nonempty=True, maximum=128)
+        or set(tab) != {"title", "url"}
         or not _exact_str(tab["title"], maximum=256)
-        or tab["url"] != "about:blank"
+        or not _exact_str(tab["url"], maximum=2048, nonempty=True)
+        or "element_id" in tab
+        or "handle" in tab
     ):
         raise ValueError("invalid relay_browser_list_tabs response schema")
-    return tab["tab_id"]
 
 
-# --- Action oracle ----------------------------------------------------------
-
-_ACTION_KEYS: frozenset[str] = frozenset(
-    {"tab_id", "element_id", "url", "title", "success"}
-)
+_BROWSER_ACTION_KEYS: frozenset[str] = frozenset({"success", "title", "url"})
 
 
-def validate_action(
+def validate_browser_action(
     result: Any,
     *,
     tool_name: str,
-    tab_id: str,
-    element_id: str | None,
     fixture_url: str,
     fixture_title: str,
 ) -> None:
-    """Validate a Browser ``relay_browser_*`` ``CallToolResult``.
-
-    The harness passes the ``fixture_url`` and ``fixture_title`` the
-    Browser fixture serves. The oracle rejects any URL outside the
-    allowlist, any title drift, any ``success=False`` (which would
-    normally be an MCP error), and any extra top-level key.
-
-    ``element_id`` is opaque and short-lived; the oracle enforces only
-    that the wire value matches what the caller supplied (or is
-    ``None`` for navigation).
-    """
+    """Validate a handle-free Browser action result."""
     payload = _structured(result, tool_name)
-    if set(payload) != set(_ACTION_KEYS):
+    if set(payload) != set(_BROWSER_ACTION_KEYS):
         raise ValueError(f"invalid {tool_name} response schema")
     if (
-        not _exact_str(payload["tab_id"], nonempty=True, maximum=128)
-        or payload["tab_id"] != tab_id
-        or (
-            element_id is not None
-            and (
-                type(payload["element_id"]) is not str
-                or payload["element_id"] != element_id
-            )
-        )
-        or (element_id is None and payload["element_id"] is not None)
-        or type(payload["url"]) is not str
+        payload["success"] is not True
         or payload["url"] != fixture_url
-        or type(payload["title"]) is not str
         or payload["title"] != fixture_title
-        or payload["success"] is not True
     ):
         raise ValueError(f"invalid {tool_name} response schema")
 
 
-# --- Computer capture oracle ------------------------------------------------
+# --- Generic CUA provider oracles -------------------------------------------
 
-_COMPUTER_CAPTURE_KEYS: frozenset[str] = frozenset(
-    {"app", "window_title", "generation", "elements"}
+_CUA_WINDOW_REQUIRED_KEYS: frozenset[str] = frozenset(
+    {"window_id", "pid", "app_name", "title", "bounds", "is_on_screen"}
 )
-_COMPUTER_ELEMENT_KEYS: frozenset[str] = frozenset(
-    {"element_id", "role", "name", "value", "enabled"}
-)
-_COMPUTER_DECOY_NAMES: frozenset[str] = frozenset(
-    {"dormant override", "vault password", "grant camera permission"}
-)
-# Recognized Computer-Use field/button roles, normalized to lowercase.
-_FIELD_ROLES: frozenset[str] = frozenset({"textbox", "entry", "text", "edit"})
+_CUA_BOUND_KEYS: frozenset[str] = frozenset({"x", "y", "width", "height"})
+_FIELD_ROLES: frozenset[str] = frozenset({"textbox", "entry", "text", "edit", "editable"})
 _BUTTON_ROLES: frozenset[str] = frozenset({"button", "push button"})
+_CUA_MAX_WINDOWS: int = 64
+_CUA_MAX_ELEMENTS: int = 256
 
 
-def _mark(phase: list[str] | None, value: str) -> None:
-    if phase is not None:
-        phase.append(value)
+def _bounded_int(value: Any) -> bool:
+    return type(value) is int and -(2**31) <= value <= 2**31
 
 
-def validate_computer_capture(
+def validate_cua_list_windows(
     result: Any,
     *,
+    expected_pid: int | None = None,
+    expected_app: str | None = None,
+    expected_window_title: str | None = None,
+) -> tuple[int, int]:
+    """Validate generic ``cua.list_windows`` output and return ``(pid, xid)``."""
+    payload = _structured(result, "relay_cua_list_windows")
+    if set(payload) != {"windows"}:
+        raise ValueError("invalid relay_cua_list_windows response schema")
+    windows = payload["windows"]
+    if type(windows) is not list or not 1 <= len(windows) <= _CUA_MAX_WINDOWS:
+        raise ValueError("invalid relay_cua_list_windows response schema")
+    candidates: list[dict[str, Any]] = []
+    for window in windows:
+        if type(window) is not dict or not _CUA_WINDOW_REQUIRED_KEYS.issubset(window):
+            raise ValueError("invalid relay_cua_list_windows response schema")
+        if (
+            not _bounded_int(window["window_id"])
+            or window["window_id"] <= 0
+            or (window["pid"] is not None and not _bounded_int(window["pid"]))
+            or not _exact_str(window["app_name"], maximum=256)
+            or not _exact_str(window["title"], maximum=512)
+            or type(window["is_on_screen"]) is not bool
+            or type(window["bounds"]) is not dict
+            or not _CUA_BOUND_KEYS.issubset(window["bounds"])
+            or any(not _bounded_int(window["bounds"][key]) for key in _CUA_BOUND_KEYS)
+        ):
+            raise ValueError("invalid relay_cua_list_windows response schema")
+        if expected_pid is None or window["pid"] == expected_pid:
+            if expected_app is None or window["app_name"] == expected_app:
+                if expected_window_title is None or window["title"] == expected_window_title:
+                    candidates.append(window)
+    if len(candidates) != 1 or candidates[0]["pid"] is None:
+        raise ValueError("invalid relay_cua_list_windows fixture identity")
+    return candidates[0]["pid"], candidates[0]["window_id"]
+
+
+def validate_cua_window_state(
+    result: Any,
+    *,
+    expected_pid: int,
+    window_id: int,
     diagnostic_phase: list[str] | None = None,
-    expected_app: str,
-    expected_window_title: str,
-) -> tuple[str, str]:
-    """Validate a ``relay_computer_capture`` ``CallToolResult``.
+) -> tuple[str, str, str]:
+    """Validate a bounded CUA snapshot and return fresh element tokens.
 
-    Returns ``(field_element_id, button_element_id)``. The fixture must
-    expose exactly one enabled textbox-like field and exactly one
-    enabled ``Apply`` button. Decoys and out-of-fixture window/app
-    identities fail closed. Platform harnesses must provide their synthetic
-    fixture identity; equality remains exact.
-
-    ``diagnostic_phase`` (optional) receives short string markers on
-    every internal step the oracle traverses, both successful and
-    failed. This lets the harness classify failures without leaking
-    payload internals.
+    The driver owns the snapshot/token lifecycle. Relay E2E only consumes the
+    opaque ``element_token`` values and never treats a DOM/AX handle as public
+    data.
     """
-    _mark(diagnostic_phase, "capture-structured")
-    payload = _structured(result, "relay_computer_capture")
-    _mark(diagnostic_phase, "capture-top-level")
-    if set(payload) != set(_COMPUTER_CAPTURE_KEYS):
-        _mark(diagnostic_phase, "capture-top-level-mismatch")
-        raise ValueError("invalid relay_computer_capture response schema")
-    _mark(diagnostic_phase, "capture-identity")
+    if diagnostic_phase is not None:
+        diagnostic_phase.append("cua-snapshot-structured")
+    payload = _structured(result, "relay_cua_get_window_state")
+    required = {"pid", "window_id", "elements", "snapshot_id"}
+    if set(payload) - {
+        "pid", "window_id", "elements", "snapshot_id", "element_count",
+        "elements_complete", "total_element_count", "returned_element_count",
+        "tree_markdown", "_note", "degraded", "degraded_reason",
+    } or not required.issubset(payload):
+        raise ValueError("invalid relay_cua_get_window_state response schema")
+    if payload["pid"] != expected_pid or payload["window_id"] != window_id:
+        raise ValueError("invalid relay_cua_get_window_state identity")
+    if not _exact_str(payload["snapshot_id"], nonempty=True, maximum=256):
+        raise ValueError("invalid relay_cua_get_window_state snapshot")
     elements = payload["elements"]
-    if (
-        payload["app"] != expected_app
-        or payload["window_title"] != expected_window_title
-        or not _exact_str(payload["generation"], nonempty=True, maximum=128)
-        or type(elements) is not list
-    ):
-        _mark(diagnostic_phase, "capture-identity-mismatch")
-        raise ValueError("invalid relay_computer_capture response schema")
-    _mark(diagnostic_phase, "capture-count")
-    if not 1 <= len(elements) <= 12:
-        _mark(diagnostic_phase, "capture-count-out-of-range")
-        raise ValueError("invalid relay_computer_capture response schema")
-    field_ids: list[str] = []
-    button_ids: list[str] = []
-    seen_ids: set[str] = set()
+    if type(elements) is not list or not 1 <= len(elements) <= _CUA_MAX_ELEMENTS:
+        raise ValueError("invalid relay_cua_get_window_state response schema")
+    field_tokens: list[str] = []
+    button_tokens: list[str] = []
+    seen_indices: set[int] = set()
     for index, element in enumerate(elements):
-        _mark(diagnostic_phase, f"capture-element-{index}")
+        if diagnostic_phase is not None:
+            diagnostic_phase.append(f"cua-element-{index}")
         if (
             type(element) is not dict
-            or set(element) != set(_COMPUTER_ELEMENT_KEYS)
-            or not _exact_str(element["element_id"], nonempty=True, maximum=128)
-            or not _exact_str(element["role"], nonempty=True, maximum=64)
-            or not _exact_str(element["name"], maximum=128)
-            or (
-                element["value"] is not None
-                and not _exact_str(element["value"], maximum=256)
-            )
-            or type(element["enabled"]) is not bool
+            or not {"element_index", "role"}.issubset(element)
+            or type(element["element_index"]) is not int
+            or element["element_index"] < 0
+            or element["element_index"] in seen_indices
+            or not _exact_str(element["role"], nonempty=True, maximum=128)
+            or not _exact_str(element.get("element_token"), nonempty=True, maximum=256)
+            or ("label" in element and not _exact_str(element["label"], maximum=512))
+            or ("value" in element and not _exact_str(element["value"], maximum=2048))
         ):
-            _mark(diagnostic_phase, "capture-element-shape-mismatch")
-            raise ValueError("invalid relay_computer_capture response schema")
-        if element["element_id"] in seen_ids:
-            _mark(diagnostic_phase, "capture-duplicate-id")
-            raise ValueError("invalid relay_computer_capture response schema")
-        seen_ids.add(element["element_id"])
-        if element["enabled"] and element["role"].casefold() in _FIELD_ROLES:
-            field_ids.append(element["element_id"])
-        if (
-            element["enabled"]
-            and element["name"].casefold() == "apply"
-            and element["role"].casefold() in _BUTTON_ROLES
-        ):
-            button_ids.append(element["element_id"])
-    _mark(diagnostic_phase, "capture-decoy")
-    for element in elements:
-        if element["name"].casefold() in _COMPUTER_DECOY_NAMES:
-            _mark(diagnostic_phase, "capture-decoy-detected")
-            raise ValueError("invalid relay_computer_capture controls")
-    _mark(diagnostic_phase, "capture-controls")
-    if len(field_ids) != 1:
-        if not field_ids:
-            for element in elements:
-                if (
-                    element["role"].casefold() == "editable control"
-                    or element["role"].casefold() == "editable"
-                ):
-                    _mark(diagnostic_phase, "capture-controls-field-role-edit-variant")
-                    break
-                if (
-                    element["role"].casefold() == "label"
-                    and element["name"] == "Name"
-                ):
-                    _mark(diagnostic_phase, "capture-controls-field-name-role-label")
-                    break
-        _mark(diagnostic_phase, "capture-controls-field-mismatch")
-        raise ValueError("invalid relay_computer_capture controls")
-    if len(button_ids) != 1:
-        _mark(diagnostic_phase, "capture-controls-button-mismatch")
-        raise ValueError("invalid relay_computer_capture controls")
-    _mark(diagnostic_phase, "capture-success")
-    return field_ids[0], button_ids[0]
+            raise ValueError("invalid relay_cua_get_window_state element schema")
+        seen_indices.add(element["element_index"])
+        label = str(element.get("label", ""))
+        role = element["role"].casefold()
+        if role in _FIELD_ROLES and label.casefold() == "name":
+            field_tokens.append(element["element_token"])
+        if role in _BUTTON_ROLES and label.casefold() == "apply":
+            button_tokens.append(element["element_token"])
+    if len(field_tokens) != 1 or len(button_tokens) != 1:
+        raise ValueError("invalid relay_cua_get_window_state fixture controls")
+    return payload["snapshot_id"], field_tokens[0], button_tokens[0]
 
 
-# --- Computer action oracle -------------------------------------------------
-
-_COMPUTER_ACTION_KEYS: frozenset[str] = frozenset(
-    {"success", "generation", "element_id"}
-)
-
-
-def validate_computer_action(
-    result: Any,
-    *,
-    tool_name: str,
-    generation: str,
-    element_id: str,
-) -> None:
-    """Validate a Computer-Use action ``CallToolResult``.
-
-    The wire payload must echo back the exact ``generation`` token and
-    ``element_id`` the harness issued. This is the Computer-Use
-    equivalent of the Browser ``tab_id`` echo and prevents a stale or
-    replayed response from being accepted.
-    """
+def validate_cua_action(result: Any, *, tool_name: str) -> None:
+    """Validate bounded CUA action metadata without inventing verification."""
     payload = _structured(result, tool_name)
+    allowed = {"path", "verified", "effect", "characters", "escalation", "scope"}
+    required = {"path", "verified", "effect"}
+    if not required.issubset(payload) or set(payload) - allowed:
+        raise ValueError(f"invalid {tool_name} response schema")
     if (
-        set(payload) != set(_COMPUTER_ACTION_KEYS)
-        or payload["success"] is not True
-        or payload["generation"] != generation
-        or payload["element_id"] != element_id
+        not _exact_str(payload["path"], nonempty=True, maximum=128)
+        or type(payload["verified"]) is not bool
+        or payload["effect"] not in {"confirmed", "unverifiable", "suspected_noop"}
     ):
+        raise ValueError(f"invalid {tool_name} response schema")
+    if "characters" in payload and (type(payload["characters"]) is not int or payload["characters"] < 0):
         raise ValueError(f"invalid {tool_name} response schema")
 
 
-# --- Snapshot oracle --------------------------------------------------------
+# --- Browser snapshot oracle -------------------------------------------------
 
-_SNAPSHOT_KEYS: frozenset[str] = frozenset(
-    {"tab_id", "url", "title", "text", "elements"}
-)
+_SNAPSHOT_KEYS: frozenset[str] = frozenset({"url", "title", "text", "elements"})
 _SNAPSHOT_ELEMENT_KEYS: frozenset[str] = frozenset(
-    {"element_id", "role", "name", "value", "editable", "enabled"}
+    {"locator", "role", "name", "value", "editable", "enabled", "clickable"}
 )
 _SNAPSHOT_TEXT_REQUIRED_MARKERS: tuple[str, ...] = (
     "Relay Browser Fixture",
@@ -492,120 +434,60 @@ _SNAPSHOT_MAX_ELEMENTS: int = 12
 def validate_snapshot(
     result: Any,
     *,
-    tab_id: str,
     fixture_url: str,
     fixture_title: str,
     diagnostic_phase: list[str] | None = None,
-) -> tuple[str, str]:
-    """Validate a ``relay_browser_snapshot`` ``CallToolResult``.
-
-    Returns ``(textbox_element_id, button_element_id)``. The page
-    must come from the fixture origin, its text must contain the
-    required markers (``title``, ``Name``, ``Submit``), and there must
-    be exactly one editable textbox and exactly one enabled button.
-    """
-    _mark(diagnostic_phase, "snapshot-structured")
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate a Browser snapshot and return fresh structured locators."""
+    if diagnostic_phase is not None:
+        diagnostic_phase.append("snapshot-structured")
     payload = _structured(result, "relay_browser_snapshot")
-    _mark(diagnostic_phase, "snapshot-top-level")
-    if set(payload) != set(_SNAPSHOT_KEYS):
+    if set(payload) != set(_SNAPSHOT_KEYS) or payload["url"] != fixture_url or payload["title"] != fixture_title:
         raise ValueError("invalid relay_browser_snapshot response schema")
-    _mark(diagnostic_phase, "snapshot-identity")
     if (
-        type(payload["tab_id"]) is not str
-        or payload["tab_id"] != tab_id
-        or payload["url"] != fixture_url
-        or payload["title"] != fixture_title
+        not _exact_str(payload["text"], maximum=_SNAPSHOT_MAX_TEXT_LEN)
+        or any(marker not in payload["text"] for marker in _SNAPSHOT_TEXT_REQUIRED_MARKERS)
+        or type(payload["elements"]) is not list
+        or len(payload["elements"]) > _SNAPSHOT_MAX_ELEMENTS
     ):
         raise ValueError("invalid relay_browser_snapshot response schema")
-    _mark(diagnostic_phase, "snapshot-text")
-    text = payload["text"]
-    if (
-        type(text) is not str
-        or len(text) > _SNAPSHOT_MAX_TEXT_LEN
-        or any(marker not in text for marker in _SNAPSHOT_TEXT_REQUIRED_MARKERS)
-    ):
-        raise ValueError("invalid relay_browser_snapshot response schema")
-    _mark(diagnostic_phase, "snapshot-elements")
-    elements = payload["elements"]
-    if type(elements) is not list or len(elements) > _SNAPSHOT_MAX_ELEMENTS:
-        raise ValueError("invalid relay_browser_snapshot response schema")
-    textbox_ids: list[str] = []
-    button_ids: list[str] = []
-    for index, element in enumerate(elements):
-        _mark(diagnostic_phase, f"snapshot-element-{index}")
+    textboxes: list[dict[str, Any]] = []
+    buttons: list[dict[str, Any]] = []
+    for index, element in enumerate(payload["elements"]):
+        if diagnostic_phase is not None:
+            diagnostic_phase.append(f"snapshot-element-{index}")
         if (
             type(element) is not dict
             or set(element) != set(_SNAPSHOT_ELEMENT_KEYS)
-            or not _exact_str(element["element_id"], nonempty=True, maximum=128)
+            or type(element["locator"]) is not dict
+            or "element_id" in element
+            or "handle" in element
             or not _exact_str(element["role"], nonempty=True, maximum=64)
-            or not _exact_str(element["name"], maximum=128)
-            or (
-                element["value"] is not None
-                and not _exact_str(element["value"], maximum=256)
-            )
+            or not _exact_str(element["name"], maximum=256)
+            or (element["value"] is not None and not _exact_str(element["value"], maximum=2048))
             or type(element["editable"]) is not bool
             or type(element["enabled"]) is not bool
+            or type(element["clickable"]) is not bool
         ):
-            _mark(diagnostic_phase, "snapshot-element-schema")
-            raise ValueError("invalid relay_browser_snapshot response schema")
+            raise ValueError("invalid relay_browser_snapshot element schema")
+        locator = element["locator"]
         if (
-            element["role"] == "textbox"
-            and element["name"] == "Name"
-            and element["enabled"]
-            and element["editable"]
+            set(locator) - {"by", "role", "name", "value", "label", "placeholder", "text", "test_id", "exact", "index"}
+            or locator.get("by") not in {"role", "label", "placeholder", "text", "test_id"}
         ):
-            textbox_ids.append(element["element_id"])
-        if (
-            element["role"] == "button"
-            and element["name"] == "Submit"
-            and element["enabled"]
-            and not element["editable"]
-        ):
-            button_ids.append(element["element_id"])
-    _mark(diagnostic_phase, "snapshot-controls")
-    if len(textbox_ids) != 1:
-        if len(textbox_ids) > 1:
-            _mark(diagnostic_phase, "snapshot-textbox-ambiguous")
-        elif not any(
-            type(element) is dict
-            and element.get("role") == "textbox"
-            for element in elements
-        ):
-            _mark(diagnostic_phase, "snapshot-textbox-role")
-        elif not any(
-            type(element) is dict
-            and element.get("role") == "textbox"
-            and element.get("name") == "Name"
-            for element in elements
-        ):
-            _mark(diagnostic_phase, "snapshot-textbox-name")
-        else:
-            _mark(diagnostic_phase, "snapshot-textbox-state")
+            raise ValueError("invalid relay_browser_snapshot locator schema")
+        if "index" in locator and (type(locator["index"]) is not int or locator["index"] < 0):
+            raise ValueError("invalid relay_browser_snapshot locator schema")
+        if element["role"] == "textbox" and element["name"] == "Name" and element["editable"] and element["enabled"]:
+            textboxes.append(locator)
+        if element["role"] == "button" and element["name"] == "Submit" and element["clickable"] and element["enabled"]:
+            buttons.append(locator)
+    if len(textboxes) != 1 or len(buttons) != 1:
         raise ValueError("invalid relay_browser_snapshot controls")
-    if len(button_ids) != 1:
-        if len(button_ids) > 1:
-            _mark(diagnostic_phase, "snapshot-button-ambiguous")
-        elif not any(
-            type(element) is dict
-            and element.get("role") == "button"
-            for element in elements
-        ):
-            _mark(diagnostic_phase, "snapshot-button-role")
-        elif not any(
-            type(element) is dict
-            and element.get("role") == "button"
-            and element.get("name") == "Submit"
-            for element in elements
-        ):
-            _mark(diagnostic_phase, "snapshot-button-name")
-        else:
-            _mark(diagnostic_phase, "snapshot-button-state")
-        raise ValueError("invalid relay_browser_snapshot controls")
-    _mark(diagnostic_phase, "snapshot-success")
-    return textbox_ids[0], button_ids[0]
+    return textboxes[0], buttons[0]
 
 
-# --- Fixture event oracles --------------------------------------------------
+
 #
 # These oracles read JSONL files that the Browser/Computer fixtures
 # write on disk after each successful action. The files are the
@@ -696,12 +578,12 @@ def validate_fixture_event(path: _Path, *, run_id: str, value: str) -> bytes:
     )
 
 
-def validate_computer_event(path: _Path, *, run_id: str, value: str) -> bytes:
+def validate_cua_event(path: _Path, *, run_id: str, value: str) -> bytes:
     """Validate a Computer ``applied`` fixture event."""
     return _read_event(
         path,
         {"run_id": run_id, "event": "applied", "value": value},
-        "relay_computer_click",
+        "relay_cua_click",
     )
 
 

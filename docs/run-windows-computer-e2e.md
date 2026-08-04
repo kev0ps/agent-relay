@@ -1,10 +1,10 @@
-# Native Windows Computer Use E2E
+# Native Windows CUA E2E
 
 ## Status
 
 `e2e-windows-cua` is an **experimental candidate gate** on the GitHub-hosted
 `windows-2025` runner. Its presence in `.github/workflows/ci.yml` is not a claim
-that Windows Computer Use is currently supported.
+that Windows CUA is currently supported.
 
 The gate must prove the Agent Relay Server, Agent and public MCP path. A direct
 driver or environment check is insufficient.
@@ -29,11 +29,11 @@ Agent, driver and fixture processes through a Windows Job Object.
 The required scenario is:
 
 ```text
-tools/list -> capture -> type -> click -> independent fixture event -> cleanup
+tools/list -> window inventory -> snapshot -> type -> click -> independent fixture event -> cleanup
 ```
 
-The scenario also validates status, the declared capability inventory,
-stale-element rejection and exact app/window identity. A successful driver
+The scenario also validates status, the selected descriptor inventory,
+provider snapshot-token refresh, stale-element rejection and exact app/window identity. A successful driver
 response alone is not sufficient; the fixture must emit exactly one correlated
 `applied` event.
 
@@ -52,14 +52,14 @@ files and success markers after failure are rejected.
 
 ## Interpretation
 
-Windows Computer Use remains experimental until the complete sequence passes
+Windows CUA remains experimental until the complete sequence passes
 repeatably on the declared hosted runner and the evidence is tied to the exact
 reviewed commit. Starting the runner, installing the driver, opening the
 fixture, receiving a direct driver response or reaching Agent registration does
 not close this gate.
 
 If the hosted runner cannot provide a repeatable interactive session or the
-complete fixture-backed sequence fails, classify Windows Computer Use as
+complete fixture-backed sequence fails, classify Windows CUA as
 experimental or unsupported. Do not replace the missing proof with Browser
 CDP, loopback core MCP, Docker, a skipped job or a self-hosted fallback in the
 current CI scope.

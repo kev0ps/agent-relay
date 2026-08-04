@@ -93,11 +93,11 @@ def test_browser_scenario_contains_negative_origin_stale_and_navigation_gates() 
     source = SCENARIOS.read_text(encoding="utf-8")
 
     assert '"disallowed-origin"' in source
-    assert '"stale-element"' in source
-    assert '"back"' in source
+    assert '"locator-refresh"' in source
+    assert '"relay_browser_back"' in source
     assert '"scroll-down"' in source
     assert "disallowed Browser origin was not safely rejected" in source
-    assert "stale Browser element was not safely rejected" in source
+    assert "structured locator" in source
 
 
 def test_windows_browser_waits_for_diagnostics_before_removing_temp_root() -> None:

@@ -227,25 +227,7 @@ _BROWSER_DESCRIPTORS = (
         },
         "interaction",
     ),
-    _descriptor("back", "navigate the owned browser history backward", _empty_schema(), "interaction"),
-    _descriptor(
-        "scroll",
-        "scroll the owned browser page",
-        {
-            "type": "object",
-            "properties": {"direction": {"type": "string", "enum": ["up", "down"]}},
-            "required": ["direction"],
-            "additionalProperties": False,
-        },
-        "interaction",
-    ),
     _descriptor("snapshot", "read bounded provider-native browser content", _empty_schema(), "read_only"),
-    _descriptor(
-        "type",
-        "type into a freshly resolved browser locator",
-        _locator_argument_schema("text"),
-        "interaction",
-    ),
     _descriptor(
         "fill",
         "fill a freshly resolved browser locator",
@@ -263,6 +245,24 @@ _BROWSER_DESCRIPTORS = (
         },
         "interaction",
     ),
+    _descriptor(
+        "scroll",
+        "scroll the owned browser page",
+        {
+            "type": "object",
+            "properties": {"direction": {"type": "string", "enum": ["up", "down"]}},
+            "required": ["direction"],
+            "additionalProperties": False,
+        },
+        "interaction",
+    ),
+    _descriptor(
+        "type",
+        "type into a freshly resolved browser locator",
+        _locator_argument_schema("text"),
+        "interaction",
+    ),
+    _descriptor("back", "navigate the owned browser history backward", _empty_schema(), "interaction"),
 )
 _BROWSER_DESCRIPTOR_BY_NAME = {descriptor.tool_name: descriptor for descriptor in _BROWSER_DESCRIPTORS}
 BROWSER_PROVIDER_DESCRIPTORS = _BROWSER_DESCRIPTORS

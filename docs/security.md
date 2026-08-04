@@ -16,6 +16,24 @@ absolute non-symlink workspace with a reduced environment. Output, timeouts,
 messages, and results are bounded; cancellation and process trees are handled
 best-effort.
 
+## Provider and public-tool boundaries
+
+The MCP facade publishes the server-local `relay_device_status` tool plus only
+selected descriptors from the connected Agent catalogue. Browser descriptors use
+structured locators resolved by Playwright; no DOM handles, element IDs, CDP
+methods, cookies, headers, or profile paths cross the Relay boundary.
+
+CUA descriptors come from a configured MCP stdio driver. The Relay validates the
+driver path, environment, JSON-RPC frames, descriptors, arguments, and bounded
+results. It does not pass Relay credentials to the driver and does not expose
+screenshots, coordinates, raw accessibility trees, process/window handles,
+arbitrary driver commands, or tools that were not selected by policy. Provider
+snapshot tokens are treated as opaque and stale tokens fail closed.
+
+The authenticated direct control endpoint is the generic v2 route documented in
+[`protocol-v2.md`](protocol-v2.md). It accepts only a strict `InvokeMessage`
+contract and never bypasses registry policy or provider validation.
+
 The default YAML configuration stores the Server secrets at
 `~/.agent-relay/secrets/server/mcp_token` and
 `~/.agent-relay/secrets/server/agent_token`, and the Agent secret at

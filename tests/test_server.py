@@ -350,7 +350,7 @@ def test_direct_control_invokes_generic_v2_message_and_preserves_provider_result
         {"tool": "system.ping"},
         {"tool_name": "terminal.exec", "arguments": {}, "command_id": "pwd"},
         {"tool_name": "browser.navigate", "arguments": {}, "url": "https://example.test"},
-        {"tool_name": "browser.click", "arguments": {}, "element_id": "button"},
+        {"tool_name": "cua.click", "arguments": {}, "element_token": "provider-token"},
         {"tool_name": "provider.tool", "arguments": {}, "method": "run"},
     ],
 )

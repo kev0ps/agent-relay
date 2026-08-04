@@ -20,6 +20,7 @@ The portable client:
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any, Final, Mapping
@@ -48,9 +49,10 @@ EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = (
     "relay_browser_scroll",
     "relay_browser_type",
     "relay_browser_back",
-    "relay_computer_capture",
-    "relay_computer_click",
-    "relay_computer_type",
+    "relay_cua_list_windows",
+    "relay_cua_get_window_state",
+    "relay_cua_click",
+    "relay_cua_type_text",
 )
 SERVER_MCP_TOOLS: Final[tuple[str, ...]] = ("relay_device_status",)
 
@@ -64,6 +66,50 @@ def _valid_tool_inventory(discovered: tuple[str, ...]) -> bool:
     if any(name not in EXPECTED_MCP_TOOLS for name in discovered):
         return False
     return discovered == tuple(name for name in EXPECTED_MCP_TOOLS if name in discovered)
+
+
+def _validate_tool_schema(tool: Any) -> None:
+    """Reject an MCP inventory entry without a bounded provider schema."""
+    name = getattr(tool, "name", None)
+    schema = getattr(tool, "inputSchema", None)
+    if type(name) is not str or not name or type(schema) is not dict:
+        raise MCPContractError("invalid MCP tool descriptor")
+    if len(name) > 128 or len(schema) > 64:
+        raise MCPContractError("invalid MCP tool descriptor")
+    forbidden = {"handler", "module", "module_path", "executable", "executable_path"}
+    if forbidden.intersection(schema):
+        raise MCPContractError("invalid MCP tool descriptor")
+    if schema.get("type") != "object":
+        raise MCPContractError("invalid MCP tool descriptor")
+
+    nodes = 0
+
+    def visit(value: Any, depth: int) -> None:
+        nonlocal nodes
+        nodes += 1
+        if nodes > 256 or depth > 8:
+            raise MCPContractError("invalid MCP tool descriptor")
+        if type(value) is str and len(value) > 512:
+            raise MCPContractError("invalid MCP tool descriptor")
+        if type(value) is dict:
+            if len(value) > 64 or any(type(key) is not str for key in value):
+                raise MCPContractError("invalid MCP tool descriptor")
+            for key, child in value.items():
+                if key in forbidden:
+                    raise MCPContractError("invalid MCP tool descriptor")
+                visit(child, depth + 1)
+        elif type(value) is list:
+            if len(value) > 64:
+                raise MCPContractError("invalid MCP tool descriptor")
+            for child in value:
+                visit(child, depth + 1)
+
+    visit(schema, 0)
+    try:
+        if len(json.dumps(schema, separators=(",", ":"))) > 64 * 1024:
+            raise MCPContractError("invalid MCP tool descriptor")
+    except (TypeError, ValueError):
+        raise MCPContractError("invalid MCP tool descriptor") from None
 
 
 class StrictCallToolResult(CallToolResult):
@@ -196,15 +242,15 @@ class MCPClientSession:
         """List and explicitly validate the public MCP tool inventory."""
         if self._session is None:
             raise RuntimeError("MCP client session is not open")
-        discovered = tuple(
-            tool.name
-            for tool in (
-                await asyncio.wait_for(
-                    self._session.list_tools(),
-                    timeout=self.http_timeout,
-                )
-            ).tools
-        )
+        listed = (
+            await asyncio.wait_for(
+                self._session.list_tools(),
+                timeout=self.http_timeout,
+            )
+        ).tools
+        for tool in listed:
+            _validate_tool_schema(tool)
+        discovered = tuple(tool.name for tool in listed)
         if not _valid_tool_inventory(discovered):
             raise MCPContractError("unexpected MCP tools")
         return discovered

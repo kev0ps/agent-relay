@@ -46,9 +46,9 @@ pull request and identify the exact CI evidence still required.
 
 ## Change rules
 
-- Keep the MCP, Terminal, Browser and Computer Use surfaces closed and typed.
+- Keep the MCP, Terminal, Browser and CUA-provider surfaces closed and typed.
 - Do not add generic shell execution, arbitrary paths, unrestricted browser
-  passthrough, screenshots or coordinates to the public Computer Use API.
+  passthrough, screenshots or coordinates to the public CUA API.
 - Preserve authentication, origin allowlists, stale-element rejection, bounded
   outputs, timeouts, cancellation and process cleanup.
 - Add or update tests when behavior or a public contract changes.

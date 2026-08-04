@@ -185,12 +185,12 @@ def test_browser_exposes_generic_provider_descriptors_without_relay_handles() ->
         assert [descriptor.tool_name for descriptor in descriptors] == [
             "list_tabs",
             "navigate",
-            "back",
-            "scroll",
             "snapshot",
-            "type",
             "fill",
             "click",
+            "scroll",
+            "type",
+            "back",
         ]
         assert not hasattr(browser_module, "BrowserElement")
         assert not hasattr(browser_module, "BrowserHandle")

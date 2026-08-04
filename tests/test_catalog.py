@@ -83,7 +83,7 @@ def test_local_catalog_loader_discovers_builtins_and_marks_optional_providers() 
     assert all(entry.risk for entry in snapshot.entries)
 
 
-def test_local_catalog_loader_does_not_treat_settings_as_provider_availability() -> None:
+def test_local_catalog_loader_treats_configured_browser_as_catalog_available() -> None:
     snapshot = discover_local_catalog(
         env={
             "RELAY_AGENT_BROWSER_USER_DATA_DIR": "/tmp/profile",
@@ -92,7 +92,7 @@ def test_local_catalog_loader_does_not_treat_settings_as_provider_availability()
         }
     )
 
-    assert snapshot.entry("relay_browser_snapshot").status == "unavailable"
+    assert snapshot.entry("relay_browser_snapshot").status == "disabled"
     assert snapshot.entry("relay_cua_list_apps").status == "unavailable"
 
 

@@ -7,6 +7,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..protocol import CommandId
+from ..provider_tools import ProviderToolDescriptor
 from ..runner import CommandResult
 from .base import CommandFailedError, InvokeMessage
 
@@ -21,8 +22,39 @@ class _TerminalArguments(BaseModel):
     command_id: CommandId
 
 
+TERMINAL_COMMAND_IDS: tuple[str, ...] = (
+    "pwd",
+    "whoami",
+    "python_version",
+    "git_status",
+    "git_branch",
+)
+
+TERMINAL_PROVIDER_DESCRIPTORS: tuple[ProviderToolDescriptor, ...] = (
+    ProviderToolDescriptor(
+        provider_name="terminal",
+        tool_name="exec",
+        public_name="exec",
+        description="fixed allowlisted terminal command",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command_id": {
+                    "type": "string",
+                    "enum": list(TERMINAL_COMMAND_IDS),
+                }
+            },
+            "required": ["command_id"],
+            "additionalProperties": False,
+        },
+        risk="interaction",
+    ),
+)
+
+
 class TerminalCapability:
     tools = frozenset({"terminal.exec"})
+    TERMINAL_PROVIDER_DESCRIPTORS = TERMINAL_PROVIDER_DESCRIPTORS
 
     def __init__(self, runner: CommandRunnerProtocol) -> None:
         self._runner = runner

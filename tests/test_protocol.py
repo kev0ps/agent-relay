@@ -171,14 +171,14 @@ def test_invoke_message_is_an_explicit_closed_union() -> None:
             "type": "invoke",
             "request_id": "browser-1",
             "tool_name": "browser.click",
-            "arguments": {"element_id": "provider-owned-id"},
+            "arguments": {"locator": {"role": "button", "name": "Submit"}},
         },
         {
             "version": 2,
             "type": "invoke",
-            "request_id": "computer-1",
-            "tool_name": "computer.type",
-            "arguments": {"element_id": "provider-owned-id", "text": "hello"},
+            "request_id": "cua-1",
+            "tool_name": "cua.type_text",
+            "arguments": {"element_token": "provider-owned-token", "text": "hello"},
         },
     ],
 )

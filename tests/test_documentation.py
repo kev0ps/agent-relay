@@ -15,6 +15,7 @@ ROOT = Path(__file__).parents[1]
         "SECURITY.md",
         "CHANGELOG.md",
         "docs/ROADMAP.md",
+        "docs/protocol-v2.md",
     ],
 )
 def test_public_repository_document_exists(relative_path: str) -> None:
@@ -88,6 +89,19 @@ def test_e2e_request_correlation_distinguishes_dispatch_outcomes() -> None:
         assert semantic_phrase in contract
 
 
+def test_protocol_v2_documents_the_generic_direct_route() -> None:
+    protocol = (ROOT / "docs/protocol-v2.md").read_text()
+    for phrase in (
+        "InvokeMessage",
+        "POST /v2/devices/{device_id}/invoke",
+        "tools/list",
+        "tools/call",
+        "ProviderToolDescriptor",
+        "Authorization:",
+    ):
+        assert phrase in protocol
+
+
 def test_e2e_mcp_tool_inventory_identifies_execution_scope() -> None:
     inventory = _contract_text().split("## Independent fixture event contract", 1)[0]
 
@@ -98,7 +112,7 @@ def test_e2e_mcp_tool_inventory_identifies_execution_scope() -> None:
         "`relay_system_ping`",
         "### Terminal",
         "### Browser Use",
-        "### Computer Use",
+        "### Generic CUA provider",
     )
     positions = [inventory.index(entry) for entry in scoped_entries]
 
@@ -116,7 +130,7 @@ def test_e2e_contract_distinguishes_native_primary_from_docker_image_smoke() -> 
         "success.json",
         "production-image build",
         "CLI smoke checks",
-        "not treated as Browser or Computer Use product evidence",
+        "not treated as Browser or CUA-provider product evidence",
     ):
         assert phrase in contract
 
@@ -147,3 +161,23 @@ def test_readme_and_linux_guide_document_shared_agent_token_flow() -> None:
     assert ".agent-relay-state/mcp.token" not in readme
     assert "uv run --frozen agent-relay server" in readme
     assert "uv run --frozen agent-relay agent" in readme
+
+
+def test_cua_reference_catalog_distinguishes_candidates_from_activation() -> None:
+    catalog = (ROOT / "docs/cua-driver-tools-50.md").read_text()
+
+    for phrase in (
+        "catalogue de référence",
+        "tools/list",
+        "désactivés par défaut",
+        "sélectionnés explicitement",
+        "relay_cua_click",
+        "relay_computer_capture",
+        "page",
+        "execute_javascript",
+    ):
+        assert phrase in catalog
+
+    assert "trois outils CUA publics" not in catalog
+    assert "`computer.capture`" not in catalog
+    assert "start_session` et `end_session`" in catalog

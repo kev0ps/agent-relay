@@ -28,7 +28,7 @@ class LocalCapability(Protocol):
 
 
 class CapabilityProviderClient:
-    """Expose one legacy local capability behind the provider client boundary."""
+    """Expose one in-process local capability behind the provider client boundary."""
 
     def __init__(
         self,
