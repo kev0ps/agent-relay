@@ -11,6 +11,7 @@ def test_windows_installer_is_a_self_contained_user_scope_bootstrapper() -> None
     for phrase in (
         "Set-StrictMode -Version Latest",
         "codeload.github.com/kev0ps/agent-relay",
+        "--source winget",
         "python install",
         "uv tool install",
         '"config", "init", "server"',

@@ -67,14 +67,28 @@ function Ensure-Uv {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($null -ne $winget) {
         Write-Host "Installing uv with WinGet..."
-        & $winget.Source install --id=astral-sh.uv -e --accept-source-agreements --accept-package-agreements
+        $wingetOutput = @(
+            & $winget.Source install --id=astral-sh.uv -e --source winget --accept-source-agreements --accept-package-agreements 2>&1
+        )
+        $wingetExitCode = $LASTEXITCODE
+        $wingetOutput | ForEach-Object { Write-Host $_ }
+        if ($wingetExitCode -ne 0) {
+            throw "WinGet failed to install uv with exit code $wingetExitCode."
+        }
         Refresh-ProcessPath
         $uvPath = Get-UvPath
     } else {
         Write-Host "WinGet is unavailable; downloading the official uv installer..."
         $uvInstaller = Join-Path $script:temporaryRoot "uv-install.ps1"
         Invoke-WebRequest -UseBasicParsing -Uri "https://astral.sh/uv/install.ps1" -OutFile $uvInstaller
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $uvInstaller
+        $uvInstallerOutput = @(
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $uvInstaller 2>&1
+        )
+        $uvInstallerExitCode = $LASTEXITCODE
+        $uvInstallerOutput | ForEach-Object { Write-Host $_ }
+        if ($uvInstallerExitCode -ne 0) {
+            throw "The official uv installer failed with exit code $uvInstallerExitCode."
+        }
         Refresh-ProcessPath
         $uvPath = Get-UvPath
     }
