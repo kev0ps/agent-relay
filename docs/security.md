@@ -64,11 +64,19 @@ The current Server listens once on
 listener serves the local MCP endpoint `/mcp` and the Agent WebSocket endpoint
 `/ws/agent`. The Agent has no inbound listener; it connects outbound.
 
-MCP/Codex remains local and uses:
+By default, MCP/Codex remains local and uses:
 
 ```text
 http://127.0.0.1:8000/mcp
 ```
+
+The Docker example requires no MCP network setting for `localhost` or direct IP
+URLs. After successful Bearer authentication, the Server accepts loopback and
+IP-literal Host values automatically, while rejecting arbitrary DNS names. If
+a request includes `Origin`, the automatic policy requires it to be same-origin.
+Explicit host and origin allowlists remain available for DNS names and reverse
+proxies. These checks validate HTTP metadata, not the client source IP; the host
+firewall remains responsible for the client-IP allowlist.
 
 For a trusted LAN or test network, the Agent may connect directly to
 `ws://<LAN-IP>:8000/ws/agent` when `RELAY_ALLOW_INSECURE_WS=true`. Port `8000`
@@ -81,10 +89,10 @@ accepts `wss://`; `true` permits both `ws://` and `wss://`. The Relay
 application does not terminate TLS, and the project prescribes no particular TLS
 endpoint or proxy implementation.
 
-`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` are deferred optional
-settings. They are not required by the current deployment and are intentionally
-left unset in the Docker example; they do not replace a LAN firewall or external
-TLS boundary.
+`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` remain advanced
+settings for DNS names and reverse proxies. The latter validates Web browser
+origins and is not a client-IP allowlist. Neither replaces a LAN firewall or
+external TLS boundary.
 
 ## Manual rotation
 

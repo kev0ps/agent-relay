@@ -63,7 +63,16 @@ machine. The distinct MCP token stays on the Server host and authenticates the
 local MCP client.
 
 Never commit `.env`, print it, enable shell tracing, or copy its values into
-logs. The Compose file supplies the Server host and port.
+logs. The Compose file supplies the bind host and port. No MCP host or origin
+setting is required when clients use `localhost` or a direct IP address such as
+`http://192.168.1.41:8000/mcp`. After Bearer authentication, the Server accepts
+IP-literal Host values automatically and rejects arbitrary DNS names. A DNS
+name or reverse proxy remains an advanced deployment and requires explicit
+`RELAY_MCP_ALLOWED_HOSTS` (and `RELAY_MCP_ALLOWED_ORIGINS` for a Web browser).
+
+These HTTP checks do not identify or allowlist the client IP. Restrict source
+IPs with the Server host firewall and do not expose the plaintext listener to
+the Internet.
 
 ## Build and start
 
@@ -87,7 +96,7 @@ The job generates distinct temporary credentials, keeps them in private files,
 and removes the Compose stack and credentials in an always-run cleanup step.
 
 Confirm that the host firewall exposes port `8000` only to the intended Agent
-network. MCP clients on the Server host use:
+and MCP-client addresses. MCP clients on the Server host use:
 
 ```text
 http://127.0.0.1:8000/mcp

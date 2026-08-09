@@ -50,11 +50,16 @@ def create_mcp_facade(
     host: str = "127.0.0.1",
     allowed_hosts: tuple[str, ...] = (),
     allowed_origins: tuple[str, ...] = (),
+    automatic_ip_host_policy: bool = False,
     only_announced: bool = False,
 ) -> FastMCP:
     """Create one stateless, JSON-response MCP server for a Relay app."""
     transport_security = None
-    if not _is_loopback_host(host) or allowed_hosts or allowed_origins:
+    if automatic_ip_host_policy:
+        transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    elif not _is_loopback_host(host) or allowed_hosts or allowed_origins:
         if not allowed_hosts:
             allowed_hosts = ("127.0.0.1:*", "localhost:*", "[::1]:*")
         if not allowed_origins:

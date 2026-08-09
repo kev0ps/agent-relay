@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
@@ -86,11 +87,18 @@ class _SerializedWebSocket:
 
 
 class _MCPBearerAuth:
-    """Authenticate the one MCP route from raw ASGI headers."""
+    """Authenticate MCP and enforce the automatic IP-literal Host policy."""
 
-    def __init__(self, app: ASGIApp, mcp_token: str) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        mcp_token: str,
+        *,
+        automatic_ip_host_policy: bool = False,
+    ) -> None:
         self._app = app
         self._expected = f"Bearer {mcp_token}"
+        self._automatic_ip_host_policy = automatic_ip_host_policy
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("path") in {"/mcp", "/mcp/"}:
@@ -113,7 +121,97 @@ class _MCPBearerAuth:
                 )
                 await response(scope, receive, send)
                 return
+            if self._automatic_ip_host_policy:
+                validation_error = _validate_automatic_mcp_http_headers(scope)
+                if validation_error is not None:
+                    await validation_error(scope, receive, send)
+                    return
         await self._app(scope, receive, send)
+
+
+def _validate_automatic_mcp_http_headers(scope: Scope) -> JSONResponse | None:
+    host_values = _ascii_header_values(scope, b"host", max_length=512)
+    if len(host_values) != 1:
+        return JSONResponse("Invalid Host header", status_code=421)
+    host = _parse_http_authority(host_values[0])
+    if host is None or not _is_ip_literal_or_localhost(host[0]):
+        return JSONResponse("Invalid Host header", status_code=421)
+
+    origin_values = _ascii_header_values(scope, b"origin", max_length=2048)
+    if not origin_values:
+        return None
+    if len(origin_values) != 1 or not _is_same_origin(origin_values[0], host):
+        return JSONResponse("Invalid Origin header", status_code=403)
+    return None
+
+
+def _ascii_header_values(
+    scope: Scope, name: bytes, *, max_length: int
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for header_name, raw_value in scope.get("headers", []):
+        if header_name.lower() != name:
+            continue
+        if len(raw_value) > max_length:
+            return ()
+        try:
+            values.append(raw_value.decode("ascii"))
+        except UnicodeDecodeError:
+            return ()
+    return tuple(values)
+
+
+def _parse_http_authority(value: str) -> tuple[str, int | None] | None:
+    if not value or any(character.isspace() for character in value):
+        return None
+    try:
+        parsed = urlsplit(f"//{value}")
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.hostname is None
+    ):
+        return None
+    if port is not None and not 1 <= port <= 65535:
+        return None
+    return parsed.hostname.lower(), port
+
+
+def _is_ip_literal_or_localhost(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_same_origin(origin: str, host: tuple[str, int | None]) -> bool:
+    try:
+        parsed = urlsplit(origin)
+        origin_port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.hostname.lower() != host[0]
+    ):
+        return False
+    default_port = 80 if parsed.scheme == "http" else 443
+    return (origin_port or default_port) == (host[1] or default_port)
 
 
 def _websocket_bearer_matches(websocket: WebSocket, expected: str) -> bool:
@@ -253,12 +351,18 @@ def create_app(settings: RelaySettings) -> FastAPI:
         agent_token=settings.agent_token,
         cancel_send_timeout_seconds=settings.cancel_send_timeout_seconds,
     )
+    automatic_ip_host_policy = (
+        not _is_loopback_bind_host(settings.bind_host)
+        and not settings.mcp_allowed_hosts
+        and not settings.mcp_allowed_origins
+    )
     mcp = create_mcp_facade(
         registry=registry,
         timeout_seconds=settings.max_timeout_seconds,
         host=settings.bind_host,
         allowed_hosts=settings.mcp_allowed_hosts,
         allowed_origins=settings.mcp_allowed_origins,
+        automatic_ip_host_policy=automatic_ip_host_policy,
         only_announced=True,
     )
     mcp_http_app = mcp.streamable_http_app()
@@ -418,7 +522,14 @@ def create_app(settings: RelaySettings) -> FastAPI:
 
     # Mount last so the existing control and WebSocket routes retain priority.
     # The child owns /mcp directly, avoiding a /mcp -> /mcp/ redirect.
-    app.mount("/", _MCPBearerAuth(mcp_http_app, settings.mcp_token))
+    app.mount(
+        "/",
+        _MCPBearerAuth(
+            mcp_http_app,
+            settings.mcp_token,
+            automatic_ip_host_policy=automatic_ip_host_policy,
+        ),
+    )
 
     return app
 

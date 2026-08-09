@@ -176,3 +176,14 @@ def test_docker_guide_requires_an_exact_reviewed_revision() -> None:
     assert "git checkout --detach <REVIEWED-COMMIT-SHA>" in guide
     assert "git rev-parse HEAD" in guide
     assert "git pull --ff-only origin main" not in guide
+
+
+def test_docker_compose_needs_no_mcp_network_allowlist_for_direct_ip() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text()
+    example_env = (ROOT / ".env.example").read_text()
+    guide = (ROOT / "docs/run-server-docker.md").read_text()
+
+    assert "RELAY_MCP_PUBLIC_HOST" not in compose
+    assert "RELAY_MCP_ALLOWED_HOSTS:" not in compose
+    assert "Direct IP and" in example_env
+    assert "No MCP host or origin" in guide

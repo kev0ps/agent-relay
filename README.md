@@ -186,8 +186,12 @@ access:
 - the Docker production image builds as non-root for AMD64 and ARM64 and passes
   image-contract and CLI smoke checks.
 
-MCP/Codex remains local at `http://127.0.0.1:8000/mcp`. For a trusted LAN/test
-connection, use `ws://<LAN-IP>:8000/ws/agent` with
+By default, MCP/Codex remains local at `http://127.0.0.1:8000/mcp`. For a
+trusted LAN/test MCP client in the Docker deployment, use the Server LAN IP
+directly; IP-literal Host values are accepted automatically after Bearer
+authentication. Restrict port `8000` to the intended client and Agent source
+IPs with the host firewall.
+For an Agent connection, use `ws://<LAN-IP>:8000/ws/agent` with
 `RELAY_ALLOW_INSECURE_WS=true` and keep port `8000` LAN-firewalled. For WSS,
 use `wss://<TLS endpoint>/ws/agent` only when an external TLS endpoint already
 exists; the application does not implement TLS. With
@@ -196,9 +200,10 @@ exists; the application does not implement TLS. With
 LAN/test network. The project prescribes no specific TLS endpoint or proxy
 implementation.
 
-`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` are deferred optional
-settings, not required by the current deployment. They do not replace a LAN
-firewall or an external TLS boundary.
+`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` remain advanced
+settings for DNS names and reverse proxies. `ALLOWED_ORIGINS` applies to Web
+browser origins, not client source IPs. Neither setting replaces a LAN firewall
+or an external TLS boundary.
 
 Read the **[security model and honest limitations](docs/security.md)** before a
 private deployment. Report suspected vulnerabilities through the

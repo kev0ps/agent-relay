@@ -533,13 +533,32 @@ def test_mcp_slash_redirect_is_authenticated_and_points_to_canonical_path() -> N
         missing = client.post("/mcp/", follow_redirects=False)
         authenticated = client.post(
             "/mcp/",
-            headers={"Authorization": "Bearer control-secret"},
+            headers={
+                "Authorization": "Bearer control-secret",
+                "Host": "127.0.0.1:8000",
+            },
             follow_redirects=False,
         )
 
     assert missing.status_code == 401
     assert authenticated.status_code == 307
-    assert authenticated.headers["location"] == "http://testserver/mcp"
+    assert authenticated.headers["location"] == "http://127.0.0.1:8000/mcp"
+
+
+def test_mcp_slash_redirect_rejects_arbitrary_host() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp/",
+            headers={
+                "Authorization": "Bearer control-secret",
+                "Host": "hostile.example",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 421
+    assert "location" not in response.headers
 
 
 def test_mcp_accepts_loopback_host_with_valid_bearer() -> None:
@@ -556,6 +575,39 @@ def test_mcp_accepts_loopback_host_with_valid_bearer() -> None:
         )
 
     assert response.status_code != 421
+
+
+def test_mcp_accepts_lan_ip_host_with_valid_bearer_without_configuration() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            headers={
+                "Authorization": "Bearer control-secret",
+                "Host": "192.168.1.41:8000",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+
+    assert response.status_code != 421
+
+
+def test_mcp_accepts_same_origin_lan_request_without_configuration() -> None:
+    app = create_app(settings())
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            headers={
+                "Authorization": "Bearer control-secret",
+                "Host": "192.168.1.41:8000",
+                "Origin": "http://192.168.1.41:8000",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+
+    assert response.status_code not in {403, 421}
 
 
 def test_mcp_rejects_arbitrary_host_with_valid_bearer() -> None:
