@@ -229,6 +229,28 @@ def _x11_window_hint(environment: dict[str, str]) -> str:
     return " ".join(f"{key}={value}" for key, value in counts.items())
 
 
+def _x11_has_client_window(environment: dict[str, str]) -> bool:
+    """Return whether the X11 window manager has published a client window."""
+    try:
+        completed = subprocess.run(
+            ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
+            env=environment,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+            shell=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and bool(
+        re.search(r"0x[0-9a-fA-F]+", completed.stdout)
+    )
+
+
 def _stderr_hint(path: Path) -> str | None:
     """Return a short, redacted diagnostic line without exposing child logs."""
     try:
@@ -475,6 +497,17 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         )
         if browser.poll() is not None:
             raise LinuxCuaE2EError("Linux CUA Chromium exited during startup")
+
+        def chromium_window_ready() -> bool:
+            if browser.poll() is not None:
+                raise LinuxCuaE2EError("Linux CUA Chromium exited before its window appeared")
+            return _x11_has_client_window(graphical_environment)
+
+        native._wait_for(
+            "Linux CUA Chromium window",
+            chromium_window_ready,
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
 
         phase = "agent-start"
         agent = native._spawn(
