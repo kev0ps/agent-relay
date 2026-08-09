@@ -10,12 +10,13 @@ Read:
 
 - [`README.md`](README.md) for the current product boundary;
 - [`AGENTS.md`](AGENTS.md) for repository-wide engineering and security rules;
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) for active priorities;
+- [`docs/protocol.md`](docs/protocol.md) and [`docs/tools.md`](docs/tools.md) for
+  the current public contracts;
 - [`SECURITY.md`](SECURITY.md) before reporting a vulnerability.
 
 For a non-trivial change, open or reference an issue that states the intended
-behavior, non-goals and acceptance evidence. Do not create another dated plan;
-implementation details belong in issues and pull requests.
+behavior, non-goals and acceptance evidence. Implementation plans belong in
+issues and pull requests rather than speculative repository roadmaps.
 
 ## Development setup
 

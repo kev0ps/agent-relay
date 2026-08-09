@@ -14,17 +14,40 @@ ROOT = Path(__file__).parents[1]
         "CONTRIBUTING.md",
         "SECURITY.md",
         "CHANGELOG.md",
-        "docs/ROADMAP.md",
-        "docs/protocol-v2.md",
+        "docs/security.md",
+        "docs/run-linux.md",
+        "docs/run-server-docker.md",
+        "docs/protocol.md",
+        "docs/tools.md",
+        "docs/e2e.md",
     ],
 )
 def test_public_repository_document_exists(relative_path: str) -> None:
     assert (ROOT / relative_path).is_file()
 
 
-def test_repository_uses_one_active_roadmap_without_dated_plans() -> None:
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "docs/ROADMAP.md",
+        "docs/protocol-v1.md",
+        "docs/protocol-v2.md",
+        "docs/cua-driver-tools-50.md",
+        "docs/e2e-client-capabilities.md",
+        "docs/run-windows-e2e.md",
+        "docs/run-windows-browser-e2e.md",
+        "docs/run-windows-computer-e2e.md",
+    ],
+)
+def test_superseded_document_is_absent(relative_path: str) -> None:
+    assert not (ROOT / relative_path).exists()
+
+
+def test_repository_does_not_publish_a_speculative_roadmap() -> None:
     assert not (ROOT / "docs/plans").exists()
-    assert "only active roadmap" in (ROOT / "docs/ROADMAP.md").read_text()
+    readme = (ROOT / "README.md").read_text()
+    assert "not an MVP" in readme
+    assert "rather than a published roadmap" in readme
 
 
 def test_hermes_is_an_ignored_internal_directory() -> None:
@@ -40,7 +63,7 @@ def test_package_metadata_declares_mit_license() -> None:
 
 @pytest.mark.parametrize("relative_path", ["README.md", "docs/run-linux.md"])
 def test_hermes_examples_disable_parallel_tool_calls(relative_path: str) -> None:
-    text = (Path(__file__).parents[1] / relative_path).read_text()
+    text = (ROOT / relative_path).read_text()
     snippet = next(
         block.split("```", 1)[0]
         for block in text.split("```yaml")[1:]
@@ -55,132 +78,101 @@ def test_hermes_examples_disable_parallel_tool_calls(relative_path: str) -> None
         assert "    tools:\n      - relay_device_status\n" not in snippet
 
 
-CONTRACT_PATH = Path(__file__).parents[1] / "docs/e2e-client-capabilities.md"
+def test_protocol_documents_actual_wire_version_split() -> None:
+    protocol = (ROOT / "docs/protocol.md").read_text()
 
-
-def _contract_text() -> str:
-    return CONTRACT_PATH.read_text()
-
-
-def test_e2e_client_capability_contract_records_black_box_invariants() -> None:
-    contract = _contract_text()
-
-    for invariant in (
-        "MCP -> Relay Server -> WebSocket -> Relay Agent -> local capability",
-        "official MCP client",
-        "no direct plugin invocation",
-        "structured result plus independent fixture event",
-        "same Relay Agent package",
-        "no personal browser profile",
-    ):
-        assert invariant in contract
-
-
-def test_e2e_request_correlation_distinguishes_dispatch_outcomes() -> None:
-    contract = " ".join(_contract_text().split())
-
-    for semantic_phrase in (
-        "before dispatch validation",
-        "rejected calls",
-        "no WebSocket invoke",
-        "accepted for dispatch",
-        "terminal response or cancellation",
-        "does not require or accept a terminal result",
-        "server-local status",
-        "does not allocate a Relay request ID",
-    ):
-        assert semantic_phrase in contract
-
-
-def test_protocol_v2_documents_the_generic_direct_route() -> None:
-    protocol = (ROOT / "docs/protocol-v2.md").read_text()
     for phrase in (
-        "InvokeMessage",
+        "register(version=1)",
+        "capabilities(version=1)",
+        "heartbeat(version=2)",
+        "invoke(version=2)",
+        "result | error(version=2)",
         "POST /v2/devices/{device_id}/invoke",
-        "tools/list",
-        "tools/call",
-        "ProviderToolDescriptor",
-        "Authorization:",
+        "Provider results",
     ):
         assert phrase in protocol
 
 
-def test_e2e_mcp_tool_inventory_identifies_execution_scope() -> None:
-    inventory = _contract_text().split("## Independent fixture event contract", 1)[0]
-
-    scoped_entries = (
-        "server-local status",
-        "`relay_device_status`",
-        "agent-executed system ping",
-        "`relay_system_ping`",
-        "### Terminal",
-        "### Browser Use",
-        "### Generic CUA provider",
+def test_tools_document_contains_complete_tested_allowlist() -> None:
+    tools = (ROOT / "docs/tools.md").read_text()
+    expected = (
+        "relay_system_ping",
+        "relay_terminal_exec",
+        "relay_browser_list_tabs",
+        "relay_browser_navigate",
+        "relay_browser_snapshot",
+        "relay_browser_fill",
+        "relay_browser_click",
+        "relay_browser_scroll",
+        "relay_browser_type",
+        "relay_browser_back",
+        "relay_cua_list_windows",
+        "relay_cua_get_window_state",
+        "relay_cua_click",
+        "relay_cua_type_text",
     )
-    positions = [inventory.index(entry) for entry in scoped_entries]
 
-    assert positions == sorted(positions)
+    complete_block = tools.split("## Complete tested allowlist", 1)[1].split(
+        "## Copyable profiles", 1
+    )[0]
+    for name in expected:
+        assert f"      - {name}\n" in complete_block
+
+    assert "relay_device_status" in tools
+    assert "deliberately absent" in tools
+    assert "tools/list" in tools
 
 
-def test_e2e_contract_distinguishes_native_primary_from_docker_image_smoke() -> None:
-    """The contract must not present Docker runtime UI as product evidence."""
-    contract = " ".join(_contract_text().split())
+def test_e2e_document_covers_linux_windows_and_docker_boundaries() -> None:
+    contract = (ROOT / "docs/e2e.md").read_text()
 
     for phrase in (
+        "official MCP client -> Relay Server -> WebSocket -> Relay Agent",
+        "structured MCP result",
+        "independent fixture",
+        "rejected before dispatch sends no WebSocket `invoke`",
+        "exactly one terminal result or error unless it is cancelled",
+        "allocates no Relay request ID",
+        "personal browser profile",
         "e2e-linux-native",
-        "primary Linux Terminal product E2E proof",
-        "native-evidence",
-        "success.json",
-        "production-image build",
-        "CLI smoke checks",
-        "not treated as Browser or CUA-provider product evidence",
+        "e2e-linux-browser",
+        "e2e-linux-cua",
+        "e2e-windows-native",
+        "e2e-windows-browser",
+        "e2e-windows-cua",
+        "Docker image smoke",
+        "Windows CUA remains experimental",
     ):
         assert phrase in contract
 
 
-def test_readme_and_linux_guide_do_not_promote_container_ui_e2e() -> None:
-    """User-facing docs must distinguish image smoke from native UI proof."""
-    root = Path(__file__).parents[1]
-    readme = (root / "README.md").read_text()
-    linux_guide = (root / "docs/run-linux.md").read_text()
-
-    assert "AMD64/ARM64 image build and CLI smoke" in readme
-    assert "container test bench" not in readme
-    assert "AMD64 end-to-end container runs" not in readme
-    assert "Docker image CI validation" in linux_guide
-    assert "do not run Browser or" in linux_guide
-    assert "CI-only two-container topology" not in linux_guide
-
-
 def test_readme_and_linux_guide_document_shared_agent_token_flow() -> None:
-    root = Path(__file__).parents[1]
     for relative_path in ("README.md", "docs/run-linux.md"):
-        text = (root / relative_path).read_text()
+        text = (ROOT / relative_path).read_text()
         assert "config init server" in text
         assert "config init agent --stdin --no-tools" in text
         assert "secrets/server/agent_token" in text
 
-    readme = (root / "README.md").read_text()
+    readme = (ROOT / "README.md").read_text()
     assert ".agent-relay-state/mcp.token" not in readme
     assert "uv run --frozen agent-relay server" in readme
     assert "uv run --frozen agent-relay agent" in readme
+    assert "Coverage: 83%" not in readme
 
 
-def test_cua_reference_catalog_distinguishes_candidates_from_activation() -> None:
-    catalog = (ROOT / "docs/cua-driver-tools-50.md").read_text()
+def test_linux_guide_explains_bind_default_and_windows_cua_status() -> None:
+    guide = (ROOT / "docs/run-linux.md").read_text()
 
-    for phrase in (
-        "catalogue de référence",
-        "tools/list",
-        "désactivés par défaut",
-        "sélectionnés explicitement",
-        "relay_cua_click",
-        "relay_computer_capture",
-        "page",
-        "execute_javascript",
-    ):
-        assert phrase in catalog
+    assert "network-capable default bind" in guide
+    assert "0.0.0.0:8000" in guide
+    assert "change it to loopback" in guide
+    assert "hosted candidate job" in guide
+    assert "remains outside hosted CI" not in guide
 
-    assert "trois outils CUA publics" not in catalog
-    assert "`computer.capture`" not in catalog
-    assert "start_session` et `end_session`" in catalog
+
+def test_docker_guide_requires_an_exact_reviewed_revision() -> None:
+    guide = (ROOT / "docs/run-server-docker.md").read_text()
+
+    assert "git checkout --detach <REVIEWED-COMMIT-SHA>" in guide
+    assert "git rev-parse HEAD" in guide
+    assert "git pull --ff-only origin main" not in guide

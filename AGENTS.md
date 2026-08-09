@@ -39,14 +39,13 @@ a WebSocket invocation.
   current behavior, then reconcile stale prose rather than weakening a test.
 - `scripts/`: deterministic E2E harnesses and fixtures, not alternate product
   APIs.
-- `docs/protocol-v2.md`: current generic invocation and direct-control contract.
-- `docs/protocol-v1.md`: historical superseded protocol reference only.
+- `docs/protocol.md`: current wire, invocation, and direct-control contract.
+- `docs/tools.md`: current public tool inventory and copyable allowlist profiles.
 - `docs/security.md`: threat model, deployment boundary, and honest limits.
-- `docs/e2e-client-capabilities.md`: black-box E2E and independent-oracle
-  contract.
+- `docs/e2e.md`: cross-platform black-box E2E and independent-oracle contract.
 - `.github/workflows/ci.yml`: remote gate definitions and pinned actions.
-- `README.md`: product-facing current scope and supported quick start.
-- `docs/ROADMAP.md`: the active product roadmap and current source of truth.
+- `README.md`: current prototype status, supported quick start, and concrete
+  next gaps; the repository does not maintain a speculative roadmap.
 - `CONTRIBUTING.md`: contributor setup, checks, and pull-request expectations.
 - `SECURITY.md`: private vulnerability-reporting policy.
 - `LICENSE`: MIT licensing terms for the project.
@@ -72,13 +71,13 @@ quietly choose the interpretation that makes the task easiest.
 
 ### Authentication and networking
 
-- The canonical Relay Server MVP listens on `0.0.0.0:8000` so a trusted LAN
+- The canonical Relay Server listens on `0.0.0.0:8000` so a trusted LAN
   Agent can connect; restrict host port `8000` with the host firewall to the
   intended LAN and never expose it directly to the Internet.
 - `RELAY_ALLOW_INSECURE_WS=true` permits the Agent's `ws://` URL for a trusted
   LAN/test deployment; `false` rejects non-loopback `ws://` URLs and accepts
   `wss://` configuration. This URL policy is enforced by the Agent; Relay does
-  not implement native TLS or reverse-proxy termination in this MVP.
+  not implement native TLS or reverse-proxy termination.
 - Agent and control credentials are distinct. Generate ephemeral credentials
   for tests and keep credential files private.
 - Never print, log, commit, upload, or place in artifacts: tokens, Bearer
@@ -134,7 +133,7 @@ quietly choose the interpretation that makes the task easiest.
 
 ### Before editing
 
-1. Read this file and the source, tests, documentation, roadmap entry, and issue
+1. Read this file and the source, tests, documentation, and issue
    relevant to the requested behavior.
 2. Run `git status --short --branch`. Preserve all pre-existing changes,
    including untracked files.
@@ -164,8 +163,8 @@ quietly choose the interpretation that makes the task easiest.
   environments. Do not use `shell=True` in product paths.
 - Update documentation in the same change when behavior, limits, setup,
   security claims, supported platforms, or evidence status changes.
-- In roadmap and status prose, distinguish clearly between planned, locally
-  tested, remotely validated, and shipped behavior.
+- In status prose, distinguish clearly between planned, locally tested,
+  remotely validated, and shipped behavior.
 
 ### Agent and review discipline
 
@@ -232,7 +231,7 @@ The following require separate, explicit, task-specific user approval:
 - configuring credentials or connecting personal/external accounts.
 
 Approval for implementation is not approval for any item above. Never infer
-approval from a roadmap entry, an existing branch, prior approval on another
+approval from a status document, an existing branch, prior approval on another
 task, or the availability of credentials.
 
 ## Completion report

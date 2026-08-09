@@ -1,6 +1,7 @@
-# Run the MVP on Linux
+# Run Agent Relay on Linux
 
-This guide runs the Relay Server and outbound Relay Agent on one Linux machine.
+This guide runs the experimental Relay Server and outbound Relay Agent on one
+Linux machine.
 The shared configuration lives at `~/.agent-relay/config.yaml`; the Agent opens
 no listener and connects outbound to the Server.
 
@@ -11,6 +12,7 @@ From the repository root, install `uv` according to its documentation, then:
 ```sh
 uv sync --locked --group dev
 uv run --frozen agent-relay config init server
+uv run --frozen agent-relay config set server host 127.0.0.1
 
 # Reuse the Server's Agent token without printing it or putting it in history.
 # The Agent starts with zero enabled tools.
@@ -34,6 +36,9 @@ uv run --frozen agent-relay config validate server
 uv run --frozen agent-relay config validate agent
 uv run --frozen agent-relay doctor
 ```
+
+For complete copyable Terminal, Browser, CUA, and combined allowlists, see
+[`tools.md`](tools.md).
 
 Tokens are neither displayed nor placed in the repository. They are separate
 files with mode `0600`, owned by the current user, and rejected if they are
@@ -66,7 +71,15 @@ evolve independently. The current protocol example uses `/ws/agent`.
 
 ## Configuration examples
 
-The public YAML shape is:
+`config init server` uses the project's network-capable default bind
+`0.0.0.0:8000`. For a same-machine-only setup, change it to loopback before
+starting the Server:
+
+```sh
+uv run --frozen agent-relay config set server host 127.0.0.1
+```
+
+A loopback-only YAML configuration looks like:
 
 ```yaml
 server:
@@ -179,7 +192,8 @@ with the root `--help` and `--version` commands.
 
 These jobs validate packaging and startup only. They do not run Browser or
 Computer Use, do not create a two-container desktop topology, and do not upload
-runtime UI evidence. Native Linux Terminal, Browser, and Xvfb/AT-SPI Computer Use
-jobs are the product acceptance path for Linux capabilities. Windows Computer Use
-remains outside hosted CI until its native UI Automation backend and interactive
-runner are available.
+runtime UI evidence. Native Linux Terminal, Browser, and Xvfb/AT-SPI Computer
+Use jobs are the current repeatable Linux paths. Windows Computer Use has a
+hosted candidate job, but remains experimental until its complete
+fixture-backed UI Automation sequence is repeatable. See [`e2e.md`](e2e.md) for
+the full Linux and Windows validation matrix.

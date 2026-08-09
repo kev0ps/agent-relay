@@ -9,13 +9,13 @@ without turning that machine into a general-purpose remote shell.
 
 [![CI](https://github.com/kev0ps/agent-relay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kev0ps/agent-relay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Coverage: 83% (informational)](https://img.shields.io/badge/coverage-83%25-informational)](https://github.com/kev0ps/agent-relay/actions/workflows/ci.yml)
 
 </div>
 
 ## What it does
 
-Agent Relay connects an MCP-compatible AI client to a small set of local tools.
+Agent Relay is an experimental prototype that connects an MCP-compatible AI
+client to a small set of local tools.
 The controlled device initiates an authenticated WebSocket connection to the
 Relay Server, so it does not need to expose an inbound port.
 
@@ -44,6 +44,9 @@ git_branch
 Browser and CUA stay disabled until their local configuration is complete. CUA
 descriptors are discovered from the configured MCP stdio driver; only selected
 descriptors are indexed, announced and routable.
+
+The complete tested tool list and copyable `config.yaml` profiles are in
+**[Agent Relay tools](docs/tools.md)**.
 
 ## How it works
 
@@ -83,6 +86,7 @@ git clone https://github.com/kev0ps/agent-relay.git
 cd agent-relay
 uv sync --locked --group dev
 uv run --frozen agent-relay config init server
+uv run --frozen agent-relay config set server host 127.0.0.1
 
 # Reuse the Server's Agent token without printing it or putting it in history.
 # The Agent still starts with zero enabled tools.
@@ -189,22 +193,22 @@ use `wss://<TLS endpoint>/ws/agent` only when an external TLS endpoint already
 exists; the application does not implement TLS. With
 `RELAY_ALLOW_INSECURE_WS=false`, non-loopback plaintext `ws://` is rejected but
 `wss://` is accepted. Plaintext tokens are acceptable only on a trusted
-LAN/test network. The MVP prescribes no specific TLS endpoint or proxy
+LAN/test network. The project prescribes no specific TLS endpoint or proxy
 implementation.
 
 `RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` are deferred optional
-settings, not required by the simple MVP. They do not replace a LAN firewall or
-an external TLS boundary.
+settings, not required by the current deployment. They do not replace a LAN
+firewall or an external TLS boundary.
 
 Read the **[security model and honest limitations](docs/security.md)** before a
 private deployment. Report suspected vulnerabilities through the
 [security policy](SECURITY.md), not a public issue containing exploit details.
 
-## Current scope
+## Project status
 
-Agent Relay is an early-stage experimental project, not a turnkey remote
-desktop or a multi-tenant automation platform. See the
-[roadmap](docs/ROADMAP.md) for priorities and exit criteria.
+Agent Relay is a prototype under active development, not an MVP, a turnkey
+remote desktop, or a multi-tenant automation platform. There is no stable
+release or compatibility guarantee yet.
 
 What is validated today:
 
@@ -224,35 +228,36 @@ A container runtime is not used as product proof for Browser or Computer Use.
 
 Still outside the validated product boundary:
 
-- native Windows deployment;
+- a packaged and documented native Windows deployment procedure;
 - multiple devices, RBAC and automatic credential rotation;
 - arbitrary shell commands, files, browser profiles or desktop control;
 - personal sessions, secrets, purchases, uploads and external form submissions;
 - public internet exposure without a trusted private TLS/WSS layer.
+
+The next work is driven by concrete gaps rather than a published roadmap:
+repeatable Windows CUA evidence, simpler third-party installation and
+operations, explicit credential lifecycle, and a first coherent release and
+compatibility policy.
 
 ## Documentation
 
 | Guide | Use it for |
 |---|---|
 | [Linux setup](docs/run-linux.md) | Installation, configuration, startup and troubleshooting |
-| [Docker server deployment](docs/run-server-docker.md) | Linux Relay Server container with a remote Windows Agent |
+| [Docker server deployment](docs/run-server-docker.md) | Containerized Linux Relay Server with a native remote Agent |
 | [Security](docs/security.md) | Threat model, deployment boundaries and token rotation |
-| [Protocol v2](docs/protocol-v2.md) | Generic invocation, direct control and MCP result rules |
-| [Protocol v1 (historical)](docs/protocol-v1.md) | Superseded WebSocket reference |
-| [Capability contracts](docs/e2e-client-capabilities.md) | MCP tools, fixture contracts and black-box guarantees |
-| [Windows Terminal E2E](docs/run-windows-e2e.md) | Native Windows core/MCP gate and its boundaries |
-| [Windows Browser E2E](docs/run-windows-browser-e2e.md) | Headless Playwright persistent-context gate and independent evidence |
-| [Windows CUA E2E](docs/run-windows-computer-e2e.md) | Experimental full Agent Relay/MCP/UIA candidate gate |
-| [Roadmap](docs/ROADMAP.md) | Current priorities, product direction and exit criteria |
+| [Tools](docs/tools.md) | Complete tested tool inventory and copyable allowlist profiles |
+| [Protocol](docs/protocol.md) | Wire versioning, invocation, direct control and result rules |
+| [End-to-end validation](docs/e2e.md) | Linux/Windows capability matrix, commands, evidence and limits |
 | [Contributing](CONTRIBUTING.md) | Development setup, checks and pull-request expectations |
 | [Security policy](SECURITY.md) | Private vulnerability-reporting process |
 | [Changelog](CHANGELOG.md) | Notable unreleased and versioned changes |
 
 ## Development
 
-The active roadmap is [`docs/ROADMAP.md`](docs/ROADMAP.md). Development and
-review guidance is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Obsolete dated plans
-are removed; implementation history remains available through Git.
+Development and review guidance is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Current behavior is documented from executable contracts rather than a
+speculative roadmap; implementation history remains available through Git.
 
 For a local check:
 ```sh
