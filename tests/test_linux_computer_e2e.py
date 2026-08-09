@@ -55,7 +55,7 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     job = workflow.split("  e2e-linux-cua:", 1)[1].split(
         "\n  e2e-windows-native:", 1
     )[0]
-    assert "name: Native Linux CUA end-to-end" in job
+    assert "name: Linux CUA end-to-end" in job
     assert "runs-on: ubuntu-24.04" in job
     assert "uses: ./.github/actions/setup-python" in job
     assert "profile: computer" in job

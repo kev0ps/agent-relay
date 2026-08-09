@@ -28,7 +28,7 @@ except ModuleNotFoundError as error:
     import importlib.util
 
     def _load_portable(name: str) -> Any:
-        dotted = f"_agent_relay_native_e2e_{name}"
+        dotted = f"_agent_relay_linux_e2e_{name}"
         cached = sys.modules.get(dotted)
         if cached is not None:
             return cached
@@ -86,6 +86,9 @@ def choose_loopback_port() -> int:
 def server_command(port: int) -> list[str]:
     """Return the fixed server argv used by the native harness."""
     _validate_port(port)
+    installed_command = os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND")
+    if installed_command:
+        return [installed_command, "server"]
     return [
         sys.executable,
         "-m",
@@ -102,6 +105,9 @@ def agent_command(port: int, workspace: Path) -> list[str]:
     _validate_port(port)
     if not isinstance(workspace, Path) or not workspace.is_absolute():
         raise ValueError("workspace must be an absolute path")
+    installed_command = os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND")
+    if installed_command:
+        return [installed_command, "agent"]
     return [sys.executable, "-m", "agent_relay.agent"]
 
 
@@ -282,9 +288,10 @@ def _minimal_environment(home: Path, values: dict[str, str]) -> dict[str, str]:
         "HOME": str(home),
         "LANG": "C.UTF-8",
         "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
         "PYTHONUNBUFFERED": "1",
     }
+    if not os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND"):
+        environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
     for name in ("CUA_DRIVER_RS_HOME", "CUA_DRIVER_RS_INSTALL_DIR"):
         if value := os.environ.get(name):
             environment[name] = value

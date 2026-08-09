@@ -10,13 +10,13 @@ from typing import Any
 
 import pytest
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "native_e2e.py"
+SCRIPT = Path(__file__).parents[1] / "scripts" / "linux_e2e.py"
 WINDOWS_SCRIPT = Path(__file__).parents[1] / "scripts" / "windows_e2e.py"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
 
 
 def _load_harness():
-    spec = importlib.util.spec_from_file_location("native_e2e", SCRIPT)
+    spec = importlib.util.spec_from_file_location("linux_e2e", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -56,6 +56,20 @@ def test_native_commands_use_fixed_module_entrypoints(tmp_path: Path) -> None:
     assert all(isinstance(item, str) for item in server + agent)
     assert "--host=0.0.0.0" not in server
     assert "--shell" not in server + agent
+
+
+def test_native_commands_can_use_the_installed_relay_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _load_harness()
+    installed = str(tmp_path / "agent-relay")
+    monkeypatch.setenv("RELAY_E2E_AGENT_RELAY_COMMAND", installed)
+
+    assert harness.server_command(23456) == [installed, "server"]
+    assert harness.agent_command(23456, tmp_path) == [installed, "agent"]
+
+    environment = harness._minimal_environment(tmp_path / "home", {})
+    assert "PYTHONPATH" not in environment
 
 
 def test_minimal_environment_preserves_only_cua_driver_runtime_paths(
@@ -377,14 +391,14 @@ def test_terminal_harnesses_share_server_restart_lifecycle() -> None:
 def test_ci_defines_bounded_native_linux_gate_without_container_privileges() -> None:
     """The native gate must prove the real path without Docker or credentials."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "  e2e-linux-native:" in workflow
-    job = workflow.split("  e2e-linux-native:", 1)[1]
+    assert "  e2e-linux:" in workflow
+    job = workflow.split("  e2e-linux:", 1)[1]
 
-    assert "name: Native Linux Terminal end-to-end" in job
+    assert "name: Linux Terminal end-to-end" in job
     assert "needs: python" in job
     assert "runs-on: ubuntu-24.04" in job
     assert "uses: ./.github/actions/setup-python" in job
-    assert "uv run --frozen python scripts/native_e2e.py" in job
+    assert "uv run --frozen python scripts/linux_e2e.py" in job
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile linux-terminal" in job
     assert "docker" not in job.lower()

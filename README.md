@@ -220,7 +220,7 @@ What is validated today:
 - the packaged Linux application and its server/agent topology;
 - the official MCP facade;
 - constrained terminal behavior;
-- native Linux Terminal, Browser and CUA-provider E2E gates;
+- Linux Terminal, Browser and CUA-provider E2E gates;
 - native Windows Terminal and headless Browser E2E gates;
 - Browser locator and generic CUA-provider API contracts;
 - AMD64/ARM64 image build and CLI smoke tests;
@@ -233,7 +233,7 @@ A container runtime is not used as product proof for Browser or Computer Use.
 
 Still outside the validated product boundary:
 
-- a packaged and documented native Windows deployment procedure;
+- a packaged, versioned and validated native Windows deployment procedure;
 - multiple devices, RBAC and automatic credential rotation;
 - arbitrary shell commands, files, browser profiles or desktop control;
 - personal sessions, secrets, purchases, uploads and external form submissions;
@@ -250,6 +250,7 @@ compatibility policy.
 |---|---|
 | [Linux setup](docs/run-linux.md) | Installation, configuration, startup and troubleshooting |
 | [Docker server deployment](docs/run-server-docker.md) | Containerized Linux Relay Server with a native remote Agent |
+| [Windows setup](docs/run-windows.md) | One-line PowerShell installation and local setup |
 | [Security](docs/security.md) | Threat model, deployment boundaries and token rotation |
 | [Tools](docs/tools.md) | Complete tested tool inventory and copyable allowlist profiles |
 | [Protocol](docs/protocol.md) | Wire versioning, invocation, direct control and result rules |

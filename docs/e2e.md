@@ -55,9 +55,14 @@ The workflow definitions in `.github/workflows/ci.yml` are authoritative for
 runner versions, installation commands, exact test selections, and uploaded
 artifacts.
 
+The Linux and Windows Terminal jobs use the platform installation bootstrapper
+as their Agent Relay runtime path. The test harness dependencies remain locked
+in the shared setup action, while the Server and Agent children are launched
+from the user-installed `agent-relay` command.
+
 ## Linux Terminal
 
-The `e2e-linux-native` job runs the official MCP client, Relay Server, and Relay
+The `e2e-linux` job runs the official MCP client, Relay Server, and Relay
 Agent as native processes on the hosted Linux runner. It verifies status, ping,
 the fixed terminal commands, Agent stop/offline detection, reconnect, Server
 restart, re-registration, and bounded process cleanup.
@@ -69,7 +74,7 @@ distribution, Browser, or CUA.
 Relevant local contract checks:
 
 ```sh
-uv run --frozen pytest -q tests/test_native_e2e.py tests/test_runner.py
+uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_runner.py
 uv run --frozen pytest -q -m integration
 ```
 

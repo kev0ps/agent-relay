@@ -55,6 +55,20 @@ def test_windows_commands_are_fixed_loopback_module_entrypoints(
     assert "--shell" not in server + agent
 
 
+def test_windows_commands_can_use_the_installed_relay_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _load_harness()
+    installed = str(tmp_path / "agent-relay.exe")
+    monkeypatch.setenv("RELAY_E2E_AGENT_RELAY_COMMAND", installed)
+
+    assert harness.server_command(23456) == [installed, "server"]
+    assert harness.agent_command(23456, tmp_path) == [installed, "agent"]
+
+    environment = harness.minimal_environment(tmp_path / "home", {})
+    assert "PYTHONPATH" not in environment
+
+
 def test_minimal_environment_does_not_inherit_unrelated_secrets(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

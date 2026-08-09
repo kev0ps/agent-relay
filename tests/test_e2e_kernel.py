@@ -188,7 +188,7 @@ def _install_cua_scenario_fakes(
 _PLATFORM_FORBIDDEN_TOP_LEVELS: tuple[str, ...] = (
     "docker",
     "container_e2e",
-    "native_e2e",
+    "linux_e2e",
     "windows_e2e",
 )
 

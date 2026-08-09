@@ -164,6 +164,9 @@ def _validate_port(port: int) -> None:
 def server_command(port: int) -> list[str]:
     """Return the fixed native Server argv."""
     _validate_port(port)
+    installed_command = os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND")
+    if installed_command:
+        return [installed_command, "server"]
     return [
         sys.executable,
         "-m",
@@ -180,6 +183,9 @@ def agent_command(port: int, workspace: Path) -> list[str]:
     _validate_port(port)
     if not isinstance(workspace, Path) or not workspace.is_absolute():
         raise ValueError("workspace must be an absolute path")
+    installed_command = os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND")
+    if installed_command:
+        return [installed_command, "agent"]
     return [sys.executable, "-m", "agent_relay.agent"]
 
 
@@ -193,9 +199,10 @@ def minimal_environment(home: Path, values: dict[str, str]) -> dict[str, str]:
         "TEMP": str(home),
         "TMP": str(home),
         "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
         "PYTHONUNBUFFERED": "1",
     }
+    if not os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND"):
+        environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
     for name in ("SystemRoot", "WINDIR", "PSModulePath"):
         if name in os.environ:
             environment[name] = os.environ[name]

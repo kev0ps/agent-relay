@@ -45,7 +45,7 @@ def test_ci_keeps_docker_image_smoke_without_container_ui_e2e() -> None:
 def test_ci_smokes_compose_server_with_native_linux_agent_status() -> None:
     workflow = WORKFLOW.read_text()
     job = workflow.split("  relay-compose-link:", 1)[1].split(
-        "\n  e2e-linux-native:", 1
+        "\n  e2e-linux:", 1
     )[0]
 
     assert "name: Relay Compose Link - Server / Linux Agent" in job
@@ -63,13 +63,13 @@ def test_ci_labels_native_gates_by_capability() -> None:
     workflow = WORKFLOW.read_text()
 
     assert "name: Docker image smoke (${{ matrix.platform }})" in workflow
-    assert "name: Native Linux Terminal end-to-end" in workflow
-    assert "name: Native Linux Browser end-to-end" in workflow
-    assert "name: Native Linux CUA end-to-end" in workflow
+    assert "name: Linux Terminal end-to-end" in workflow
+    assert "name: Linux Browser end-to-end" in workflow
+    assert "name: Linux CUA end-to-end" in workflow
     assert "name: Native Windows Terminal end-to-end" in workflow
     assert "name: Native Windows Browser end-to-end" in workflow
 
-    linux_job = workflow.split("  e2e-linux-native:", 1)[1].split(
+    linux_job = workflow.split("  e2e-linux:", 1)[1].split(
         "\n  e2e-windows-native:", 1
     )[0]
     windows_job = workflow.split("  e2e-windows-native:", 1)[1].split(
@@ -82,15 +82,31 @@ def test_ci_labels_native_gates_by_capability() -> None:
         assert "docker.sock" not in job.lower()
         assert "--privileged" not in job.lower()
 
-    assert "scripts/native_e2e.py" in linux_job
+    assert "scripts/linux_e2e.py" in linux_job
     assert "scripts/windows_e2e.py" in windows_job
     assert "scripts/windows_browser_e2e.py" in browser_job
+
+
+def test_terminal_e2e_jobs_use_the_platform_installer_path() -> None:
+    workflow = WORKFLOW.read_text()
+
+    linux_job = workflow.split("  e2e-linux:", 1)[1].split(
+        "\n  e2e-linux-browser:", 1
+    )[0]
+    windows_job = workflow.split("  e2e-windows-native:", 1)[1].split(
+        "\n  e2e-windows-cua:", 1
+    )[0]
+
+    assert 'installer: "true"' in linux_job
+    assert 'installer: "true"' in windows_job
+    assert "installer-linux:" not in workflow
+    assert "installer-windows:" not in workflow
 
 
 def test_docker_matrix_uses_native_runner_for_each_architecture() -> None:
     workflow = WORKFLOW.read_text()
     container_job = workflow.split("  container:", 1)[1].split(
-        "\n  e2e-linux-native:", 1
+        "\n  e2e-linux:", 1
     )[0]
 
     assert "runs-on: ${{ matrix.runner }}" in container_job
@@ -103,7 +119,7 @@ def test_docker_matrix_uses_native_runner_for_each_architecture() -> None:
 
 def test_terminal_native_jobs_share_platform_independent_ci_gates() -> None:
     workflow = WORKFLOW.read_text()
-    linux_job = workflow.split("  e2e-linux-native:", 1)[1].split(
+    linux_job = workflow.split("  e2e-linux:", 1)[1].split(
         "\n  e2e-linux-browser:", 1
     )[0]
     windows_job = workflow.split("  e2e-windows-native:", 1)[1].split(
@@ -118,14 +134,14 @@ def test_terminal_native_jobs_share_platform_independent_ci_gates() -> None:
         assert "if: always()" in job
 
     assert "EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in linux_job
-    assert "scripts/native_e2e.py" in linux_job
+    assert "scripts/linux_e2e.py" in linux_job
     assert "scripts/windows_e2e.py" in windows_job
 
 
 def test_ci_externalizes_evidence_validation_and_cua_platform_helpers() -> None:
     workflow = WORKFLOW.read_text()
     expected_profiles = {
-        "e2e-linux-native": "linux-terminal",
+        "e2e-linux": "linux-terminal",
         "e2e-linux-browser": "linux-browser",
         "e2e-linux-cua": "linux-cua",
         "e2e-windows-native": "windows-terminal",
@@ -157,3 +173,9 @@ def test_ci_uses_one_closed_locked_python_setup_action() -> None:
     assert '"computer")' in setup
     assert "uv lock --check" in setup
     assert "uv sync --locked --extra browser --extra computer" in setup
+    assert "AGENT_RELAY_ARCHIVE_SOURCE" in setup
+    assert "Compress-Archive" in setup
+    assert "tar --exclude=.git" in setup
+    assert "scripts/install.sh" in setup
+    assert "install.ps1" in setup
+    assert "RELAY_E2E_AGENT_RELAY_COMMAND" in setup

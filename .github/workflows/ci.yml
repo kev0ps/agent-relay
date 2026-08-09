@@ -162,11 +162,11 @@ jobs:
           fi
           rm -f "$runtime_dir/.env" "$runtime_dir/mcp.token" "$runtime_dir/agent.token"
 
-  e2e-linux-native:
-    name: Native Linux Terminal end-to-end
+  e2e-linux:
+    name: Linux Terminal end-to-end
     needs: python
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
@@ -183,29 +183,31 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Install locked Python environment
+      - name: Install locked E2E environment and Agent Relay runtime
         uses: ./.github/actions/setup-python
+        with:
+          installer: "true"
 
       - name: Check Linux Python quality
         run: uv run --frozen ruff check .
 
-      - name: Run Linux native contract tests
-        run: uv run --frozen pytest -q tests/test_native_e2e.py tests/test_runner.py
+      - name: Run Linux contract tests
+        run: uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_runner.py
 
       - name: Run Linux integration suite
         run: uv run --frozen pytest -q -m integration
 
-      - name: Run native Linux Terminal MCP end-to-end scenario
+      - name: Run Linux Terminal MCP end-to-end scenario
         shell: bash
         run: |
           set -euo pipefail
           evidence_dir="$GITHUB_WORKSPACE/native-evidence"
           mkdir -p "$evidence_dir"
-          uv run --frozen python scripts/native_e2e.py \
+          uv run --frozen python scripts/linux_e2e.py \
             --evidence-dir "$evidence_dir" \
             --output-file "$evidence_dir/output.log"
 
-      - name: Validate bounded native Linux evidence
+      - name: Validate bounded Linux evidence
         id: validate-native-evidence
         if: always()
         run: >-
@@ -213,7 +215,7 @@ jobs:
           --profile linux-terminal
           --evidence-dir native-evidence
 
-      - name: Upload bounded native Linux evidence
+      - name: Upload bounded Linux evidence
         if: always() && steps.validate-native-evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
@@ -223,7 +225,7 @@ jobs:
           retention-days: 7
 
   e2e-linux-browser:
-    name: Native Linux Browser end-to-end
+    name: Linux Browser end-to-end
     needs: python
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -256,7 +258,7 @@ jobs:
       - name: Install pinned Playwright Chromium and Linux dependencies
         run: uv run --frozen playwright install --with-deps chromium
 
-      - name: Run native Linux Browser end-to-end scenario
+      - name: Run Linux Browser end-to-end scenario
         shell: bash
         run: |
           set -euo pipefail
@@ -284,7 +286,7 @@ jobs:
           retention-days: 7
 
   e2e-linux-cua:
-    name: Native Linux CUA end-to-end
+    name: Linux CUA end-to-end
     needs: python
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -357,7 +359,7 @@ jobs:
       - name: Install pinned Playwright Chromium and Linux dependencies
         run: uv run --frozen playwright install --with-deps chromium
 
-      - name: Run native Linux CUA end-to-end scenario
+      - name: Run Linux CUA end-to-end scenario
         shell: bash
         run: |
           set -euo pipefail
@@ -388,7 +390,7 @@ jobs:
     name: Native Windows Terminal end-to-end
     needs: python
     runs-on: windows-2025
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
@@ -407,8 +409,10 @@ jobs:
             throw "Checked-out commit does not match the expected workflow SHA"
           }
 
-      - name: Install locked Python environment
+      - name: Install locked E2E environment and Agent Relay runtime
         uses: ./.github/actions/setup-python
+        with:
+          installer: "true"
 
       - name: Check Windows Python quality
         shell: pwsh

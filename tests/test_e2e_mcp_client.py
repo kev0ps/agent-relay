@@ -153,7 +153,7 @@ def test_mcp_client_exposes_contract_error() -> None:
 def test_mcp_client_does_not_import_docker_or_native_harness() -> None:
     """The portable client must be harness-agnostic."""
     client = _load_mcp_client()
-    forbidden = {"docker", "container_e2e", "native_e2e", "windows_e2e"}
+    forbidden = {"docker", "container_e2e", "linux_e2e", "windows_e2e"}
     leaked: list[str] = []
     for value in client.__dict__.values():
         top = getattr(value, "__name__", None)

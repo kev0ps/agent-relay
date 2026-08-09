@@ -33,7 +33,7 @@ def _load_module(name: str, path: Path) -> Any:
     return module
 
 
-native = _load_module("native_e2e", Path(__file__).with_name("native_e2e.py"))
+native = _load_module("linux_e2e", Path(__file__).with_name("linux_e2e.py"))
 try:
     from tests.e2e import mcp_client as portable_mcp
     from tests.e2e import oracles as portable_oracles

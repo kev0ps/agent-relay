@@ -5,6 +5,20 @@ Linux machine.
 The shared configuration lives at `~/.agent-relay/config.yaml`; the Agent opens
 no listener and connects outbound to the Server.
 
+## One-line installation
+
+For the moving development branch, the user-level bootstrapper is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/install.sh | bash
+```
+
+It installs `agent-relay` through `uv`, asks whether to initialize a local
+Server and Agent, and keeps the Agent allowlist empty by default. For a release,
+use an immutable tag for both the script and source. Inspect a downloaded
+script before executing it when the source is not trusted; a mutable `main`
+URL is not an integrity pin.
+
 ## Installation and initialization
 
 From the repository root, install `uv` according to its documentation, then:

@@ -17,6 +17,7 @@ ROOT = Path(__file__).parents[1]
         "docs/security.md",
         "docs/run-linux.md",
         "docs/run-server-docker.md",
+        "docs/run-windows.md",
         "docs/protocol.md",
         "docs/tools.md",
         "docs/e2e.md",
@@ -134,7 +135,7 @@ def test_e2e_document_covers_linux_windows_and_docker_boundaries() -> None:
         "exactly one terminal result or error unless it is cancelled",
         "allocates no Relay request ID",
         "personal browser profile",
-        "e2e-linux-native",
+        "e2e-linux",
         "e2e-linux-browser",
         "e2e-linux-cua",
         "e2e-windows-native",
@@ -158,6 +159,13 @@ def test_readme_and_linux_guide_document_shared_agent_token_flow() -> None:
     assert "uv run --frozen agent-relay server" in readme
     assert "uv run --frozen agent-relay agent" in readme
     assert "Coverage: 83%" not in readme
+
+
+def test_linux_guide_documents_the_one_line_bootstrapper() -> None:
+    guide = (ROOT / "docs/run-linux.md").read_text()
+
+    assert "curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/install.sh | bash" in guide
+    assert "allowlist empty by default" in guide
 
 
 def test_linux_guide_explains_bind_default_and_windows_cua_status() -> None:
