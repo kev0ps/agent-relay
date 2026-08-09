@@ -139,7 +139,7 @@ def test_ci_externalizes_evidence_validation_and_cua_platform_helpers() -> None:
 
     assert "scripts/probe_cua_driver.py --platform linux" in workflow
     assert "scripts/probe_cua_driver.py --platform windows" in workflow
-    assert "scripts/install_windows_cua_driver.ps1" in workflow
+    assert "scripts/windows_install_cua_driver.ps1" in workflow
     assert "python - <<'PY'" not in workflow
     assert "@' | uv run --frozen python -" not in workflow
 

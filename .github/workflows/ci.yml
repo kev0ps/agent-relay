@@ -488,7 +488,7 @@ jobs:
 
       - name: Install pinned cua-driver for Windows UI Automation
         shell: pwsh
-        run: ./scripts/install_windows_cua_driver.ps1
+        run: ./scripts/windows_install_cua_driver.ps1
 
       - name: Probe Windows CUA daemon-backed MCP startup
         shell: pwsh
