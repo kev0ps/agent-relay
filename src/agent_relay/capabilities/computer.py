@@ -747,9 +747,11 @@ class ComputerCapability:
     def _scope_window_list(self, result: ProviderToolResult) -> ProviderToolResult:
         structured = result.structured_content
         if not isinstance(structured, dict):
+            _debug_cua_scope_rejection("structured-content")
             raise ValueError
         windows = structured.get("windows")
         if not isinstance(windows, list):
+            _debug_cua_scope_rejection("windows-field")
             raise ValueError
         matches = [
             window
@@ -759,6 +761,22 @@ class ComputerCapability:
             and window.get("title") == self._title
         ]
         if len(matches) != 1:
+            app_matches = sum(
+                isinstance(window, dict)
+                and self._app_matches(window.get("app_name"))
+                for window in windows
+            )
+            title_matches = sum(
+                isinstance(window, dict) and window.get("title") == self._title
+                for window in windows
+            )
+            _debug_cua_scope_rejection(
+                "identity",
+                windows=len(windows),
+                app_matches=app_matches,
+                title_matches=title_matches,
+                identity_matches=len(matches),
+            )
             raise ValueError
         window = matches[0]
         pid = window.get("pid")
@@ -772,11 +790,13 @@ class ComputerCapability:
             or type(window.get("is_on_screen")) is not bool
             or not isinstance(bounds, dict)
         ):
+            _debug_cua_scope_rejection("identity-fields")
             raise ValueError
         safe_bounds: dict[str, JsonValue] = {}
         for key in ("x", "y", "width", "height"):
             value = bounds.get(key)
             if type(value) is not int:
+                _debug_cua_scope_rejection("bounds-fields")
                 raise ValueError
             safe_bounds[key] = value
         self._pid = pid
@@ -1124,6 +1144,22 @@ def _safe_cua_rejection() -> ProviderToolResult:
         ],
         structuredContent=None,
         isError=True,
+    )
+
+
+def _debug_cua_scope_rejection(
+    reason: str,
+    **counts: int,
+) -> None:
+    """Emit only bounded CUA scope failure metadata in native debug mode."""
+    if os.environ.get("RELAY_NATIVE_DEBUG") != "1":
+        return
+    details = " ".join(f"{key}={value}" for key, value in counts.items())
+    suffix = f" {details}" if details else ""
+    print(
+        f"computer CUA list_windows rejected: reason={reason}{suffix}",
+        file=sys.stderr,
+        flush=True,
     )
 
 
