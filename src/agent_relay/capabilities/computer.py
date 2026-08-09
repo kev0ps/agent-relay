@@ -739,6 +739,13 @@ class ComputerCapability:
             allowed.add("text")
         if set(scoped) != allowed:
             raise ValueError
+        if tool_name == "type_text" and sys.platform.startswith("linux"):
+            # Chromium's Linux driver rejects background typing because X11
+            # synthetic events can be silently dropped by an unfocused
+            # renderer. The target is already restricted to the configured
+            # window and fresh provider token, so use the driver's explicit
+            # foreground escalation without exposing arbitrary passthrough.
+            scoped["delivery_mode"] = "foreground"
         token = scoped.get("element_token")
         if type(token) is not str or token not in self._element_tokens:
             raise ValueError

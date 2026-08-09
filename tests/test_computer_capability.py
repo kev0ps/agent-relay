@@ -354,6 +354,23 @@ def test_selected_cua_tools_are_scoped_to_the_configured_window(tmp_path: Path) 
             "effect": "confirmed",
         }
 
+        typed = await capability._call_scoped_tool(
+            client,
+            "type_text",
+            {
+                "pid": 41,
+                "window_id": 7,
+                "element_token": "field-1",
+                "text": "hello",
+            },
+        )
+        assert typed.content == []
+        assert typed.structured_content == {
+            "path": "uia",
+            "verified": True,
+            "effect": "confirmed",
+        }
+
         duplicate = await capability._call_scoped_tool(
             client,
             "click",
@@ -379,6 +396,16 @@ def test_selected_cua_tools_are_scoped_to_the_configured_window(tmp_path: Path) 
         assert rejected.is_error is True
 
         assert calls[0] == ("list_windows", {"on_screen_only": os.name == "nt"})
+        type_call = next(arguments for name, arguments in calls if name == "type_text")
+        expected_type_call = {
+            "pid": 41,
+            "window_id": 7,
+            "element_token": "field-1",
+            "text": "hello",
+        }
+        if sys.platform.startswith("linux"):
+            expected_type_call["delivery_mode"] = "foreground"
+        assert type_call == expected_type_call
         assert [name for name, _arguments in calls].count("click") == 1
 
     asyncio.run(scenario())
