@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -377,7 +378,7 @@ def test_selected_cua_tools_are_scoped_to_the_configured_window(tmp_path: Path) 
         )
         assert rejected.is_error is True
 
-        assert calls[0] == ("list_windows", {"on_screen_only": True})
+        assert calls[0] == ("list_windows", {"on_screen_only": os.name == "nt"})
         assert [name for name, _arguments in calls].count("click") == 1
 
     asyncio.run(scenario())

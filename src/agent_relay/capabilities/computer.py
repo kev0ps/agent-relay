@@ -704,7 +704,11 @@ class ComputerCapability:
         if tool_name == "list_windows":
             if set(scoped) - {"on_screen_only"}:
                 raise ValueError
-            scoped["on_screen_only"] = True
+            # The Linux X11 driver reports MapState inconsistently for mapped
+            # Chromium windows under Xvfb/Openbox. Exact configured app/title
+            # matching below still provides the target scope; keep the native
+            # visibility filter for Windows where the daemon reports it reliably.
+            scoped["on_screen_only"] = self._windows
             return scoped
         if self._pid is None or self._window_id is None:
             raise ValueError
