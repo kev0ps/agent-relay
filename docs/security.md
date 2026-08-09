@@ -1,12 +1,12 @@
-# MVP security
+# Current security model
 
 For private vulnerability reporting, follow the repository
 [`SECURITY.md`](../SECURITY.md) policy. This document describes the technical
-threat model and the deliberately small deployment boundary.
+threat model and the deliberately small boundary of the current prototype.
 
 ## Threat model and protections
 
-The MVP protects a local Agent against a remote request seeking an arbitrary
+Agent Relay protects a local Agent against a remote request seeking an arbitrary
 shell, argument, path, or environment. It uses two distinct credentials:
 `RELAY_MCP_TOKEN` authenticates the MCP/control plane and `RELAY_AGENT_TOKEN`
 authenticates the outbound Agent. Credentials are compared safely, messages are
@@ -31,7 +31,7 @@ arbitrary driver commands, or tools that were not selected by policy. Provider
 snapshot tokens are treated as opaque and stale tokens fail closed.
 
 The authenticated direct control endpoint is the generic v2 route documented in
-[`protocol-v2.md`](protocol-v2.md). It accepts only a strict `InvokeMessage`
+[`protocol.md`](protocol.md). It accepts only a strict `InvokeMessage`
 contract and never bypasses registry policy or provider validation.
 
 The default YAML configuration stores the Server secrets at
@@ -57,9 +57,9 @@ storage, or exhaustive structured auditing. Application logs are minimal: do
 not treat them as an audit trail, and do not log tokens, URLs with secrets,
 Bearer headers, or environments. The application does not implement TLS.
 
-## Simple one-listener deployment
+## One-listener deployment
 
-The canonical MVP Server listens once on
+The current Server listens once on
 `RELAY_SERVER_HOST:RELAY_SERVER_PORT`, defaulting to `0.0.0.0:8000`. The same
 listener serves the local MCP endpoint `/mcp` and the Agent WebSocket endpoint
 `/ws/agent`. The Agent has no inbound listener; it connects outbound.
@@ -78,13 +78,13 @@ LAN/test network; do not expose this listener to the public Internet.
 For WSS, use `wss://<TLS endpoint>/ws/agent` only when an external TLS endpoint
 already exists. `RELAY_ALLOW_INSECURE_WS=false` rejects non-loopback `ws://` but
 accepts `wss://`; `true` permits both `ws://` and `wss://`. The Relay
-application does not terminate TLS, and this MVP prescribes no particular TLS
+application does not terminate TLS, and the project prescribes no particular TLS
 endpoint or proxy implementation.
 
 `RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` are deferred optional
-settings. They are not required by this simple MVP and are intentionally left
-unset in the Docker example; they do not replace a LAN firewall or external TLS
-boundary.
+settings. They are not required by the current deployment and are intentionally
+left unset in the Docker example; they do not replace a LAN firewall or external
+TLS boundary.
 
 ## Manual rotation
 

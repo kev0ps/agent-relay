@@ -10,7 +10,7 @@ import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "windows_e2e.py"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
-DOC = Path(__file__).parents[1] / "docs" / "run-windows-e2e.md"
+DOC = Path(__file__).parents[1] / "docs" / "e2e.md"
 
 
 def _load_harness():
@@ -331,16 +331,15 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "if: always()" in job
 
 
-def test_windows_runbook_declares_native_scope_and_fallback_limit() -> None:
+def test_e2e_guide_declares_windows_terminal_scope_and_limits() -> None:
     document = DOC.read_text(encoding="utf-8")
+    section = document.split("## Windows Terminal", 1)[1].split(
+        "## Windows Browser", 1
+    )[0]
 
-    assert "scripts/windows_e2e.py" in document
-    assert "Windows Job Object" in document
-    assert "No Docker" in document
-    assert "No Browser" in document
-    assert "No Computer Use" in document
-    assert "Windows Docker engine" in document
-    assert "Linux Relay Server" in document
-    assert "server stop/unavailability detection" in document
-    assert "agent re-registration" in document
-    assert "tests/test_mcp_facade.py" in document
+    assert "e2e-windows-native" in section
+    assert "Windows Job Object" in section
+    assert "does not use Docker, Browser, or CUA" in section
+    assert "mixed Linux Server and Windows Agent" in section
+    assert "tests/test_windows_e2e.py" in section
+    assert "tests/test_runner.py" in section
