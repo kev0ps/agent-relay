@@ -4,6 +4,7 @@ from pathlib import Path
 
 WORKFLOW_DIR = Path(__file__).parents[1] / ".github/workflows"
 WORKFLOW = WORKFLOW_DIR / "ci.yml"
+PYTHON_SETUP = Path(__file__).parents[1] / ".github/actions/setup-python/action.yml"
 
 
 def test_ci_reports_informational_python_coverage_without_threshold() -> None:
@@ -14,6 +15,7 @@ def test_ci_reports_informational_python_coverage_without_threshold() -> None:
     assert "COVERAGE_FILE: ${{ runner.temp }}/agent-relay.coverage" in python_job
     assert "--cov=agent_relay" in python_job
     assert "--cov-report=term-missing" in python_job
+    assert '-m "not integration"' in python_job
     assert "--cov-fail-under" not in python_job
 
 
@@ -75,6 +77,7 @@ def test_docker_matrix_uses_native_runner_for_each_architecture() -> None:
     )[0]
 
     assert "runs-on: ${{ matrix.runner }}" in container_job
+    assert "needs: python" not in container_job
     assert "runner: ubuntu-24.04" in container_job
     assert "runner: ubuntu-24.04-arm" in container_job
     assert "Install QEMU" not in container_job
@@ -100,3 +103,40 @@ def test_terminal_native_jobs_share_platform_independent_ci_gates() -> None:
     assert "EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in linux_job
     assert "scripts/native_e2e.py" in linux_job
     assert "scripts/windows_e2e.py" in windows_job
+
+
+def test_ci_externalizes_evidence_validation_and_cua_platform_helpers() -> None:
+    workflow = WORKFLOW.read_text()
+    expected_profiles = {
+        "e2e-linux-native": "linux-terminal",
+        "e2e-linux-browser": "linux-browser",
+        "e2e-linux-cua": "linux-cua",
+        "e2e-windows-native": "windows-terminal",
+        "e2e-windows-cua": "windows-cua",
+        "e2e-windows-browser": "windows-browser",
+    }
+    for job_name, profile in expected_profiles.items():
+        job = workflow.split(f"  {job_name}:", 1)[1].split("\n  e2e-", 1)[0]
+        assert "python scripts/validate_e2e_evidence.py" in job
+        assert f"--profile {profile}" in job
+
+    assert "scripts/probe_cua_driver.py --platform linux" in workflow
+    assert "scripts/probe_cua_driver.py --platform windows" in workflow
+    assert "scripts/install_windows_cua_driver.ps1" in workflow
+    assert "python - <<'PY'" not in workflow
+    assert "@' | uv run --frozen python -" not in workflow
+
+
+def test_ci_uses_one_closed_locked_python_setup_action() -> None:
+    workflow = WORKFLOW.read_text()
+    setup = PYTHON_SETUP.read_text()
+
+    assert workflow.count("uses: ./.github/actions/setup-python") == 7
+    assert "astral-sh/setup-uv@" not in workflow
+    assert "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990" in setup
+    assert 'default: "base"' in setup
+    assert '"base")' in setup
+    assert '"browser")' in setup
+    assert '"computer")' in setup
+    assert "uv lock --check" in setup
+    assert "uv sync --locked --extra browser --extra computer" in setup

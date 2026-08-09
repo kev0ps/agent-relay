@@ -185,6 +185,72 @@ def _accessibility_ready(environment: dict[str, str]) -> bool:
     )
 
 
+def _x11_window_hint(environment: dict[str, str]) -> str:
+    """Return bounded X11 window counts without exposing window metadata."""
+    counts: dict[str, str] = {}
+    probes = {
+        "client_windows": ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
+        "title_windows": [
+            "xdotool",
+            "search",
+            "--onlyvisible",
+            "--name",
+            COMPUTER_WINDOW_TITLE,
+        ],
+        "class_windows": [
+            "xdotool",
+            "search",
+            "--onlyvisible",
+            "--class",
+            COMPUTER_APP_NAME,
+        ],
+    }
+    for label, command in probes.items():
+        try:
+            completed = subprocess.run(
+                command,
+                env=environment,
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=2,
+                shell=False,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            counts[label] = "error"
+            continue
+        if completed.returncode != 0:
+            counts[label] = "unavailable"
+            continue
+        counts[label] = str(len(re.findall(r"0x[0-9a-fA-F]+", completed.stdout)))
+    return " ".join(f"{key}={value}" for key, value in counts.items())
+
+
+def _x11_has_client_window(environment: dict[str, str]) -> bool:
+    """Return whether the X11 window manager has published a client window."""
+    try:
+        completed = subprocess.run(
+            ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
+            env=environment,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+            shell=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and bool(
+        re.search(r"0x[0-9a-fA-F]+", completed.stdout)
+    )
+
+
 def _stderr_hint(path: Path) -> str | None:
     """Return a short, redacted diagnostic line without exposing child logs."""
     try:
@@ -202,6 +268,7 @@ def _stderr_hint(path: Path) -> str | None:
                 "cua catalog construction failed:",
                 "computer privacy command failed:",
                 "computer startup failed:",
+                "computer cua list_windows rejected:",
             )
         )
     ]
@@ -304,6 +371,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
     cleanup_error: BaseException | None = None
     diagnostics: dict[str, Path] = {}
     event_artifact: Path | None = None
+    graphical_environment: dict[str, str] | None = None
 
     try:
         lifecycle.install_signal_handlers()
@@ -430,6 +498,17 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         if browser.poll() is not None:
             raise LinuxCuaE2EError("Linux CUA Chromium exited during startup")
 
+        def chromium_window_ready() -> bool:
+            if browser.poll() is not None:
+                raise LinuxCuaE2EError("Linux CUA Chromium exited before its window appeared")
+            return _x11_has_client_window(graphical_environment)
+
+        native._wait_for(
+            "Linux CUA Chromium window",
+            chromium_window_ready,
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
+
         phase = "agent-start"
         agent = native._spawn(
             native.agent_command(server_port, workspace),
@@ -459,6 +538,11 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")
     except BaseException as error:
         scenario_error = error
+        if graphical_environment is not None:
+            print(
+                f"Linux CUA X11 diagnostic: {_x11_window_hint(graphical_environment)}",
+                file=sys.stderr,
+            )
         for label, path in diagnostics.items():
             if (hint := _stderr_hint(path)) is not None:
                 print(f"Linux CUA {label} diagnostic: {hint}", file=sys.stderr)

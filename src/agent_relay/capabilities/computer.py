@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 from ..catalog import CUA_REFERENCE_TOOL_NAMES
 from ..json_bounds import JsonValue
-from ..output_models import ProviderToolResult
+from ..output_models import ProviderTextContent, ProviderToolResult
 from ..protocol import (
     InvokeMessage,
     ToolName,
@@ -35,6 +35,12 @@ MAX_DRIVER_DIAGNOSTIC_LINE_BYTES = 4096
 MAX_COMPUTER_APP_LENGTH = 128
 MAX_COMPUTER_WINDOW_TITLE_LENGTH = 256
 WINDOWS_CUA_DRIVER_PIPE = r"\\.\pipe\cua-driver"
+_SCOPED_CUA_TOOLS = frozenset(
+    {"list_windows", "get_window_state", "click", "type_text"}
+)
+_CUA_ACTION_RESULT_KEYS = frozenset(
+    {"path", "verified", "effect", "characters", "escalation", "scope"}
+)
 
 
 class _ProcessWithReturncode(Protocol):
@@ -349,7 +355,7 @@ class _ComputerMcpTransport(McpTransport):
 
 
 class ComputerCapability:
-    """One persistent CUA MCP provider with no operation-specific Relay dispatch."""
+    """One persistent provider with generic tools and scoped core CUA actions."""
 
     provider_name = "cua"
     requires_catalog = True
@@ -409,12 +415,17 @@ class ComputerCapability:
         self._write_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
         self._reset_lock = asyncio.Lock()
+        self._scope_lock = asyncio.Lock()
         self._unavailable = asyncio.Event()
         self._client: McpProviderToolClient | None = None
         self._transport = _ComputerMcpTransport(self)
         self._closing = False
         self._startup_phase: str | None = None
         self._driver_diagnostic_category: str | None = None
+        self._pid: int | None = None
+        self._window_id: int | None = None
+        self._element_tokens: frozenset[str] = frozenset()
+        self._used_actions: set[tuple[str, str]] = set()
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
@@ -643,6 +654,9 @@ class ComputerCapability:
         self, tool_name: str, arguments: Mapping[str, JsonValue]
     ) -> ProviderToolResult:
         client = self._require_client()
+        if tool_name in _SCOPED_CUA_TOOLS:
+            async with self._scope_lock:
+                return await self._call_scoped_tool(client, tool_name, arguments)
         try:
             return await client.call_tool(tool_name, arguments)
         except asyncio.CancelledError:
@@ -651,6 +665,265 @@ class ComputerCapability:
         except (ProviderConnectionError, ProviderTimeoutError):
             await self._reset()
             raise
+
+    async def _call_scoped_tool(
+        self,
+        client: McpProviderToolClient,
+        tool_name: str,
+        arguments: Mapping[str, JsonValue],
+    ) -> ProviderToolResult:
+        try:
+            scoped_arguments = self._scope_arguments(tool_name, arguments)
+        except (TypeError, ValueError):
+            return _safe_cua_rejection()
+        try:
+            result = await client.call_tool(tool_name, scoped_arguments)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._reset())
+            raise
+        except (ProviderConnectionError, ProviderTimeoutError):
+            await self._reset()
+            raise
+        if result.is_error:
+            return _safe_cua_rejection()
+        try:
+            if tool_name == "list_windows":
+                return self._scope_window_list(result)
+            if tool_name == "get_window_state":
+                return self._scope_window_state(result)
+            return self._scope_action_result(result)
+        except (TypeError, ValueError):
+            return _safe_cua_rejection()
+
+    def _scope_arguments(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, JsonValue],
+    ) -> dict[str, JsonValue]:
+        scoped = dict(arguments)
+        if tool_name == "list_windows":
+            if set(scoped) - {"on_screen_only"}:
+                raise ValueError
+            # The Linux X11 driver reports MapState inconsistently for mapped
+            # Chromium windows under Xvfb/Openbox. Exact configured app/title
+            # matching below still provides the target scope; keep the native
+            # visibility filter for Windows where the daemon reports it reliably.
+            scoped["on_screen_only"] = self._windows
+            return scoped
+        if self._pid is None or self._window_id is None:
+            raise ValueError
+        if scoped.get("pid") != self._pid or scoped.get("window_id") != self._window_id:
+            raise ValueError
+        if tool_name == "get_window_state":
+            if set(scoped) - {
+                "pid",
+                "window_id",
+                "include_screenshot",
+                "max_elements",
+            }:
+                raise ValueError
+            if scoped.get("include_screenshot", False) is not False:
+                raise ValueError
+            maximum = scoped.get("max_elements", self._max_elements)
+            if (
+                type(maximum) is not int
+                or maximum <= 0
+                or maximum > self._max_elements
+            ):
+                raise ValueError
+            scoped["include_screenshot"] = False
+            scoped["max_elements"] = maximum
+            return scoped
+        allowed = {"pid", "window_id", "element_token"}
+        if tool_name == "type_text":
+            allowed.add("text")
+        if set(scoped) != allowed:
+            raise ValueError
+        if tool_name == "type_text" and sys.platform.startswith("linux"):
+            # Chromium's Linux driver rejects background typing because X11
+            # synthetic events can be silently dropped by an unfocused
+            # renderer. The target is already restricted to the configured
+            # window and fresh provider token, so use the driver's explicit
+            # foreground escalation without exposing arbitrary passthrough.
+            scoped["delivery_mode"] = "foreground"
+        token = scoped.get("element_token")
+        if type(token) is not str or token not in self._element_tokens:
+            raise ValueError
+        action_key = (tool_name, token)
+        if action_key in self._used_actions:
+            raise ValueError
+        self._used_actions.add(action_key)
+        return scoped
+
+    def _scope_window_list(self, result: ProviderToolResult) -> ProviderToolResult:
+        structured = result.structured_content
+        if not isinstance(structured, dict):
+            _debug_cua_scope_rejection("structured-content")
+            raise ValueError
+        windows = structured.get("windows")
+        if not isinstance(windows, list):
+            _debug_cua_scope_rejection("windows-field")
+            raise ValueError
+        matches = [
+            window
+            for window in windows
+            if isinstance(window, dict)
+            and self._app_matches(window.get("app_name"))
+            and window.get("title") == self._title
+        ]
+        if len(matches) != 1:
+            app_matches = sum(
+                isinstance(window, dict)
+                and self._app_matches(window.get("app_name"))
+                for window in windows
+            )
+            title_matches = sum(
+                isinstance(window, dict) and window.get("title") == self._title
+                for window in windows
+            )
+            _debug_cua_scope_rejection(
+                "identity",
+                windows=len(windows),
+                app_matches=app_matches,
+                title_matches=title_matches,
+                identity_matches=len(matches),
+            )
+            raise ValueError
+        window = matches[0]
+        pid = window.get("pid")
+        window_id = window.get("window_id")
+        bounds = window.get("bounds")
+        if (
+            type(pid) is not int
+            or pid <= 0
+            or type(window_id) is not int
+            or window_id <= 0
+            or type(window.get("is_on_screen")) is not bool
+            or not isinstance(bounds, dict)
+        ):
+            _debug_cua_scope_rejection("identity-fields")
+            raise ValueError
+        safe_bounds: dict[str, JsonValue] = {}
+        for key in ("x", "y", "width", "height"):
+            value = bounds.get(key)
+            if type(value) is not int:
+                _debug_cua_scope_rejection("bounds-fields")
+                raise ValueError
+            safe_bounds[key] = value
+        self._pid = pid
+        self._window_id = window_id
+        self._element_tokens = frozenset()
+        self._used_actions.clear()
+        safe_window: dict[str, JsonValue] = {
+            "pid": pid,
+            "window_id": window_id,
+            "app_name": self._app,
+            "title": self._title,
+            "is_on_screen": window["is_on_screen"],
+            "bounds": safe_bounds,
+        }
+        return ProviderToolResult(
+            content=[],
+            structuredContent={"windows": [safe_window]},
+            isError=False,
+        )
+
+    def _scope_window_state(self, result: ProviderToolResult) -> ProviderToolResult:
+        structured = result.structured_content
+        if not isinstance(structured, dict):
+            raise ValueError
+        if structured.get("pid") != self._pid or structured.get("window_id") != self._window_id:
+            raise ValueError
+        snapshot_id = structured.get("snapshot_id")
+        elements = structured.get("elements")
+        if (
+            type(snapshot_id) is not str
+            or not snapshot_id
+            or len(snapshot_id) > 256
+            or not isinstance(elements, list)
+            or not 1 <= len(elements) <= self._max_elements
+        ):
+            raise ValueError
+        safe_elements: list[JsonValue] = []
+        tokens: set[str] = set()
+        for public_index, item in enumerate(elements):
+            if not isinstance(item, dict):
+                raise ValueError
+            index = item.get("element_index")
+            role = item.get("role")
+            token = item.get("element_token")
+            label = item.get("label", item.get("name", ""))
+            if (
+                type(index) is not int
+                or index < 0
+                or type(role) is not str
+                or not role
+                or len(role) > 128
+                or type(token) is not str
+                or not token
+                or len(token) > 256
+                or token in tokens
+                or type(label) is not str
+                or len(label) > 512
+            ):
+                raise ValueError
+            safe_item: dict[str, JsonValue] = {
+                "element_index": public_index,
+                "role": role,
+                "element_token": token,
+                "label": label,
+            }
+            value = item.get("value")
+            if isinstance(value, str) and len(value) <= 2048:
+                safe_item["value"] = value
+            safe_elements.append(safe_item)
+            tokens.add(token)
+        self._element_tokens = frozenset(tokens)
+        self._used_actions.clear()
+        return ProviderToolResult(
+            content=[],
+            structuredContent={
+                "pid": self._pid,
+                "window_id": self._window_id,
+                "snapshot_id": snapshot_id,
+                "elements": safe_elements,
+            },
+            isError=False,
+        )
+
+    def _scope_action_result(self, result: ProviderToolResult) -> ProviderToolResult:
+        structured = result.structured_content
+        if not isinstance(structured, dict):
+            raise ValueError
+        safe = {
+            key: value
+            for key, value in structured.items()
+            if key in _CUA_ACTION_RESULT_KEYS
+        }
+        if (
+            type(safe.get("path")) is not str
+            or not safe["path"]
+            or len(safe["path"]) > 128
+            or type(safe.get("verified")) is not bool
+            or safe.get("effect")
+            not in {"confirmed", "unverifiable", "suspected_noop"}
+        ):
+            raise ValueError
+        characters = safe.get("characters")
+        if characters is not None and (
+            type(characters) is not int or characters < 0
+        ):
+            raise ValueError
+        return ProviderToolResult(
+            content=[],
+            structuredContent=safe,
+            isError=False,
+        )
+
+    def _app_matches(self, value: object) -> bool:
+        if value == self._app:
+            return True
+        return self._windows and value == self._app + ".exe"
 
     async def invoke(self, message: InvokeMessage) -> ProviderToolResult:
         prefix = "cua."
@@ -827,6 +1100,10 @@ class ComputerCapability:
             self._process = None
             self._daemon = None
             self._client = None
+            self._pid = None
+            self._window_id = None
+            self._element_tokens = frozenset()
+            self._used_actions.clear()
             for task in (reader, stderr_reader, exit_task):
                 if task is not None and task is not asyncio.current_task():
                     task.cancel()
@@ -869,6 +1146,32 @@ class ComputerCapability:
                 await process.wait()
             except (ProcessLookupError, OSError):
                 pass
+
+
+def _safe_cua_rejection() -> ProviderToolResult:
+    return ProviderToolResult(
+        content=[
+            ProviderTextContent(type="text", text="computer action rejected")
+        ],
+        structuredContent=None,
+        isError=True,
+    )
+
+
+def _debug_cua_scope_rejection(
+    reason: str,
+    **counts: int,
+) -> None:
+    """Emit only bounded CUA scope failure metadata in native debug mode."""
+    if os.environ.get("RELAY_NATIVE_DEBUG") != "1":
+        return
+    details = " ".join(f"{key}={value}" for key, value in counts.items())
+    suffix = f" {details}" if details else ""
+    print(
+        f"computer CUA list_windows rejected: reason={reason}{suffix}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 __all__ = [

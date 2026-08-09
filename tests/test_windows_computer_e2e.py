@@ -13,6 +13,7 @@ from agent_relay.catalog import CUA_REFERENCE_TOOL_NAMES
 ROOT = Path(__file__).parents[1]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 FIXTURE = ROOT / "scripts/windows_computer_use_fixture.ps1"
+INSTALLER = ROOT / "scripts/install_windows_cua_driver.ps1"
 
 
 def test_windows_cua_reference_inventory_is_generic_and_bounded() -> None:
@@ -66,9 +67,23 @@ def test_windows_ci_has_a_native_cua_job_and_bounded_oracle() -> None:
     assert "docker run" not in job.lower()
     assert "docker.sock" not in job.lower()
     assert "--privileged" not in job.lower()
+    assert "scripts/install_windows_cua_driver.ps1" in job
+    assert "scripts/probe_cua_driver.py --platform windows" in job
+    assert "--profile windows-cua" in job
+
+
+def test_windows_cua_installer_verifies_the_pinned_source_hash() -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+
+    assert "1760f253d3c4d76618a8c97a04f2c100ffc491ac" in installer
+    assert 'DriverVersion = "0.12.6"' in installer
+    assert "85227ad5400240ccdcd8be18024ad871d1382d9e0b7f66dcce778e0ae4427f73" in installer
+    assert "Get-FileHash" in installer
+    assert "SHA256 mismatch" in installer
 
 
 def test_windows_cua_fixture_is_not_a_relay_dispatch_layer() -> None:
     fixture = FIXTURE.read_text(encoding="utf-8")
     assert "RunId" in fixture
     assert "eventpath" in fixture.casefold()
+    assert '$input.AccessibleName = "Name"' in fixture

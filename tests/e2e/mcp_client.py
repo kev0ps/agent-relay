@@ -56,6 +56,12 @@ EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = (
     "relay_cua_type_text",
 )
 SERVER_MCP_TOOLS: Final[tuple[str, ...]] = ("relay_device_status",)
+# Keep these black-box limits aligned with ``agent_relay.json_bounds`` without
+# importing product internals into the portable E2E client.
+MAX_JSON_BYTES: Final[int] = 64 * 1024
+MAX_JSON_DEPTH: Final[int] = 16
+MAX_JSON_NODES: Final[int] = 4096
+MAX_JSON_COLLECTION_ITEMS: Final[int] = 256
 
 
 def _valid_tool_inventory(discovered: tuple[str, ...]) -> bool:
@@ -86,7 +92,7 @@ def _validate_tool_schema(tool: Any) -> None:
     schema = getattr(tool, "inputSchema", None)
     if type(name) is not str or not name or type(schema) is not dict:
         raise MCPContractError("invalid MCP tool descriptor")
-    if len(name) > 128 or len(schema) > 64:
+    if len(name) > 128 or len(schema) > MAX_JSON_COLLECTION_ITEMS:
         raise MCPContractError("invalid MCP tool descriptor")
     forbidden = {"handler", "module", "module_path", "executable", "executable_path"}
     if forbidden.intersection(schema):
@@ -99,28 +105,36 @@ def _validate_tool_schema(tool: Any) -> None:
     def visit(value: Any, depth: int) -> None:
         nonlocal nodes
         nodes += 1
-        if nodes > 256 or depth > 8:
-            raise MCPContractError("invalid MCP tool descriptor")
-        if type(value) is str and len(value) > 512:
+        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
             raise MCPContractError("invalid MCP tool descriptor")
         if type(value) is dict:
-            if len(value) > 64 or any(type(key) is not str for key in value):
+            if len(value) > MAX_JSON_COLLECTION_ITEMS or any(
+                type(key) is not str for key in value
+            ):
                 raise MCPContractError("invalid MCP tool descriptor")
             for key, child in value.items():
                 if key in forbidden:
                     raise MCPContractError("invalid MCP tool descriptor")
                 visit(child, depth + 1)
         elif type(value) is list:
-            if len(value) > 64:
+            if len(value) > MAX_JSON_COLLECTION_ITEMS:
                 raise MCPContractError("invalid MCP tool descriptor")
             for child in value:
                 visit(child, depth + 1)
+        elif value is not None and type(value) not in {str, int, float, bool}:
+            raise MCPContractError("invalid MCP tool descriptor")
 
     visit(schema, 0)
     try:
-        if len(json.dumps(schema, separators=(",", ":"))) > 64 * 1024:
+        encoded = json.dumps(
+            schema,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if len(encoded) > MAX_JSON_BYTES:
             raise MCPContractError("invalid MCP tool descriptor")
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, UnicodeError):
         raise MCPContractError("invalid MCP tool descriptor") from None
 
 
