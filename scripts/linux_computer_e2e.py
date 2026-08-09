@@ -55,9 +55,10 @@ except ModuleNotFoundError as error:
 
 DEVICE_ID = "linux-cua-e2e-agent"
 CUA_CAPABILITIES = (
-    "computer.capture",
-    "computer.click",
-    "computer.type",
+    "cua.click",
+    "cua.get_window_state",
+    "cua.list_windows",
+    "cua.type_text",
     "system.ping",
     "terminal.exec",
 )
@@ -94,13 +95,23 @@ def _status(
         http_timeout=1.0,
         operation_timeout=2.0,
     )
-    portable_oracles.validate_status(
-        result,
-        device_id=None if allow_unenrolled else DEVICE_ID,
-        connected=connected,
-        expected_capabilities=CUA_CAPABILITIES,
-        allow_unenrolled=allow_unenrolled,
-    )
+    try:
+        portable_oracles.validate_status(
+            result,
+            device_id=None if allow_unenrolled else DEVICE_ID,
+            connected=connected,
+            expected_capabilities=CUA_CAPABILITIES,
+            allow_unenrolled=allow_unenrolled,
+        )
+    except ValueError:
+        if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+            print(
+                "Linux CUA status diagnostic: "
+                f"category={portable_oracles.classify_status_failure(result, device_id=None if allow_unenrolled else DEVICE_ID, connected=connected, expected_capabilities=CUA_CAPABILITIES)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
 
 
 def _fixture_ready(url: str) -> bool:
@@ -174,13 +185,94 @@ def _accessibility_ready(environment: dict[str, str]) -> bool:
     )
 
 
+def _x11_window_hint(environment: dict[str, str]) -> str:
+    """Return bounded X11 window counts without exposing window metadata."""
+    counts: dict[str, str] = {}
+    probes = {
+        "client_windows": ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
+        "title_windows": [
+            "xdotool",
+            "search",
+            "--onlyvisible",
+            "--name",
+            COMPUTER_WINDOW_TITLE,
+        ],
+        "class_windows": [
+            "xdotool",
+            "search",
+            "--onlyvisible",
+            "--class",
+            COMPUTER_APP_NAME,
+        ],
+    }
+    for label, command in probes.items():
+        try:
+            completed = subprocess.run(
+                command,
+                env=environment,
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=2,
+                shell=False,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            counts[label] = "error"
+            continue
+        if completed.returncode != 0:
+            counts[label] = "unavailable"
+            continue
+        counts[label] = str(len(re.findall(r"0x[0-9a-fA-F]+", completed.stdout)))
+    return " ".join(f"{key}={value}" for key, value in counts.items())
+
+
+def _x11_has_client_window(environment: dict[str, str]) -> bool:
+    """Return whether the X11 window manager has published a client window."""
+    try:
+        completed = subprocess.run(
+            ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
+            env=environment,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+            shell=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and bool(
+        re.search(r"0x[0-9a-fA-F]+", completed.stdout)
+    )
+
+
 def _stderr_hint(path: Path) -> str | None:
     """Return a short, redacted diagnostic line without exposing child logs."""
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    candidates = [
+    preferred = [
+        line
+        for line in lines
+        if any(
+            marker in line.lower()
+            for marker in (
+                "cua provider descriptor failure:",
+                "cua provider inventory failure:",
+                "cua catalog construction failed:",
+                "computer privacy command failed:",
+                "computer startup failed:",
+                "computer cua list_windows rejected:",
+            )
+        )
+    ]
+    candidates = preferred or [
         line
         for line in lines
         if any(marker in line.lower() for marker in ("error", "fatal", "sandbox", "exception"))
@@ -279,6 +371,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
     cleanup_error: BaseException | None = None
     diagnostics: dict[str, Path] = {}
     event_artifact: Path | None = None
+    graphical_environment: dict[str, str] | None = None
 
     try:
         lifecycle.install_signal_handlers()
@@ -345,7 +438,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text",
                 "RELAY_NATIVE_DEBUG": "1",
                 "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
@@ -405,6 +498,17 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         if browser.poll() is not None:
             raise LinuxCuaE2EError("Linux CUA Chromium exited during startup")
 
+        def chromium_window_ready() -> bool:
+            if browser.poll() is not None:
+                raise LinuxCuaE2EError("Linux CUA Chromium exited before its window appeared")
+            return _x11_has_client_window(graphical_environment)
+
+        native._wait_for(
+            "Linux CUA Chromium window",
+            chromium_window_ready,
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
+
         phase = "agent-start"
         agent = native._spawn(
             native.agent_command(server_port, workspace),
@@ -422,18 +526,23 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
 
         native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
         phase = "computer-scenario"
-        portable_scenarios.run_computer_scenario(
+        portable_scenarios.run_cua_scenario(
             runtime,
             value,
             scenario_phase,
             expected_capabilities=CUA_CAPABILITIES,
-            expected_computer_app=COMPUTER_APP_NAME,
-            expected_computer_window_title=COMPUTER_WINDOW_TITLE,
+            expected_cua_app=COMPUTER_APP_NAME,
+            expected_cua_window_title=COMPUTER_WINDOW_TITLE,
         )
         if any(process.poll() is not None for process in (server, fixture, browser, agent)):
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")
     except BaseException as error:
         scenario_error = error
+        if graphical_environment is not None:
+            print(
+                f"Linux CUA X11 diagnostic: {_x11_window_hint(graphical_environment)}",
+                file=sys.stderr,
+            )
         for label, path in diagnostics.items():
             if (hint := _stderr_hint(path)) is not None:
                 print(f"Linux CUA {label} diagnostic: {hint}", file=sys.stderr)

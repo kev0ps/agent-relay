@@ -285,6 +285,9 @@ def _minimal_environment(home: Path, values: dict[str, str]) -> dict[str, str]:
         "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
         "PYTHONUNBUFFERED": "1",
     }
+    for name in ("CUA_DRIVER_RS_HOME", "CUA_DRIVER_RS_INSTALL_DIR"):
+        if value := os.environ.get(name):
+            environment[name] = value
     environment.update(values)
     return environment
 
@@ -516,7 +519,7 @@ def run_scenario(
                     "RELAY_AGENT_WORKSPACE": str(workspace),
                     "RELAY_ALLOW_INSECURE_WS": "true",
                     "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                    "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
+                    "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec",
                     "RELAY_AGENT_E2E_RUN_ID": run_id,
                 },
             )

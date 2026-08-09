@@ -87,9 +87,10 @@ def _good_status_payload(device_id: str, *, connected: bool) -> dict[str, Any]:
                     "browser.scroll",
                     "browser.type",
                     "browser.back",
-                    "computer.capture",
-                    "computer.click",
-                    "computer.type",
+                    "cua.click",
+                    "cua.get_window_state",
+                    "cua.list_windows",
+                    "cua.type_text",
                 ]
             )
             if connected
@@ -356,537 +357,264 @@ def test_validate_terminal_rejects_extra_keys() -> None:
         oracles.validate_terminal(result, command_id="git-branch", expected="main")
 
 
-# --- List tabs oracle -------------------------------------------------------
+# --- Browser provider oracles ----------------------------------------------
 
 
-def test_oracles_module_exposes_validate_list_tabs() -> None:
+def test_oracles_module_exposes_browser_contract() -> None:
     oracles = _oracles()
-    assert hasattr(oracles, "validate_list_tabs")
+    for name in (
+        "validate_list_tabs",
+        "validate_browser_action",
+        "validate_snapshot",
+    ):
+        assert hasattr(oracles, name), f"missing {name}"
 
 
 def _good_list_tabs_payload() -> dict[str, Any]:
-    return {
-        "tabs": [
-            {"tab_id": "tab-1", "title": "Agent Relay", "url": "about:blank"},
-        ],
-    }
+    return {"tabs": [{"title": "", "url": "about:blank"}]}
 
 
-def test_validate_list_tabs_returns_tab_id_for_one_blank_tab() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_list_tabs_payload())
-    assert oracles.validate_list_tabs(result) == "tab-1"
+def test_validate_list_tabs_accepts_handle_free_inventory() -> None:
+    _oracles().validate_list_tabs(_make_call_tool_result(_good_list_tabs_payload()))
 
 
-def test_validate_list_tabs_rejects_non_blank_url() -> None:
-    oracles = _oracles()
+def test_validate_list_tabs_rejects_public_handle_fields() -> None:
     payload = _good_list_tabs_payload()
-    payload["tabs"][0]["url"] = "https://example.com/"
-    result = _make_call_tool_result(payload)
+    payload["tabs"][0]["tab_id"] = "opaque"
     with pytest.raises(ValueError):
-        oracles.validate_list_tabs(result)
+        _oracles().validate_list_tabs(_make_call_tool_result(payload))
 
 
-def test_validate_list_tabs_rejects_zero_tabs() -> None:
-    oracles = _oracles()
-    payload: dict[str, Any] = {"tabs": []}
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_list_tabs(result)
-
-
-def test_validate_list_tabs_rejects_tab_with_extra_keys() -> None:
-    oracles = _oracles()
+def test_validate_list_tabs_rejects_extra_fields() -> None:
     payload = _good_list_tabs_payload()
     payload["tabs"][0]["screenshot"] = "raw-bytes"
-    result = _make_call_tool_result(payload)
     with pytest.raises(ValueError):
-        oracles.validate_list_tabs(result)
+        _oracles().validate_list_tabs(_make_call_tool_result(payload))
 
 
-def test_validate_list_tabs_rejects_oversized_tab_id() -> None:
-    oracles = _oracles()
-    payload = _good_list_tabs_payload()
-    payload["tabs"][0]["tab_id"] = "x" * 200
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_list_tabs(result)
-
-
-# --- Action oracle ----------------------------------------------------------
-
-
-def test_oracles_module_exposes_validate_action() -> None:
-    oracles = _oracles()
-    assert hasattr(oracles, "validate_action")
-
-
-def _good_action_payload(
-    *, tab_id: str, element_id: str | None, fixture_url: str, fixture_title: str
-) -> dict[str, Any]:
-    return {
-        "tab_id": tab_id,
-        "element_id": element_id,
-        "url": fixture_url,
-        "title": fixture_title,
-        "success": True,
-    }
-
-
-def test_validate_action_accepts_well_formed_navigate_payload() -> None:
-    oracles = _oracles()
-    payload = _good_action_payload(
-        tab_id="tab-1",
-        element_id=None,
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    result = _make_call_tool_result(payload)
-    oracles.validate_action(
-        result,
-        tool_name="relay_browser_navigate",
-        tab_id="tab-1",
-        element_id=None,
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-
-
-def test_validate_action_accepts_well_formed_click_payload() -> None:
-    oracles = _oracles()
-    payload = _good_action_payload(
-        tab_id="tab-1",
-        element_id="btn-1",
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    result = _make_call_tool_result(payload)
-    oracles.validate_action(
-        result,
-        tool_name="relay_browser_click",
-        tab_id="tab-1",
-        element_id="btn-1",
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-
-
-def test_validate_action_rejects_success_false() -> None:
-    oracles = _oracles()
-    payload = _good_action_payload(
-        tab_id="tab-1",
-        element_id=None,
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    payload["success"] = False
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_action(
-            result,
-            tool_name="relay_browser_navigate",
-            tab_id="tab-1",
-            element_id=None,
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-def test_validate_action_rejects_tab_id_mismatch() -> None:
-    oracles = _oracles()
-    payload = _good_action_payload(
-        tab_id="tab-other",
-        element_id=None,
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_action(
-            result,
-            tool_name="relay_browser_navigate",
-            tab_id="tab-1",
-            element_id=None,
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-def test_validate_action_rejects_url_outside_origin_allowlist() -> None:
-    oracles = _oracles()
-    payload = _good_action_payload(
-        tab_id="tab-1",
-        element_id=None,
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    payload["url"] = "https://attacker.example/"
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_action(
-            result,
-            tool_name="relay_browser_navigate",
-            tab_id="tab-1",
-            element_id=None,
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-# --- Computer capture oracle ------------------------------------------------
-
-_LINUX_COMPUTER_APP = "relay-desktop-fixture"
-_LINUX_COMPUTER_WINDOW_TITLE = "Relay Desktop Fixture"
-
-
-def test_oracles_module_exposes_validate_computer_capture() -> None:
-    oracles = _oracles()
-    assert hasattr(oracles, "validate_computer_capture")
-
-
-def _good_computer_capture_payload() -> dict[str, Any]:
-    return {
-        "app": _LINUX_COMPUTER_APP,
-        "window_title": _LINUX_COMPUTER_WINDOW_TITLE,
-        "generation": "gen-001",
-        "elements": [
-            {
-                "element_id": "field-1",
-                "role": "textbox",
-                "name": "Name",
-                "value": "",
-                "enabled": True,
-            },
-            {
-                "element_id": "btn-1",
-                "role": "button",
-                "name": "Apply",
-                "value": None,
-                "enabled": True,
-            },
-        ],
-    }
-
-
-def _validate_computer_capture(
-    oracles: ModuleType,
-    result: Any,
+def _good_browser_action_payload(
     *,
-    diagnostic_phase: list[str] | None = None,
-) -> tuple[str, str]:
-    return oracles.validate_computer_capture(
-        result,
-        diagnostic_phase=diagnostic_phase,
-        expected_app=_LINUX_COMPUTER_APP,
-        expected_window_title=_LINUX_COMPUTER_WINDOW_TITLE,
+    fixture_url: str = "http://127.0.0.1:8899/",
+    fixture_title: str = "Relay Browser Fixture",
+) -> dict[str, Any]:
+    return {"success": True, "title": fixture_title, "url": fixture_url}
+
+
+def test_validate_browser_action_accepts_locator_free_result() -> None:
+    _oracles().validate_browser_action(
+        _make_call_tool_result(_good_browser_action_payload()),
+        tool_name="relay_browser_navigate",
+        fixture_url="http://127.0.0.1:8899/",
+        fixture_title="Relay Browser Fixture",
     )
 
 
-def test_validate_computer_capture_requires_harness_identity() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_computer_capture_payload())
-
-    with pytest.raises(TypeError):
-        oracles.validate_computer_capture(result)
-
-
-def test_validate_computer_capture_returns_field_and_button_ids() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_computer_capture_payload())
-    field_id, button_id = _validate_computer_capture(oracles, result)
-    assert field_id == "field-1"
-    assert button_id == "btn-1"
-
-
-def test_validate_computer_capture_accepts_harness_identity_and_uia_edit_role() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["app"] = "powershell"
-    payload["window_title"] = "Agent Relay Computer Use Windows Fixture"
-    payload["elements"][0]["role"] = "Edit"
-    result = _make_call_tool_result(payload)
-
-    field_id, button_id = oracles.validate_computer_capture(
-        result,
-        expected_app="powershell",
-        expected_window_title="Agent Relay Computer Use Windows Fixture",
-    )
-
-    assert field_id == "field-1"
-    assert button_id == "btn-1"
-
-
-def test_validate_computer_capture_rejects_wrong_app_name() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["app"] = "some-other-app"
-    result = _make_call_tool_result(payload)
+def test_validate_browser_action_rejects_provider_handles() -> None:
+    payload = _good_browser_action_payload()
+    payload["element_id"] = "opaque"
     with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
+        _oracles().validate_browser_action(
+            _make_call_tool_result(payload),
+            tool_name="relay_browser_click",
+            fixture_url="http://127.0.0.1:8899/",
+            fixture_title="Relay Browser Fixture",
+        )
 
 
-def test_validate_computer_capture_rejects_wrong_window_title() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["window_title"] = "Personal Chrome"
-    result = _make_call_tool_result(payload)
+def test_validate_browser_action_rejects_error_result() -> None:
     with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
+        _oracles().validate_browser_action(
+            _make_call_tool_result(_good_browser_action_payload(), is_error=True),
+            tool_name="relay_browser_navigate",
+            fixture_url="http://127.0.0.1:8899/",
+            fixture_title="Relay Browser Fixture",
+        )
 
 
-def test_validate_computer_capture_rejects_duplicate_element_ids() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["elements"].append(dict(payload["elements"][0]))
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
-
-
-def test_validate_computer_capture_rejects_decoy_control() -> None:
-    """A control whose name matches a known decoy is rejected.
-
-    Decoys prevent the agent from being manipulated into acting on
-    sensitive-looking UI that does not exist in the fixture.
-    """
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["elements"].append(
-        {
-            "element_id": "decoy-1",
-            "role": "button",
-            "name": "vault password",
-            "value": None,
-            "enabled": True,
-        }
-    )
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
-
-
-def test_validate_computer_capture_rejects_missing_field_control() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    # Remove the textbox element; only the button remains.
-    payload["elements"] = [payload["elements"][1]]
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
-
-
-def test_validate_computer_capture_rejects_missing_button_control() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["elements"] = [payload["elements"][0]]
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
-
-
-def test_validate_computer_capture_rejects_oversized_generation() -> None:
-    oracles = _oracles()
-    payload = _good_computer_capture_payload()
-    payload["generation"] = "g" * 200
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, result)
-
-
-def test_validate_computer_capture_accepts_diagnostic_phase() -> None:
-    """The optional ``diagnostic_phase`` list receives failure markers."""
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_computer_capture_payload())
-    phase: list[str] = []
-    _validate_computer_capture(oracles, result, diagnostic_phase=phase)
-    # On success, phase may be empty or end with a success marker.
-    # The contract is that the harness receives any markers that
-    # happened; we only assert that the call did not raise.
-
-
-def test_validate_computer_capture_marks_failure_in_diagnostic_phase() -> None:
-    oracles = _oracles()
-    bad_result = _make_call_tool_result({"rogue": True})
-    phase: list[str] = []
-    with pytest.raises(ValueError):
-        _validate_computer_capture(oracles, bad_result, diagnostic_phase=phase)
-    assert phase, "diagnostic_phase must be populated on failure"
-
-
-# --- Computer action oracle -------------------------------------------------
-
-
-def test_oracles_module_exposes_validate_computer_action() -> None:
-    oracles = _oracles()
-    assert hasattr(oracles, "validate_computer_action")
-
-
-def _good_computer_action_payload(generation: str, element_id: str) -> dict[str, Any]:
+def _good_snapshot_payload() -> dict[str, Any]:
     return {
-        "success": True,
-        "generation": generation,
-        "element_id": element_id,
-    }
-
-
-def test_validate_computer_action_accepts_well_formed_payload() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_computer_action_payload("gen-001", "field-1"))
-    oracles.validate_computer_action(
-        result,
-        tool_name="relay_computer_click",
-        generation="gen-001",
-        element_id="field-1",
-    )
-
-
-def test_validate_computer_action_rejects_success_false() -> None:
-    oracles = _oracles()
-    payload = _good_computer_action_payload("gen-001", "field-1")
-    payload["success"] = False
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_computer_action(
-            result,
-            tool_name="relay_computer_click",
-            generation="gen-001",
-            element_id="field-1",
-        )
-
-
-def test_validate_computer_action_rejects_generation_mismatch() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_computer_action_payload("gen-001", "field-1"))
-    with pytest.raises(ValueError):
-        oracles.validate_computer_action(
-            result,
-            tool_name="relay_computer_click",
-            generation="gen-other",
-            element_id="field-1",
-        )
-
-
-def test_validate_computer_action_rejects_element_id_mismatch() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_computer_action_payload("gen-001", "field-1"))
-    with pytest.raises(ValueError):
-        oracles.validate_computer_action(
-            result,
-            tool_name="relay_computer_click",
-            generation="gen-001",
-            element_id="field-other",
-        )
-
-
-def test_validate_computer_action_rejects_extra_keys() -> None:
-    oracles = _oracles()
-    payload = _good_computer_action_payload("gen-001", "field-1")
-    payload["screenshot"] = "raw-bytes"
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_computer_action(
-            result,
-            tool_name="relay_computer_click",
-            generation="gen-001",
-            element_id="field-1",
-        )
-
-
-# --- Snapshot oracle --------------------------------------------------------
-
-
-def test_oracles_module_exposes_validate_snapshot() -> None:
-    oracles = _oracles()
-    assert hasattr(oracles, "validate_snapshot")
-
-
-def _good_snapshot_payload(tab_id: str) -> dict[str, Any]:
-    return {
-        "tab_id": tab_id,
         "url": "http://127.0.0.1:8899/",
         "title": "Relay Browser Fixture",
         "text": "Relay Browser Fixture\nName\nSubmit\n",
         "elements": [
             {
-                "element_id": "field-1",
+                "locator": {"by": "role", "role": "textbox", "name": "Name"},
                 "role": "textbox",
                 "name": "Name",
                 "value": "",
                 "editable": True,
                 "enabled": True,
+                "clickable": False,
             },
             {
-                "element_id": "btn-1",
+                "locator": {"by": "role", "role": "button", "name": "Submit"},
                 "role": "button",
                 "name": "Submit",
                 "value": None,
                 "editable": False,
+                "enabled": True,
+                "clickable": True,
+            },
+        ],
+    }
+
+
+def test_validate_snapshot_returns_structured_locators() -> None:
+    textbox, button = _oracles().validate_snapshot(
+        _make_call_tool_result(_good_snapshot_payload()),
+        fixture_url="http://127.0.0.1:8899/",
+        fixture_title="Relay Browser Fixture",
+    )
+    assert textbox == {"by": "role", "role": "textbox", "name": "Name"}
+    assert button == {"by": "role", "role": "button", "name": "Submit"}
+
+
+def test_validate_snapshot_rejects_element_handles() -> None:
+    payload = _good_snapshot_payload()
+    payload["elements"][0]["element_id"] = "opaque"
+    with pytest.raises(ValueError):
+        _oracles().validate_snapshot(
+            _make_call_tool_result(payload),
+            fixture_url="http://127.0.0.1:8899/",
+            fixture_title="Relay Browser Fixture",
+        )
+
+
+def test_validate_snapshot_rejects_oversized_text() -> None:
+    payload = _good_snapshot_payload()
+    payload["text"] = "Relay Browser Fixture\nName\nSubmit\n" + ("x" * 5000)
+    with pytest.raises(ValueError):
+        _oracles().validate_snapshot(
+            _make_call_tool_result(payload),
+            fixture_url="http://127.0.0.1:8899/",
+            fixture_title="Relay Browser Fixture",
+        )
+
+
+def test_validate_snapshot_requires_field_and_button_locators() -> None:
+    payload = _good_snapshot_payload()
+    payload["elements"] = [payload["elements"][1]]
+    with pytest.raises(ValueError):
+        _oracles().validate_snapshot(
+            _make_call_tool_result(payload),
+            fixture_url="http://127.0.0.1:8899/",
+            fixture_title="Relay Browser Fixture",
+        )
+
+
+# --- Generic CUA provider oracles -------------------------------------------
+
+
+def _good_cua_windows_payload() -> dict[str, Any]:
+    return {
+        "windows": [
+            {
+                "window_id": 77,
+                "pid": 1234,
+                "app_name": "relay-desktop-fixture",
+                "title": "Relay Desktop Fixture",
+                "bounds": {"x": 0, "y": 0, "width": 800, "height": 600},
+                "is_on_screen": True,
+            }
+        ]
+    }
+
+
+def test_validate_cua_list_windows_returns_pid_and_window_id() -> None:
+    pid, window_id = _oracles().validate_cua_list_windows(
+        _make_call_tool_result(_good_cua_windows_payload()),
+        expected_app="relay-desktop-fixture",
+        expected_window_title="Relay Desktop Fixture",
+    )
+    assert (pid, window_id) == (1234, 77)
+
+
+def test_validate_cua_list_windows_rejects_wrong_window_identity() -> None:
+    payload = _good_cua_windows_payload()
+    payload["windows"][0]["title"] = "Other Window"
+    with pytest.raises(ValueError):
+        _oracles().validate_cua_list_windows(
+            _make_call_tool_result(payload),
+            expected_app="relay-desktop-fixture",
+            expected_window_title="Relay Desktop Fixture",
+        )
+
+
+def _good_cua_state_payload() -> dict[str, Any]:
+    return {
+        "window_id": 77,
+        "pid": 1234,
+        "snapshot_id": "snapshot-001",
+        "elements": [
+            {
+                "element_index": 0,
+                "element_token": "token-field-001",
+                "role": "entry",
+                "label": "Name",
+                "enabled": True,
+            },
+            {
+                "element_index": 1,
+                "element_token": "token-button-001",
+                "role": "push button",
+                "label": "Apply",
                 "enabled": True,
             },
         ],
     }
 
 
-def test_validate_snapshot_returns_textbox_and_button_ids() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_snapshot_payload("tab-1"))
-    textbox_id, button_id = oracles.validate_snapshot(
-        result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
+def test_validate_cua_window_state_returns_bounded_tokens() -> None:
+    snapshot, field, button = _oracles().validate_cua_window_state(
+        _make_call_tool_result(_good_cua_state_payload()),
+        expected_pid=1234,
+        window_id=77,
     )
-    assert textbox_id == "field-1"
-    assert button_id == "btn-1"
+    assert (snapshot, field, button) == (
+        "snapshot-001",
+        "token-field-001",
+        "token-button-001",
+    )
 
 
-def test_validate_snapshot_rejects_tab_id_mismatch() -> None:
-    oracles = _oracles()
-    result = _make_call_tool_result(_good_snapshot_payload("tab-1"))
+def test_validate_cua_window_state_rejects_duplicate_indices() -> None:
+    payload = _good_cua_state_payload()
+    payload["elements"][1]["element_index"] = 0
     with pytest.raises(ValueError):
-        oracles.validate_snapshot(
-            result, tab_id="tab-other", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
+        _oracles().validate_cua_window_state(
+            _make_call_tool_result(payload), expected_pid=1234, window_id=77
         )
 
 
-def test_validate_snapshot_rejects_text_missing_required_markers() -> None:
-    oracles = _oracles()
-    payload = _good_snapshot_payload("tab-1")
-    payload["text"] = "Some other text"
-    result = _make_call_tool_result(payload)
+def test_validate_cua_window_state_rejects_oversized_tokens() -> None:
+    payload = _good_cua_state_payload()
+    payload["elements"][0]["element_token"] = "x" * 300
     with pytest.raises(ValueError):
-        oracles.validate_snapshot(
-            result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
+        _oracles().validate_cua_window_state(
+            _make_call_tool_result(payload), expected_pid=1234, window_id=77
         )
 
 
-def test_validate_snapshot_rejects_oversized_text() -> None:
-    oracles = _oracles()
-    payload = _good_snapshot_payload("tab-1")
-    payload["text"] = "Name Submit " + ("x" * 5000)
-    result = _make_call_tool_result(payload)
+def test_validate_cua_action_accepts_bounded_result() -> None:
+    _oracles().validate_cua_action(
+        _make_call_tool_result(
+            {"path": "native_input", "verified": False, "effect": "unverifiable"}
+        ),
+        tool_name="relay_cua_click",
+    )
+
+
+def test_validate_cua_action_rejects_raw_screenshot_or_token() -> None:
+    payload = {
+        "path": "native_input",
+        "verified": False,
+        "effect": "unverifiable",
+        "screenshot": "raw-bytes",
+        "element_token": "token-field-001",
+    }
     with pytest.raises(ValueError):
-        oracles.validate_snapshot(
-            result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
-        )
-
-
-def test_validate_snapshot_rejects_missing_textbox() -> None:
-    oracles = _oracles()
-    payload = _good_snapshot_payload("tab-1")
-    payload["elements"] = [payload["elements"][1]]  # only button
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_snapshot(
-            result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
-        )
-
-
-def test_validate_snapshot_rejects_element_with_wrong_shape() -> None:
-    oracles = _oracles()
-    payload = _good_snapshot_payload("tab-1")
-    payload["elements"][0]["bogus"] = True
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_snapshot(
-            result, tab_id="tab-1", fixture_url="http://127.0.0.1:8899/", fixture_title="Relay Browser Fixture"
+        _oracles().validate_cua_action(
+            _make_call_tool_result(payload), tool_name="relay_cua_click"
         )
 
 
@@ -897,7 +625,7 @@ def test_oracles_module_exposes_fixture_event_helpers() -> None:
     oracles = _oracles()
     for name in (
         "validate_fixture_event",
-        "validate_computer_event",
+        "validate_cua_event",
         "assert_no_fixture_event",
         "poll_fixture_event",
     ):
@@ -956,18 +684,18 @@ def test_validate_fixture_event_rejects_non_jsonl_content(tmp_path) -> None:
         oracles.validate_fixture_event(path, run_id="run-1", value="abc")
 
 
-def test_validate_computer_event_accepts_well_formed_applied_event(tmp_path) -> None:
+def test_validate_cua_event_accepts_well_formed_applied_event(tmp_path) -> None:
     oracles = _oracles()
     path = _write_event(tmp_path, {"run_id": "run-1", "event": "applied", "value": "abc"})
-    oracles.validate_computer_event(path, run_id="run-1", value="abc")
+    oracles.validate_cua_event(path, run_id="run-1", value="abc")
 
 
-def test_validate_computer_event_rejects_wrong_event_kind(tmp_path) -> None:
+def test_validate_cua_event_rejects_wrong_event_kind(tmp_path) -> None:
     oracles = _oracles()
     # Submitted is for browser fixture, applied is for computer fixture.
     path = _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
     with pytest.raises(ValueError):
-        oracles.validate_computer_event(path, run_id="run-1", value="abc")
+        oracles.validate_cua_event(path, run_id="run-1", value="abc")
 
 
 def test_assert_no_fixture_event_passes_when_absent(tmp_path) -> None:
@@ -1013,27 +741,6 @@ def test_poll_fixture_event_rejects_invalid_event_when_present(tmp_path) -> None
         oracles.poll_fixture_event(tmp_path / "event.jsonl", run_id="run-1", value="abc", timeout=0.5)
 
 
-def test_validate_action_rejects_extra_keys() -> None:
-    oracles = _oracles()
-    payload = _good_action_payload(
-        tab_id="tab-1",
-        element_id=None,
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    payload["screenshot"] = "raw-bytes"
-    result = _make_call_tool_result(payload)
-    with pytest.raises(ValueError):
-        oracles.validate_action(
-            result,
-            tool_name="relay_browser_navigate",
-            tab_id="tab-1",
-            element_id=None,
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
 def test_validate_status_accepts_connected_status_payload_shape() -> None:
     """A connected capability list in sorted wire order validates."""
     oracles = _oracles()
@@ -1052,9 +759,10 @@ def test_validate_status_accepts_connected_status_payload_shape() -> None:
                 "browser.scroll",
                 "browser.type",
                 "browser.back",
-                "computer.capture",
-                "computer.click",
-                "computer.type",
+                "cua.click",
+                "cua.get_window_state",
+                "cua.list_windows",
+                "cua.type_text",
             ]
         ),
         "invocation_state": "idle",

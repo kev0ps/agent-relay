@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .output_models import ProviderToolResult
 from .protocol import (
     AgentError,
     AgentResult,
@@ -16,6 +17,8 @@ from .protocol import (
     Progress,
     Registered,
 )
+from .provider_tools import ProviderToolDescriptor
+from .providers.base import ProviderToolError, validate_provider_arguments
 
 
 class JsonSocket(Protocol):
@@ -62,6 +65,10 @@ class UnsupportedToolError(RelayError):
     pass
 
 
+class InvalidToolArgumentsError(UnsupportedToolError):
+    pass
+
+
 class RemoteAgentError(RelayError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -73,6 +80,7 @@ class _Device:
     socket: JsonSocket
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     capabilities: set[str] = field(default_factory=set)
+    descriptors: dict[str, ProviderToolDescriptor] = field(default_factory=dict)
     last_heartbeat: float = field(default_factory=time.monotonic)
     progress_request_id: str | None = None
     progress: int | None = None
@@ -105,7 +113,7 @@ class RelayRegistry:
         self._device_id = device_id
         self._agent_token = agent_token
         self._device: _Device | None = None
-        self._pending: dict[str, asyncio.Future[dict[str, object]]] = {}
+        self._pending: dict[str, asyncio.Future[ProviderToolResult]] = {}
         self._recently_completed: dict[str, None] = {}
         self._lock = asyncio.Lock()
         self._cancel_send_timeout_seconds = cancel_send_timeout_seconds
@@ -128,6 +136,12 @@ class RelayRegistry:
         """Return the current Agent announcement for synchronous MCP filtering."""
         device = self._device
         return frozenset(device.capabilities) if device is not None else frozenset()
+
+    @property
+    def announced_descriptors(self) -> dict[str, ProviderToolDescriptor]:
+        """Return a copy of the selected descriptor announcement."""
+        device = self._device
+        return {} if device is None else dict(device.descriptors)
 
     async def status_snapshot(self) -> DeviceStatusSnapshot:
         """Return only safe device state, copied atomically under the lock."""
@@ -170,6 +184,10 @@ class RelayRegistry:
         async with self._lock:
             device = self._require_socket(socket)
             device.capabilities = set(message.tools)
+            device.descriptors = {
+                f"{descriptor.provider_name}.{descriptor.tool_name}": descriptor
+                for descriptor in message.descriptors
+            }
 
     async def send(self, socket: JsonSocket, message: object) -> None:
         """Serialize every server-to-agent write for the registered connection."""
@@ -187,7 +205,7 @@ class RelayRegistry:
         device_id: str | None,
         message: InvokeMessage,
         timeout_seconds: float,
-    ) -> dict[str, object]:
+    ) -> ProviderToolResult:
         request_id = message.request_id
         async with self._lock:
             if self._device_id is None or (
@@ -201,9 +219,15 @@ class RelayRegistry:
             if self._pending:
                 raise DeviceBusyError("device already has an invocation in progress")
             self._recently_completed.pop(request_id, None)
-            if message.tool not in self._device.capabilities:
-                raise UnsupportedToolError(f"tool is not declared: {message.tool}")
-            future: asyncio.Future[dict[str, object]] = (
+            if message.tool_name not in self._device.capabilities:
+                raise UnsupportedToolError(f"tool is not declared: {message.tool_name}")
+            descriptor = self._device.descriptors.get(message.tool_name)
+            if descriptor is not None:
+                try:
+                    validate_provider_arguments(descriptor, message.arguments)
+                except ProviderToolError:
+                    raise InvalidToolArgumentsError("invalid tool arguments") from None
+            future: asyncio.Future[ProviderToolResult] = (
                 asyncio.get_running_loop().create_future()
             )
             self._pending[request_id] = future
@@ -261,7 +285,7 @@ class RelayRegistry:
         self,
         request_id: str,
         *,
-        result: dict[str, object] | None = None,
+        result: ProviderToolResult | None = None,
         exception: Exception | None = None,
     ) -> None:
         async with self._lock:
@@ -275,7 +299,9 @@ class RelayRegistry:
             if exception is not None:
                 future.set_exception(exception)
             else:
-                future.set_result(result if result is not None else {})
+                if result is None:  # pragma: no cover - result/error are exclusive
+                    raise RuntimeError("missing result")
+                future.set_result(result)
 
     async def disconnect(self, socket: JsonSocket) -> None:
         async with self._lock:
@@ -297,7 +323,7 @@ class RelayRegistry:
                 return
             write_lock = self._device.write_lock
         message = Cancel(
-            version=1,
+            version=2,
             type="cancel",
             request_id=request_id,
             reason="control request cancelled or timed out",

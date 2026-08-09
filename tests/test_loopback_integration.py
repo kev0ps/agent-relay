@@ -105,18 +105,21 @@ def test_real_loopback_server_agent_and_runner(tmp_path: Path) -> None:
                         break
                     await asyncio.sleep(0.01)
                 ping = await client.post(
-                    "/v1/devices/linux-test/invoke", headers=headers,
-                    json={"tool": "system.ping"},
+                    "/v2/devices/linux-test/invoke", headers=headers,
+                    json={"tool_name": "system.ping", "arguments": {}},
                 )
                 assert ping.status_code == 200
-                assert ping.json()["result"] == {"pong": True}
+                assert ping.json()["result"]["structuredContent"] == {"pong": True}
                 for command_id in ("pwd", "python_version"):
                     response = await client.post(
-                        "/v1/devices/linux-test/invoke", headers=headers,
-                        json={"tool": "terminal.exec", "command_id": command_id},
+                        "/v2/devices/linux-test/invoke", headers=headers,
+                        json={
+                            "tool_name": "terminal.exec",
+                            "arguments": {"command_id": command_id},
+                        },
                     )
                     assert response.status_code == 200
-                    result = response.json()["result"]
+                    result = response.json()["result"]["structuredContent"]
                     assert result["command_id"] == command_id
                     assert result["exit_code"] == 0
                     assert result["timed_out"] is False
@@ -127,10 +130,13 @@ def test_real_loopback_server_agent_and_runner(tmp_path: Path) -> None:
                     else:
                         assert f"Python {sys.version_info.major}.{sys.version_info.minor}" in result["stdout"]
                 forbidden = await client.post(
-                    "/v1/devices/linux-test/invoke", headers=headers,
-                    json={"tool": "terminal.exec", "command_id": "arbitrary"},
+                    "/v2/devices/linux-test/invoke", headers=headers,
+                    json={
+                        "tool_name": "terminal.exec",
+                        "arguments": {"command_id": "arbitrary"},
+                    },
                 )
-                assert forbidden.status_code == 422
+                assert forbidden.status_code == 502
             agent.stop()
             await asyncio.wait_for(agent_task, timeout=2)
         finally:

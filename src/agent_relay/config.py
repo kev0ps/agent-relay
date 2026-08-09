@@ -17,6 +17,13 @@ from urllib.parse import urlparse
 
 import yaml
 
+from .catalog import (
+    CUA_REFERENCE_TOOL_NAMES,
+    CatalogEntry,
+    CatalogError,
+    CatalogSnapshot,
+)
+from .catalog import discover_local_catalog as _discover_local_catalog
 from .protocol import TOOL_ORDER
 
 CONFIG_DIR_NAME = ".agent-relay"
@@ -35,9 +42,10 @@ PUBLIC_TO_INTERNAL: dict[str, str] = {
     "relay_browser_scroll": "browser.scroll",
     "relay_browser_type": "browser.type",
     "relay_browser_back": "browser.back",
-    "relay_computer_capture": "computer.capture",
-    "relay_computer_click": "computer.click",
-    "relay_computer_type": "computer.type",
+    **{
+        f"relay_cua_{name}": f"cua.{name}"
+        for name in CUA_REFERENCE_TOOL_NAMES
+    },
 }
 INTERNAL_TO_PUBLIC = {value: key for key, value in PUBLIC_TO_INTERNAL.items()}
 PUBLIC_TOOL_NAMES = tuple(PUBLIC_TO_INTERNAL)
@@ -51,8 +59,9 @@ class ConfigError(ValueError):
 class ToolSpec:
     name: str
     internal_name: str | None
-    source: Literal["builtin", "browser", "computer", "server"]
+    source: str
     description: str
+    risk: str = "interaction"
 
 
 @dataclass(frozen=True)
@@ -192,16 +201,20 @@ def _tool_specs() -> tuple[ToolSpec, ...]:
         "terminal.exec": "fixed allowlisted terminal command",
         "browser.list_tabs": "list browser tabs",
         "browser.navigate": "navigate a browser tab",
-        "browser.snapshot": "read semantic browser content",
-        "browser.fill": "fill a semantic browser element",
-        "browser.click": "click a semantic browser element",
+        "browser.snapshot": "read provider-native browser content",
+        "browser.fill": "fill a freshly resolved browser locator",
+        "browser.click": "click a freshly resolved browser locator",
         "browser.scroll": "scroll a browser page",
-        "browser.type": "type into a semantic browser element",
+        "browser.type": "type into a freshly resolved browser locator",
         "browser.back": "navigate browser history backward",
-        "computer.capture": "capture bounded desktop semantics",
-        "computer.click": "click a captured desktop element",
-        "computer.type": "type into a captured desktop element",
     }
+    descriptions.update(
+        {
+            f"cua.{name}": f"provider-native CUA tool: {name}"
+            for name in CUA_REFERENCE_TOOL_NAMES
+        }
+    )
+    internal_names = (*TOOL_ORDER, *(f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES))
     specs = [
         ToolSpec(
             name=INTERNAL_TO_PUBLIC[internal],
@@ -209,13 +222,13 @@ def _tool_specs() -> tuple[ToolSpec, ...]:
             source=(
                 "browser"
                 if internal.startswith("browser.")
-                else "computer"
-                if internal.startswith("computer.")
+                else "cua"
+                if internal.startswith("cua.")
                 else "builtin"
             ),
             description=descriptions[internal],
         )
-        for internal in TOOL_ORDER
+        for internal in internal_names
     ]
     return tuple(specs) + (
         ToolSpec(
@@ -544,6 +557,64 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dic
     return section
 
 
+def discover_local_catalog(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> CatalogSnapshot:
+    """Discover local providers using the canonical Agent config overlay."""
+    config_path = _config_path(path)
+    effective_env = os.environ if env is None else env
+    document = _load_yaml(config_path, required=False)
+    agent = _effective_agent(document, effective_env)
+    catalog_env = dict(effective_env)
+
+    browser = agent.get("browser", {})
+    if isinstance(browser, Mapping):
+        if browser.get("user_data_dir") is not None:
+            catalog_env.setdefault(
+                "RELAY_AGENT_BROWSER_USER_DATA_DIR", str(browser["user_data_dir"])
+            )
+        if browser.get("origin_policy") is not None:
+            catalog_env.setdefault(
+                "RELAY_AGENT_BROWSER_ORIGIN_POLICY", str(browser["origin_policy"])
+            )
+        origins = browser.get("allowed_origins")
+        if isinstance(origins, list):
+            catalog_env.setdefault(
+                "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS", ",".join(str(item) for item in origins)
+            )
+
+    computer = agent.get("computer", {})
+    if isinstance(computer, Mapping):
+        computer_env_fields = (
+            ("driver_path", "RELAY_AGENT_COMPUTER_DRIVER_PATH"),
+            ("allowed_app_name", "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME"),
+            ("allowed_window_title", "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE"),
+            (
+                "startup_timeout_seconds",
+                "RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS",
+            ),
+            (
+                "action_timeout_seconds",
+                "RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS",
+            ),
+            (
+                "shutdown_timeout_seconds",
+                "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS",
+            ),
+        )
+        for field, env_key in computer_env_fields:
+            if computer.get(field) is not None:
+                catalog_env.setdefault(env_key, str(computer[field]))
+
+    tools = agent.get("tools", {})
+    allowlist = tools.get("allowlist", []) if isinstance(tools, Mapping) else []
+    if not isinstance(allowlist, list):
+        raise ConfigError("tools.allowlist must be a list")
+    return _discover_local_catalog(env=catalog_env, allowlist=allowlist)
+
+
 def _secret_path(document: Mapping[str, Any], scope: Literal["server", "agent"], name: str, path: Path) -> Path:
     section = document.get(scope)
     if not isinstance(section, Mapping):
@@ -734,7 +805,13 @@ def _validate_runtime(raw: object, *, server: bool) -> None:
 
 
 def _validate_agent(
-    document: Mapping[str, Any], path: Path, env: Mapping[str, str], *, require: bool
+    document: Mapping[str, Any],
+    path: Path,
+    env: Mapping[str, str],
+    *,
+    require: bool,
+    catalog: CatalogSnapshot | None = None,
+    defer_tool_validation: bool = False,
 ) -> ValidationReport:
     issues: list[ValidationIssue] = []
     _validate_root(document, issues)
@@ -787,17 +864,23 @@ def _validate_agent(
     else:
         if len(set(allowlist)) != len(allowlist):
             issues.append(ValidationIssue("ERROR", "tools.allowlist contains duplicates"))
-        for name in allowlist:
-            if name == SERVER_LOCAL_TOOL:
-                issues.append(ValidationIssue("ERROR", "relay_device_status is server-local and cannot be selected"))
-            elif name not in PUBLIC_TO_INTERNAL:
-                issues.append(ValidationIssue("ERROR", f"unknown Agent tool: {name}"))
-            elif not _tool_is_available(
-                next(spec for spec in TOOL_SPECS if spec.name == name),
-                {"agent": section},
-                path,
-            ):
-                issues.append(ValidationIssue("ERROR", f"Agent tool is unavailable: {name}"))
+        elif catalog is not None:
+            try:
+                catalog.validate_allowlist(allowlist)
+            except CatalogError as exc:
+                issues.append(ValidationIssue("ERROR", str(exc)))
+        elif not defer_tool_validation:
+            for name in allowlist:
+                if name == SERVER_LOCAL_TOOL:
+                    issues.append(ValidationIssue("ERROR", "relay_device_status is server-local and cannot be selected"))
+                elif name not in PUBLIC_TO_INTERNAL:
+                    issues.append(ValidationIssue("ERROR", f"unknown Agent tool: {name}"))
+                elif not _tool_is_available(
+                    next(spec for spec in TOOL_SPECS if spec.name == name),
+                    {"agent": section},
+                    path,
+                ):
+                    issues.append(ValidationIssue("ERROR", f"Agent tool is unavailable: {name}"))
         if not allowlist:
             issues.append(ValidationIssue("INFO", "no tools enabled"))
     _validate_agent_browser(section.get("browser"), path, issues)
@@ -860,7 +943,12 @@ def _validate_agent_computer(raw: object, path: Path, issues: list[ValidationIss
 
 
 def validate_document(
-    path: str | Path | None, scope: Literal["server", "agent"], *, env: Mapping[str, str] | None = None, require: bool = True
+    path: str | Path | None,
+    scope: Literal["server", "agent"],
+    *,
+    env: Mapping[str, str] | None = None,
+    require: bool = True,
+    catalog: CatalogSnapshot | None = None,
 ) -> ValidationReport:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
@@ -877,7 +965,13 @@ def validate_document(
             return ValidationReport(scope, (ValidationIssue("ERROR", str(exc)),))
     if scope == "server":
         return _validate_server(document, config_path, effective_env, require=require)
-    return _validate_agent(document, config_path, effective_env, require=require)
+    return _validate_agent(
+        document,
+        config_path,
+        effective_env,
+        require=require,
+        catalog=catalog,
+    )
 
 
 def _render_report(report: ValidationReport) -> str:
@@ -895,6 +989,40 @@ def render_validation(report: ValidationReport) -> str:
     return _render_report(report)
 
 
+def _existing_allowlist(section: Mapping[str, Any]) -> list[str]:
+    tools = section.get("tools", {})
+    if not isinstance(tools, Mapping):
+        raise ConfigError("agent tools must be a mapping")
+    allowlist = tools.get("allowlist", [])
+    if not isinstance(allowlist, list) or any(not isinstance(item, str) for item in allowlist):
+        raise ConfigError("tools.allowlist must be a list of tool names")
+    if len(set(allowlist)) != len(allowlist):
+        raise ConfigError("tools.allowlist contains duplicates")
+    return allowlist
+
+
+def _validate_existing_static_allowlist(
+    section: Mapping[str, Any],
+    path: Path,
+) -> None:
+    allowlist = _existing_allowlist(section)
+    invalid = [
+        name
+        for name in allowlist
+        if (
+            name == SERVER_LOCAL_TOOL
+            or name not in PUBLIC_TOOLS
+            or not _tool_is_available(
+                next(spec for spec in TOOL_SPECS if spec.name == name),
+                section,
+                path,
+            )
+        )
+    ]
+    if invalid:
+        raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
+
+
 def init_config(
     path: str | Path | None,
     scope: Literal["server", "agent"],
@@ -904,6 +1032,7 @@ def init_config(
     tools: list[str] | None = None,
     use_stdin: bool = False,
     env: Mapping[str, str] | None = None,
+    catalog: CatalogSnapshot | None = None,
 ) -> Path:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
@@ -941,9 +1070,38 @@ def init_config(
         if "RELAY_AGENT_TOKEN_FILE" in effective_env and not effective_env["RELAY_AGENT_TOKEN_FILE"]:
             raise ConfigError("agent token file path is empty")
         if tools is not None:
+            if catalog is not None:
+                try:
+                    catalog.validate_allowlist(tools)
+                except CatalogError as exc:
+                    raise ConfigError(str(exc)) from None
+            else:
+                invalid = [
+                    name
+                    for name in tools
+                    if (
+                        name == SERVER_LOCAL_TOOL
+                        or name not in PUBLIC_TOOLS
+                        or not _tool_is_available(
+                            next(spec for spec in TOOL_SPECS if spec.name == name),
+                            section,
+                            config_path,
+                        )
+                    )
+                ]
+                if invalid:
+                    raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
             section.setdefault("tools", {})["allowlist"] = list(tools)
         elif existing is None:
             section.setdefault("tools", {})["allowlist"] = []
+        elif catalog is not None:
+            allowlist = _existing_allowlist(section)
+            try:
+                catalog.select(allowlist)
+            except CatalogError as exc:
+                raise ConfigError(str(exc)) from None
+        else:
+            _validate_existing_static_allowlist(section, config_path)
         workspace = _relative_path(section["workspace"], config_path)
         _ensure_private_directory(workspace)
         section["workspace"] = _relative_config_value(section["workspace"], config_path)
@@ -972,14 +1130,48 @@ def _relative_config_value(value: object, path: Path) -> str:
     return str(_relative_path(value, path))
 
 
-def select_tools_interactively(document: Mapping[str, Any], path: Path) -> list[str]:
+def select_tools_interactively(
+    document: Mapping[str, Any],
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> list[str]:
     if not document:
         try:
             document = _load_yaml(path, required=False)
         except ConfigError:
             document = {}
     print("Select Agent tools (comma-separated numbers; empty enables none):")
-    specs = [spec for spec in TOOL_SPECS if spec.source != "server" and _tool_is_available(spec, document, path)]
+    if catalog is not None:
+        entries = list(catalog.entries)
+        for index, entry in enumerate(entries, start=1):
+            print(
+                f"  {index}. {entry.public_name} [{entry.risk}] "
+                f"{entry.status} - {entry.description}"
+            )
+        if not entries or not sys.stdin.isatty():
+            return []
+        answer = input("Tools: ").strip()
+        if not answer:
+            return []
+        try:
+            selected = {int(item.strip()) for item in answer.split(",") if item.strip()}
+        except ValueError as exc:
+            raise ConfigError("tool selection must be a comma-separated list of numbers") from exc
+        if any(index < 1 or index > len(entries) for index in selected):
+            raise ConfigError("tool selection contains an invalid number")
+        selected_names = [entries[index - 1].public_name for index in sorted(selected)]
+        try:
+            catalog.validate_allowlist(selected_names)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
+        return selected_names
+
+    specs = [
+        spec
+        for spec in TOOL_SPECS
+        if spec.source != "server" and _tool_is_available(spec, document, path)
+    ]
     for index, spec in enumerate(specs, start=1):
         print(f"  {index}. {spec.name} - {spec.description}")
     if not specs or not sys.stdin.isatty():
@@ -997,25 +1189,32 @@ def select_tools_interactively(document: Mapping[str, Any], path: Path) -> list[
 
 
 def _tool_is_available(spec: ToolSpec, document: Mapping[str, Any], path: Path) -> bool:
-    if spec.source == "builtin":
-        return True
-    agent = document.get("agent", {})
-    if not isinstance(agent, Mapping):
-        return False
-    if spec.source == "browser":
-        browser = agent.get("browser", {})
-        return isinstance(browser, Mapping) and browser.get("user_data_dir") is not None
-    computer = agent.get("computer", {})
-    if not isinstance(computer, Mapping) or computer.get("driver_path") is None:
-        return False
-    try:
-        driver = _relative_path(computer["driver_path"], path)
-    except ConfigError:
-        return False
-    return driver.is_file() and os.access(driver, os.X_OK)
+    """Report only providers with an owned runtime catalog client.
+
+    Optional Browser/Computer settings are not provider discovery. Their
+    availability is supplied by ``CatalogSnapshot`` after a real
+    ``ProviderToolClient.list_tools`` call.
+    """
+    del document, path
+    return spec.internal_name in {"system.ping", "terminal.exec"}
 
 
-def tool_statuses(path: str | Path | None, *, env: Mapping[str, str] | None = None) -> list[tuple[ToolSpec, str]]:
+def _tool_spec_from_catalog(entry: CatalogEntry) -> ToolSpec:
+    return ToolSpec(
+        name=entry.public_name,
+        internal_name=entry.tool_name,
+        source=entry.source,
+        description=entry.description,
+        risk=entry.risk,
+    )
+
+
+def tool_statuses(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    catalog: CatalogSnapshot | None = None,
+) -> list[tuple[ToolSpec, str]]:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
     try:
@@ -1025,33 +1224,73 @@ def tool_statuses(path: str | Path | None, *, env: Mapping[str, str] | None = No
             raise
         document = {"agent": _default_document("agent")}
     agent = _effective_agent(document, effective_env)
+    tools = agent.get("tools", {})
+    allowlist = list(tools.get("allowlist", []) if isinstance(tools, Mapping) else [])
+    if catalog is not None:
+        try:
+            selected = catalog.select(allowlist)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
+        return [
+            *(
+                (_tool_spec_from_catalog(entry), entry.status)
+                for entry in selected.entries
+            ),
+            (
+                ToolSpec(
+                    name=SERVER_LOCAL_TOOL,
+                    internal_name=None,
+                    source="server",
+                    description="server-local Relay connection status",
+                    risk="read_only",
+                ),
+                "server-local",
+            ),
+        ]
+
     effective_document = copy.deepcopy(document)
     effective_document["agent"] = agent
-    tools = agent.get("tools", {})
-    allowlist = set(tools.get("allowlist", []) if isinstance(tools, Mapping) else [])
     statuses: list[tuple[ToolSpec, str]] = []
     for spec in TOOL_SPECS:
         if spec.source == "server":
             statuses.append((spec, "server-local"))
         elif not _tool_is_available(spec, effective_document, config_path):
             statuses.append((spec, "unavailable"))
-        elif spec.name in allowlist:
+        elif spec.name in set(allowlist):
             statuses.append((spec, "enabled"))
         else:
             statuses.append((spec, "disabled"))
     return statuses
 
 
-def update_tool(path: str | Path | None, name: str, *, enabled: bool) -> None:
+def update_tool(
+    path: str | Path | None,
+    name: str,
+    *,
+    enabled: bool,
+    catalog: CatalogSnapshot | None = None,
+) -> None:
     if name == SERVER_LOCAL_TOOL:
         raise ConfigError("relay_device_status is server-local and cannot be configured")
-    if name not in PUBLIC_TOOLS:
+    if catalog is not None:
+        try:
+            catalog.entry(name)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
+        if enabled:
+            try:
+                catalog.validate_allowlist([name])
+            except CatalogError as exc:
+                raise ConfigError(str(exc)) from None
+    elif name not in PUBLIC_TOOLS:
         raise ConfigError(f"unknown Agent tool: {name}")
     config_path = _config_path(path)
     document = _load_yaml(config_path)
     if "agent" not in document or not isinstance(document["agent"], Mapping):
         raise ConfigError("agent configuration is not initialized")
-    if not _tool_is_available(next(spec for spec in TOOL_SPECS if spec.name == name), document, config_path):
+    if catalog is None and not _tool_is_available(
+        next(spec for spec in TOOL_SPECS if spec.name == name), document, config_path
+    ):
         raise ConfigError(f"tool is unavailable: {name}")
     agent = dict(document["agent"])
     tools = dict(agent.get("tools", {}))
@@ -1120,7 +1359,14 @@ def _canonical_key(scope: str, key: str) -> str:
     return aliases.get((scope, key), key)
 
 
-def set_value(path: str | Path | None, scope: Literal["server", "agent"], key: str, value: str) -> None:
+def set_value(
+    path: str | Path | None,
+    scope: Literal["server", "agent"],
+    key: str,
+    value: str,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> None:
     config_path = _config_path(path)
     document = _load_yaml(config_path)
     if not isinstance(document.get(scope), Mapping):
@@ -1135,9 +1381,27 @@ def set_value(path: str | Path | None, scope: Literal["server", "agent"], key: s
     if canonical in {"tools.allowlist", "browser.allowed_origins"} and isinstance(parsed_value, str):
         parsed_value = [item.strip() for item in parsed_value.split(",") if item.strip()]
     if canonical == "tools.allowlist" and isinstance(parsed_value, list):
-        invalid = [item for item in parsed_value if item == SERVER_LOCAL_TOOL or item not in PUBLIC_TOOLS]
-        if invalid:
-            raise ConfigError(f"unknown or server-local Agent tool: {invalid[0]}")
+        if catalog is not None:
+            try:
+                catalog.validate_allowlist(parsed_value)
+            except CatalogError as exc:
+                raise ConfigError(str(exc)) from None
+        else:
+            invalid = [
+                item
+                for item in parsed_value
+                if (
+                    item == SERVER_LOCAL_TOOL
+                    or item not in PUBLIC_TOOLS
+                    or not _tool_is_available(
+                        next(spec for spec in TOOL_SPECS if spec.name == item),
+                        section,
+                        config_path,
+                    )
+                )
+            ]
+            if invalid:
+                raise ConfigError(f"unknown or server-local Agent tool: {invalid[0]}")
     _set_nested(section, canonical, parsed_value)
     document[scope] = section
     _write_config(config_path, document)
@@ -1186,7 +1450,13 @@ def unset_value(path: str | Path | None, scope: Literal["server", "agent"], key:
     _write_config(config_path, document)
 
 
-def load_agent_settings(path: str | Path | None, *, env: Mapping[str, str] | None = None) -> Any:
+def load_agent_settings(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    catalog: CatalogSnapshot | None = None,
+    defer_tool_validation: bool = False,
+) -> Any:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
     try:
@@ -1200,7 +1470,14 @@ def load_agent_settings(path: str | Path | None, *, env: Mapping[str, str] | Non
             raise
         document = {"agent": _default_document("agent")}
         document["agent"]["identity"]["id"] = effective_env.get("RELAY_AGENT_ID", str(uuid.uuid4()))
-    report = _validate_agent(document, config_path, effective_env, require=True)
+    report = _validate_agent(
+        document,
+        config_path,
+        effective_env,
+        require=True,
+        catalog=catalog,
+        defer_tool_validation=defer_tool_validation,
+    )
     if not report.valid:
         raise ConfigError("invalid agent configuration")
     section = _effective_agent(document, effective_env)
@@ -1294,10 +1571,17 @@ def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | Non
     )
 
 
-def render_tools(path: str | Path | None, *, env: Mapping[str, str] | None = None) -> str:
-    rows = ["Tool\tSource\tStatus\tDescription"]
-    for spec, status in tool_statuses(path, env=env):
-        rows.append(f"{spec.name}\t{spec.source}\t{status}\t{spec.description}")
+def render_tools(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    catalog: CatalogSnapshot | None = None,
+) -> str:
+    rows = ["Tool\tSource\tStatus\tRisk\tDescription"]
+    for spec, status in tool_statuses(path, env=env, catalog=catalog):
+        rows.append(
+            f"{spec.name}\t{spec.source}\t{status}\t{spec.risk}\t{spec.description}"
+        )
     return "\n".join(rows)
 
 
@@ -1328,10 +1612,15 @@ def _redact_for_output(value: Any, key: str = "") -> Any:
     return value
 
 
-def doctor(path: str | Path | None, *, env: Mapping[str, str] | None = None) -> tuple[str, bool]:
+def doctor(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    catalog: CatalogSnapshot | None = None,
+) -> tuple[str, bool]:
     reports = [
         validate_document(path, "server", env=env, require=False),
-        validate_document(path, "agent", env=env, require=False),
+        validate_document(path, "agent", env=env, require=False, catalog=catalog),
     ]
     lines = ["Agent Relay doctor"]
     for report in reports:

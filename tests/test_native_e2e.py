@@ -58,6 +58,21 @@ def test_native_commands_use_fixed_module_entrypoints(tmp_path: Path) -> None:
     assert "--shell" not in server + agent
 
 
+def test_minimal_environment_preserves_only_cua_driver_runtime_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _load_harness()
+    monkeypatch.setenv("CUA_DRIVER_RS_HOME", str(tmp_path / "driver-home"))
+    monkeypatch.setenv("CUA_DRIVER_RS_INSTALL_DIR", str(tmp_path / "driver-bin"))
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross-boundary")
+
+    environment = harness._minimal_environment(tmp_path / "child-home", {})
+
+    assert environment["CUA_DRIVER_RS_HOME"] == str(tmp_path / "driver-home")
+    assert environment["CUA_DRIVER_RS_INSTALL_DIR"] == str(tmp_path / "driver-bin")
+    assert "OPENAI_API_KEY" not in environment
+
+
 def test_lifecycle_preserves_primary_failure_when_cleanup_fails() -> None:
     harness = _load_harness()
     lifecycle = harness.NativeLifecycle()
@@ -368,11 +383,10 @@ def test_ci_defines_bounded_native_linux_gate_without_container_privileges() -> 
     assert "name: Native Linux Terminal end-to-end" in job
     assert "needs: python" in job
     assert "runs-on: ubuntu-24.04" in job
-    assert "uv lock --check" in job
-    assert "uv sync --locked" in job
+    assert "uses: ./.github/actions/setup-python" in job
     assert "uv run --frozen python scripts/native_e2e.py" in job
-    assert "success.json" in job
-    assert "{\"status\":\"passed\"}" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile linux-terminal" in job
     assert "docker" not in job.lower()
     assert "privileged" not in job.lower()
     assert "docker.sock" not in job.lower()
@@ -381,4 +395,3 @@ def test_ci_defines_bounded_native_linux_gate_without_container_privileges() -> 
     assert "id: validate-native-evidence" in job
     assert "if: always()" in job
     assert "steps.validate-native-evidence.outcome == 'success'" in job
-    assert "grep -vE" in job

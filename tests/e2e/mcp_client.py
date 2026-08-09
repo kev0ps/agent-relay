@@ -20,6 +20,8 @@ The portable client:
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any, Final, Mapping
@@ -48,11 +50,18 @@ EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = (
     "relay_browser_scroll",
     "relay_browser_type",
     "relay_browser_back",
-    "relay_computer_capture",
-    "relay_computer_click",
-    "relay_computer_type",
+    "relay_cua_list_windows",
+    "relay_cua_get_window_state",
+    "relay_cua_click",
+    "relay_cua_type_text",
 )
 SERVER_MCP_TOOLS: Final[tuple[str, ...]] = ("relay_device_status",)
+# Keep these black-box limits aligned with ``agent_relay.json_bounds`` without
+# importing product internals into the portable E2E client.
+MAX_JSON_BYTES: Final[int] = 64 * 1024
+MAX_JSON_DEPTH: Final[int] = 16
+MAX_JSON_NODES: Final[int] = 4096
+MAX_JSON_COLLECTION_ITEMS: Final[int] = 256
 
 
 def _valid_tool_inventory(discovered: tuple[str, ...]) -> bool:
@@ -64,6 +73,69 @@ def _valid_tool_inventory(discovered: tuple[str, ...]) -> bool:
     if any(name not in EXPECTED_MCP_TOOLS for name in discovered):
         return False
     return discovered == tuple(name for name in EXPECTED_MCP_TOOLS if name in discovered)
+
+
+def _tool_inventory_mismatch_category(discovered: tuple[str, ...]) -> str:
+    """Classify inventory drift without exposing tool names or raw payloads."""
+    if not discovered or discovered[0] != SERVER_MCP_TOOLS[0]:
+        return "server-tool"
+    if len(discovered) != len(set(discovered)):
+        return "duplicate"
+    if any(name not in EXPECTED_MCP_TOOLS for name in discovered):
+        return "unexpected-tool"
+    return "order"
+
+
+def _validate_tool_schema(tool: Any) -> None:
+    """Reject an MCP inventory entry without a bounded provider schema."""
+    name = getattr(tool, "name", None)
+    schema = getattr(tool, "inputSchema", None)
+    if type(name) is not str or not name or type(schema) is not dict:
+        raise MCPContractError("invalid MCP tool descriptor")
+    if len(name) > 128 or len(schema) > MAX_JSON_COLLECTION_ITEMS:
+        raise MCPContractError("invalid MCP tool descriptor")
+    forbidden = {"handler", "module", "module_path", "executable", "executable_path"}
+    if forbidden.intersection(schema):
+        raise MCPContractError("invalid MCP tool descriptor")
+    if schema.get("type") != "object":
+        raise MCPContractError("invalid MCP tool descriptor")
+
+    nodes = 0
+
+    def visit(value: Any, depth: int) -> None:
+        nonlocal nodes
+        nodes += 1
+        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+            raise MCPContractError("invalid MCP tool descriptor")
+        if type(value) is dict:
+            if len(value) > MAX_JSON_COLLECTION_ITEMS or any(
+                type(key) is not str for key in value
+            ):
+                raise MCPContractError("invalid MCP tool descriptor")
+            for key, child in value.items():
+                if key in forbidden:
+                    raise MCPContractError("invalid MCP tool descriptor")
+                visit(child, depth + 1)
+        elif type(value) is list:
+            if len(value) > MAX_JSON_COLLECTION_ITEMS:
+                raise MCPContractError("invalid MCP tool descriptor")
+            for child in value:
+                visit(child, depth + 1)
+        elif value is not None and type(value) not in {str, int, float, bool}:
+            raise MCPContractError("invalid MCP tool descriptor")
+
+    visit(schema, 0)
+    try:
+        encoded = json.dumps(
+            schema,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if len(encoded) > MAX_JSON_BYTES:
+            raise MCPContractError("invalid MCP tool descriptor")
+    except (TypeError, ValueError, UnicodeError):
+        raise MCPContractError("invalid MCP tool descriptor") from None
 
 
 class StrictCallToolResult(CallToolResult):
@@ -196,16 +268,22 @@ class MCPClientSession:
         """List and explicitly validate the public MCP tool inventory."""
         if self._session is None:
             raise RuntimeError("MCP client session is not open")
-        discovered = tuple(
-            tool.name
-            for tool in (
-                await asyncio.wait_for(
-                    self._session.list_tools(),
-                    timeout=self.http_timeout,
-                )
-            ).tools
-        )
+        listed = (
+            await asyncio.wait_for(
+                self._session.list_tools(),
+                timeout=self.http_timeout,
+            )
+        ).tools
+        for tool in listed:
+            _validate_tool_schema(tool)
+        discovered = tuple(tool.name for tool in listed)
         if not _valid_tool_inventory(discovered):
+            print(
+                "mcp contract diagnostic: inventory="
+                f"{_tool_inventory_mismatch_category(discovered)}",
+                file=sys.stderr,
+                flush=True,
+            )
             raise MCPContractError("unexpected MCP tools")
         return discovered
 

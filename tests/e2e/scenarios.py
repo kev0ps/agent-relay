@@ -57,10 +57,11 @@ BROWSER_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
     "relay_browser_type",
     "relay_browser_back",
 )
-COMPUTER_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
-    "relay_computer_capture",
-    "relay_computer_click",
-    "relay_computer_type",
+CUA_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
+    "relay_cua_list_windows",
+    "relay_cua_get_window_state",
+    "relay_cua_click",
+    "relay_cua_type_text",
 )
 TOOL_ORDER: Final[tuple[str, ...]] = (
     "system.ping",
@@ -73,13 +74,14 @@ TOOL_ORDER: Final[tuple[str, ...]] = (
     "browser.scroll",
     "browser.type",
     "browser.back",
-    "computer.capture",
-    "computer.click",
-    "computer.type",
+    "cua.list_windows",
+    "cua.get_window_state",
+    "cua.click",
+    "cua.type_text",
 )
 FIXTURE_TITLE: Final[str] = "Relay Browser Fixture"
 EVENT_FILE: Final[str] = "browser-events.jsonl"
-COMPUTER_EVENT_FILE: Final[str] = "computer-events.jsonl"
+CUA_EVENT_FILE: Final[str] = "computer-events.jsonl"
 EVENT_POLL_TIMEOUT: Final[float] = 5.0
 MCP_OPERATION_TIMEOUT: Final[float] = 10.0
 
@@ -235,7 +237,7 @@ async def _run_browser_scenario_async(
     phase: list[str] | None = None,
     expected_capabilities: tuple[str, ...] | None = None,
 ) -> None:
-    """Exercise Browser Use through one official MCP session and one oracle."""
+    """Exercise Browser Use with structured locators and bounded snapshots."""
     artifact = _fixture_path(runtime, EVENT_FILE)
     secondary_url = runtime.fixture_url.rstrip("/") + "/second"
     async with _mcp.MCPClientSession(
@@ -252,25 +254,19 @@ async def _run_browser_scenario_async(
             expected_capabilities=expected_capabilities,
         )
         _mark(phase, "list-tabs")
-        tab_id = _oracles.validate_list_tabs(
-            await client.call("relay_browser_list_tabs", {})
-        )
+        _oracles.validate_list_tabs(await client.call("relay_browser_list_tabs", {}))
         _mark(phase, "navigate")
-        _oracles.validate_action(
+        _oracles.validate_browser_action(
             await client.call("relay_browser_navigate", {"url": runtime.fixture_url}),
             tool_name="relay_browser_navigate",
-            tab_id=tab_id,
-            element_id=None,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         _mark(phase, "snapshot")
-        result = await client.call("relay_browser_snapshot", {})
         markers: list[str] = []
         try:
             textbox, button = _oracles.validate_snapshot(
-                result,
-                tab_id=tab_id,
+                await client.call("relay_browser_snapshot", {}),
                 fixture_url=runtime.fixture_url,
                 fixture_title=FIXTURE_TITLE,
                 diagnostic_phase=markers,
@@ -286,94 +282,70 @@ async def _run_browser_scenario_async(
         )
         if rejected_origin.isError is not True or forbidden_url in str(rejected_origin):
             raise ValueError("disallowed Browser origin was not safely rejected")
-        _mark(phase, "stale-element")
-        _oracles.validate_action(
-            await client.call("relay_browser_navigate", {"url": secondary_url}),
-            tool_name="relay_browser_navigate",
-            tab_id=tab_id,
-            element_id=None,
-            fixture_url=secondary_url,
-            fixture_title=FIXTURE_TITLE,
-        )
-        stale = await client.call(
-            "relay_browser_fill",
-            {"element_id": textbox, "value": value},
-        )
-        if stale.isError is not True or textbox in str(stale):
-            raise ValueError("stale Browser element was not safely rejected")
-        _mark(phase, "back")
-        _oracles.validate_action(
-            await client.call("relay_browser_back", {}),
+        _mark(phase, "locator-refresh")
+        # A locator is a bounded public query, not a provider handle. Re-resolve
+        # it after navigation rather than replaying a stale opaque identifier.
+        moved = await client.call("relay_browser_navigate", {"url": secondary_url})
+        if moved.isError is not False:
+            raise ValueError("secondary Browser navigation failed")
+        returned = await client.call("relay_browser_back", {})
+        _oracles.validate_browser_action(
+            returned,
             tool_name="relay_browser_back",
-            tab_id=tab_id,
-            element_id=None,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         _mark(phase, "refresh-snapshot")
-        refreshed = _oracles.validate_snapshot(
+        textbox, button = _oracles.validate_snapshot(
             await client.call("relay_browser_snapshot", {}),
-            tab_id=tab_id,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
-        textbox, button = refreshed
         _mark(phase, "type")
-        _oracles.validate_action(
+        _oracles.validate_browser_action(
             await client.call(
                 "relay_browser_type",
-                {"element_id": textbox, "text": value},
+                {"locator": textbox, "text": value},
             ),
             tool_name="relay_browser_type",
-            tab_id=tab_id,
-            element_id=textbox,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         _mark(phase, "fill")
-        _oracles.validate_action(
+        _oracles.validate_browser_action(
             await client.call(
                 "relay_browser_fill",
-                {"element_id": textbox, "value": value},
+                {"locator": textbox, "value": value},
             ),
             tool_name="relay_browser_fill",
-            tab_id=tab_id,
-            element_id=textbox,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         _mark(phase, "scroll-down")
-        _oracles.validate_action(
+        _oracles.validate_browser_action(
             await client.call("relay_browser_scroll", {"direction": "down"}),
             tool_name="relay_browser_scroll",
-            tab_id=tab_id,
-            element_id=None,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         _mark(phase, "scroll-up")
-        _oracles.validate_action(
+        _oracles.validate_browser_action(
             await client.call("relay_browser_scroll", {"direction": "up"}),
             tool_name="relay_browser_scroll",
-            tab_id=tab_id,
-            element_id=None,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         textbox, button = _oracles.validate_snapshot(
             await client.call("relay_browser_snapshot", {}),
-            tab_id=tab_id,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
         _mark(phase, "pre-click-oracle")
         _oracles.assert_no_fixture_event(artifact)
         _mark(phase, "click")
-        _oracles.validate_action(
-            await client.call("relay_browser_click", {"element_id": button}),
+        _oracles.validate_browser_action(
+            await client.call("relay_browser_click", {"locator": button}),
             tool_name="relay_browser_click",
-            tab_id=tab_id,
-            element_id=button,
             fixture_url=runtime.fixture_url,
             fixture_title=FIXTURE_TITLE,
         )
@@ -407,23 +379,23 @@ def run_browser_scenario(
     )
 
 
-async def _run_computer_scenario_async(
+async def _run_cua_scenario_async(
     runtime: RuntimeConfig,
     value: str,
     phase: list[str] | None = None,
     expected_capabilities: tuple[str, ...] | None = None,
     *,
-    expected_computer_app: str,
-    expected_computer_window_title: str,
+    expected_cua_app: str,
+    expected_cua_window_title: str,
 ) -> None:
-    """Exercise bounded Computer Use controls and the stale-element rejection."""
-    artifact = _fixture_path(runtime, COMPUTER_EVENT_FILE)
+    """Exercise generic CUA inventory, snapshot tokens, and safe actions."""
+    artifact = _fixture_path(runtime, CUA_EVENT_FILE)
     async with _mcp.MCPClientSession(
         runtime.mcp_url,
         runtime.control_token,
     ) as client:
         _mark(phase, "tools-list")
-        _require_tools(await client.list_tools(), COMPUTER_MCP_TOOLS)
+        _require_tools(await client.list_tools(), CUA_MCP_TOOLS)
         _mark(phase, "device-status")
         _oracles.validate_status(
             await client.call("relay_device_status", {}),
@@ -431,79 +403,94 @@ async def _run_computer_scenario_async(
             connected=True,
             expected_capabilities=expected_capabilities,
         )
-        _mark(phase, "capture")
-        first = await client.call("relay_computer_capture", {})
+        _mark(phase, "list-windows")
+        pid, window_id = _oracles.validate_cua_list_windows(
+            await client.call("relay_cua_list_windows", {}),
+            expected_app=expected_cua_app,
+            expected_window_title=expected_cua_window_title,
+        )
+        _mark(phase, "snapshot")
         markers: list[str] = []
         try:
-            field, button = _oracles.validate_computer_capture(
+            first = await client.call(
+                "relay_cua_get_window_state",
+                {
+                    "pid": pid,
+                    "window_id": window_id,
+                    "include_screenshot": False,
+                    "max_elements": 128,
+                },
+            )
+            first_snapshot, field_token, button_token = _oracles.validate_cua_window_state(
                 first,
+                expected_pid=pid,
+                window_id=window_id,
                 diagnostic_phase=markers,
-                expected_app=expected_computer_app,
-                expected_window_title=expected_computer_window_title,
             )
         except ValueError:
-            _portable_phase(phase, markers, "capture-controls")
+            _portable_phase(phase, markers, "cua-snapshot")
             raise
-        first_payload = first.structuredContent
-        assert isinstance(first_payload, dict)
-        generation = first_payload["generation"]
         _mark(phase, "click-field")
-        _oracles.validate_computer_action(
-            await client.call("relay_computer_click", {"element_id": field}),
-            tool_name="relay_computer_click",
-            generation=generation,
-            element_id=field,
+        _oracles.validate_cua_action(
+            await client.call(
+                "relay_cua_click",
+                {"pid": pid, "window_id": window_id, "element_token": field_token},
+            ),
+            tool_name="relay_cua_click",
         )
         _mark(phase, "type-field")
-        _oracles.validate_computer_action(
+        _oracles.validate_cua_action(
             await client.call(
-                "relay_computer_type",
-                {"element_id": field, "text": value},
+                "relay_cua_type_text",
+                {
+                    "pid": pid,
+                    "window_id": window_id,
+                    "element_token": field_token,
+                    "text": value,
+                },
             ),
-            tool_name="relay_computer_type",
-            generation=generation,
-            element_id=field,
+            tool_name="relay_cua_type_text",
         )
         _mark(phase, "recapture")
-        second = await client.call("relay_computer_capture", {})
-        second_markers: list[str] = []
-        try:
-            fresh_field, fresh_button = _oracles.validate_computer_capture(
-                second,
-                diagnostic_phase=second_markers,
-                expected_app=expected_computer_app,
-                expected_window_title=expected_computer_window_title,
-            )
-        except ValueError:
-            _portable_phase(phase, second_markers, "capture-controls")
-            raise
-        second_payload = second.structuredContent
-        assert isinstance(second_payload, dict)
-        fresh_generation = second_payload["generation"]
-        if fresh_generation == generation or fresh_field == field:
-            raise ValueError("computer capture generation was not refreshed")
+        second = await client.call(
+            "relay_cua_get_window_state",
+            {
+                "pid": pid,
+                "window_id": window_id,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+        )
+        second_snapshot, _, fresh_button_token = _oracles.validate_cua_window_state(
+            second,
+            expected_pid=pid,
+            window_id=window_id,
+        )
+        if second_snapshot == first_snapshot or fresh_button_token == button_token:
+            raise ValueError("CUA snapshot token was not refreshed")
         _mark(phase, "stale-click")
-        stale = await client.call("relay_computer_click", {"element_id": button})
-        if stale.isError is not True or button in str(stale):
-            raise ValueError("stale computer element was not safely rejected")
+        stale = await client.call(
+            "relay_cua_click",
+            {"pid": pid, "window_id": window_id, "element_token": button_token},
+        )
+        if stale.isError is not True or button_token in str(stale):
+            raise ValueError("stale CUA element was not safely rejected")
         _mark(phase, "stale-click-oracle")
         _oracles.assert_no_fixture_event(artifact)
         _mark(phase, "click-button")
-        _oracles.validate_computer_action(
+        _oracles.validate_cua_action(
             await client.call(
-                "relay_computer_click",
-                {"element_id": fresh_button},
+                "relay_cua_click",
+                {"pid": pid, "window_id": window_id, "element_token": fresh_button_token},
             ),
-            tool_name="relay_computer_click",
-            generation=fresh_generation,
-            element_id=fresh_button,
+            tool_name="relay_cua_click",
         )
     _mark(phase, "artifact-event")
     deadline = time.monotonic() + EVENT_POLL_TIMEOUT
     previous: bytes | None = None
     while time.monotonic() < deadline:
         try:
-            current = _oracles.validate_computer_event(
+            current = _oracles.validate_cua_event(
                 artifact,
                 run_id=runtime.run_id,
                 value=value,
@@ -516,32 +503,32 @@ async def _run_computer_scenario_async(
             return
         previous = current
         time.sleep(0.1)
-    _oracles.validate_computer_event(
+    _oracles.validate_cua_event(
         artifact,
         run_id=runtime.run_id,
         value=value,
     )
 
 
-def run_computer_scenario(
+def run_cua_scenario(
     runtime: RuntimeConfig,
     value: str,
     phase: list[str] | None = None,
     *,
     expected_capabilities: tuple[str, ...] | None = None,
-    expected_computer_app: str,
-    expected_computer_window_title: str,
+    expected_cua_app: str,
+    expected_cua_window_title: str,
 ) -> None:
-    """Run the shared Computer Use scenario with bounded cleanup."""
+    """Run the shared generic CUA scenario with bounded cleanup."""
     asyncio.run(
         asyncio.wait_for(
-            _run_computer_scenario_async(
+            _run_cua_scenario_async(
                 runtime,
                 value,
                 phase,
                 expected_capabilities,
-                expected_computer_app=expected_computer_app,
-                expected_computer_window_title=expected_computer_window_title,
+                expected_cua_app=expected_cua_app,
+                expected_cua_window_title=expected_cua_window_title,
             ),
             timeout=MCP_OPERATION_TIMEOUT * 8,
         )

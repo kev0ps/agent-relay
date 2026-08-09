@@ -70,14 +70,14 @@ $header.Size = New-Object System.Drawing.Size(450, 28)
 
 $inputLabel = New-Object System.Windows.Forms.Label
 $inputLabel.Name = "FixtureInputLabel"
-$inputLabel.Text = "Generated value"
-$inputLabel.AccessibleName = "Generated value label"
+$inputLabel.Text = "Name"
+$inputLabel.AccessibleName = "Name label"
 $inputLabel.Location = New-Object System.Drawing.Point(24, 70)
 $inputLabel.Size = New-Object System.Drawing.Size(120, 24)
 
 $input = New-Object System.Windows.Forms.TextBox
 $input.Name = "FixtureInput"
-$input.AccessibleName = "Fixture input"
+$input.AccessibleName = "Name"
 $input.Location = New-Object System.Drawing.Point(160, 66)
 $input.Size = New-Object System.Drawing.Size(300, 28)
 $input.TabIndex = 0

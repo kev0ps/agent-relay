@@ -81,11 +81,13 @@ def test_linux_browser_ci_job_is_native_and_bounded() -> None:
     )[0]
     assert "name: Native Linux Browser end-to-end" in job
     assert "runs-on: ubuntu-24.04" in job
-    assert "uv sync --locked --extra browser" in job
+    assert "uses: ./.github/actions/setup-python" in job
+    assert "profile: browser" in job
     assert "uv run --frozen playwright install --with-deps chromium" in job
     assert "uv run --frozen python scripts/linux_browser_e2e.py" in job
     assert "browser-evidence" in job
-    assert "browser-events.jsonl" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile linux-browser" in job
     assert "screenshot.png" not in job
     assert "remote-debugging" not in job
     assert "docker" not in job.lower()
@@ -93,17 +95,13 @@ def test_linux_browser_ci_job_is_native_and_bounded() -> None:
     assert "if: always()" in job
 
 
-def test_linux_browser_failure_evidence_does_not_require_success_payloads() -> None:
+def test_linux_browser_evidence_policy_is_externalized() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     job = workflow.split("  e2e-linux-browser:", 1)[1].split(
         "\n  e2e-linux-cua:", 1
     )[0]
 
-    success_branch = job.index(
-        "if test \"$output\" = 'Linux Browser smoke scenario passed.'; then"
-    )
-    required_event = job.index('test -f "$evidence_dir/browser-events.jsonl"')
-
-    assert success_branch < required_event
-    assert 'if test -e "$evidence_dir/browser-events.jsonl"; then' in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile linux-browser" in job
+    assert "browser-events.jsonl" not in job
     assert "screenshot.png" not in job

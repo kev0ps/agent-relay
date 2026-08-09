@@ -45,7 +45,11 @@ def test_server_and_agent_are_the_only_runtime_dispatch_commands(
     monkeypatch.setattr(
         cli.server, "main", lambda argv=None: received_server.append(argv)  # type: ignore[arg-type]
     )
-    monkeypatch.setattr(cli.agent, "main", lambda argv=None: received_agent.append(argv))
+    monkeypatch.setattr(
+        cli.agent,
+        "main",
+        lambda argv=None, **_kwargs: received_agent.append(argv),
+    )
     monkeypatch.setattr(cli.config, "load_server_runtime", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(cli.config, "load_agent_settings", lambda *_args, **_kwargs: object())
 

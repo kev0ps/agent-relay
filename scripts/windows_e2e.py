@@ -8,6 +8,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import importlib.util
 import os
+import re
 import secrets
 import signal
 import socket
@@ -585,19 +586,80 @@ def _diagnostic_category(path: Path) -> str:
             ).lower()
     except OSError:
         return "diagnostics unavailable"
+    descriptor_match = re.search(
+        r"cua provider descriptor failure: category=([a-z-]+)",
+        content,
+    )
+    if descriptor_match:
+        return f"computer provider descriptor: {descriptor_match.group(1)}"
+    inventory_match = re.search(
+        r"cua provider inventory failure: category=([a-z-]+)",
+        content,
+    )
+    if inventory_match:
+        return f"computer provider inventory: {inventory_match.group(1)}"
+    startup_match = re.search(
+        r"computer startup failed: phase=([a-z-]+) category=([a-z-]+)"
+        r"(?: driver=([a-z-]+))?",
+        content,
+    )
+    if startup_match:
+        driver_hint = (
+            f" driver={startup_match.group(3)}"
+            if startup_match.group(3)
+            else ""
+        )
+        return (
+            "computer startup failure: "
+            f"phase={startup_match.group(1)} "
+            f"category={startup_match.group(2)}"
+            f"{driver_hint}"
+        )
+    discovery_match = re.search(
+        r"cua provider discovery failed: category=([a-z-]+)",
+        content,
+    )
+    if discovery_match:
+        return f"computer provider discovery: {discovery_match.group(1)}"
+    frame_match = re.search(
+        r"server agent frame diagnostic: category=([a-z-]+)",
+        content,
+    )
+    if frame_match:
+        return f"server agent frame {frame_match.group(1)}"
+    lifecycle_matches = re.findall(r"agent lifecycle phase: ([a-z-]+)", content)
+    if lifecycle_matches:
+        return f"agent lifecycle {lifecycle_matches[-1]}"
+    phase_matches = re.findall(r"computer startup phase: ([a-z-]+)", content)
+    if phase_matches:
+        phase_categories = {
+            "windows-privacy-skip": "computer startup windows privacy skip",
+            "windows-daemon-spawn": "computer startup windows daemon spawn",
+            "windows-daemon-probe": "computer startup windows daemon probe",
+            "windows-daemon-ready": "computer startup windows daemon ready",
+            "privacy-environment": "computer startup privacy environment",
+            "process-spawn": "computer startup process spawn",
+            "initialize": "computer startup initialize",
+            "initialize-response": "computer startup initialize response",
+            "tools-list": "computer startup tools list",
+        }
+        return phase_categories.get(phase_matches[-1], "computer startup phase")
     for marker, category in (
-        ("phase-windows-daemon-spawn", "computer startup windows daemon"),
-        ("phase-windows-privacy-skip", "computer startup windows privacy skip"),
-        ("phase-privacy-disable", "computer startup privacy disable"),
-        ("phase-privacy-reset", "computer startup privacy reset"),
-        ("phase-privacy-status", "computer startup privacy status"),
-        ("phase-process-spawn", "computer startup process spawn"),
-        ("phase-initialize", "computer startup initialize"),
-        ("phase-tools-list", "computer startup tools list"),
-        ("phase-windows-health", "computer startup windows health"),
-        ("phase-session-start", "computer startup session"),
-        ("phase-window-select", "computer startup window select"),
-        ("phase-capture-readiness", "computer startup capture readiness"),
+        ("computer startup phase: windows-daemon-spawn", "computer startup windows daemon"),
+        ("cua catalog construction failed:", "computer catalog construction"),
+        ("computer privacy command failed:", "computer privacy command"),
+        ("computer startup failed:", "computer startup failure"),
+        ("computer startup phase: windows-privacy-skip", "computer startup windows privacy skip"),
+        ("computer startup phase: privacy-disable", "computer startup privacy disable"),
+        ("computer startup phase: privacy-reset", "computer startup privacy reset"),
+        ("computer startup phase: privacy-status", "computer startup privacy status"),
+        ("computer startup phase: process-spawn", "computer startup process spawn"),
+        ("computer startup phase: initialize", "computer startup initialize"),
+        ("computer startup phase: tools-list", "computer startup tools list"),
+        ("computer startup phase: windows-health", "computer startup windows health"),
+        ("computer startup phase: session-start", "computer startup session"),
+        ("computer startup phase: window-select", "computer startup window select"),
+        ("computer startup phase: capture-readiness", "computer startup capture readiness"),
         ("invalid agent configuration", "invalid agent configuration"),
         ("connection refused", "connection refused"),
         ("cannot connect", "connection failure"),
@@ -795,7 +857,7 @@ def run_scenario(
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_browser_list_tabs,relay_browser_navigate,relay_browser_snapshot,relay_browser_fill,relay_browser_click,relay_browser_scroll,relay_browser_type,relay_browser_back,relay_computer_capture,relay_computer_click,relay_computer_type",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec",
                 "RELAY_AGENT_E2E_RUN_ID": run_id,
             },
         )

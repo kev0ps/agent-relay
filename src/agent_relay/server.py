@@ -6,60 +6,43 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from ipaddress import ip_address
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from fastapi.exceptions import RequestValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .auth import credentials_match
 from .config import load_server_runtime
+from .json_bounds import JsonObject, validate_json_bounds
 from .mcp_facade import create_mcp_facade
-from .output_models import (
-    BrowserActionOutput,
-    BrowserPageOutput,
-    BrowserTabsOutput,
-    ComputerActionOutput,
-    ComputerCaptureOutput,
-    PingOutput,
-    TerminalExecOutput,
-    validate_tool_output,
-)
+from .output_models import ProviderToolResult
 from .protocol import (
-    MAX_BROWSER_ELEMENT_ID_LENGTH,
-    MAX_BROWSER_FILL_VALUE_LENGTH,
-    MAX_BROWSER_TYPE_TEXT_LENGTH,
-    MAX_BROWSER_URL_LENGTH,
-    MAX_COMPUTER_ELEMENT_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     AgentError,
     AgentResult,
-    BrowserBackInvoke,
-    BrowserClickInvoke,
-    BrowserFillInvoke,
-    BrowserListTabsInvoke,
-    BrowserNavigateInvoke,
-    BrowserScrollInvoke,
-    BrowserSnapshotInvoke,
-    BrowserTypeInvoke,
     Capabilities,
-    CommandId,
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
-    ComputerTypeText,
     DeviceId,
     Heartbeat,
+    InvokeMessage,
     Progress,
     Register,
     RequestId,
-    SystemPingInvoke,
-    TerminalExecInvoke,
+    ToolName,
     parse_agent_message,
 )
 from .registry import (
@@ -67,6 +50,7 @@ from .registry import (
     DeviceAlreadyConnectedError,
     DeviceBusyError,
     DeviceOfflineError,
+    InvalidToolArgumentsError,
     LateResponseError,
     RelayRegistry,
     RemoteAgentError,
@@ -74,6 +58,15 @@ from .registry import (
     UnknownRequestError,
     UnsupportedToolError,
 )
+
+
+def _debug_agent_frame(category: str) -> None:
+    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
+        print(
+            f"server agent frame diagnostic: category={category}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 class _SerializedWebSocket:
@@ -234,110 +227,23 @@ class RelaySettings(BaseModel):
             raise ValueError("invalid relay server configuration") from None
 
 
-class _InvokeRequest(BaseModel):
+class InvokeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    tool_name: ToolName
+    arguments: JsonObject = Field(default_factory=dict)
     timeout_seconds: Annotated[float | None, Field(gt=0, le=3600)] = None
 
-
-class SystemPingRequest(_InvokeRequest):
-    tool: Literal["system.ping"]
-
-
-class TerminalExecRequest(_InvokeRequest):
-    tool: Literal["terminal.exec"]
-    command_id: CommandId
-
-
-class BrowserListTabsRequest(_InvokeRequest):
-    tool: Literal["browser.list_tabs"]
-
-
-class BrowserNavigateRequest(_InvokeRequest):
-    tool: Literal["browser.navigate"]
-    url: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_URL_LENGTH)]
-
-
-class BrowserSnapshotRequest(_InvokeRequest):
-    tool: Literal["browser.snapshot"]
-
-
-class BrowserFillRequest(_InvokeRequest):
-    tool: Literal["browser.fill"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-    ]
-    value: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_FILL_VALUE_LENGTH)]
-
-
-class BrowserClickRequest(_InvokeRequest):
-    tool: Literal["browser.click"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-    ]
-
-
-class BrowserScrollRequest(_InvokeRequest):
-    tool: Literal["browser.scroll"]
-    direction: Literal["up", "down"]
-
-
-class BrowserTypeRequest(_InvokeRequest):
-    tool: Literal["browser.type"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_BROWSER_ELEMENT_ID_LENGTH)
-    ]
-    text: Annotated[str, Field(min_length=1, max_length=MAX_BROWSER_TYPE_TEXT_LENGTH)]
-
-
-class BrowserBackRequest(_InvokeRequest):
-    tool: Literal["browser.back"]
-
-
-class ComputerCaptureRequest(_InvokeRequest):
-    tool: Literal["computer.capture"]
-
-
-class ComputerClickRequest(_InvokeRequest):
-    tool: Literal["computer.click"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)
-    ]
-
-
-class ComputerTypeRequest(_InvokeRequest):
-    tool: Literal["computer.type"]
-    element_id: Annotated[
-        str, Field(min_length=1, max_length=MAX_COMPUTER_ELEMENT_ID_LENGTH)
-    ]
-    text: ComputerTypeText
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def bounded_arguments(cls, value: object) -> object:
+        return validate_json_bounds(value, require_object=True, label="arguments")
 
 
 class InvokeResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     request_id: RequestId
-    result: (
-        PingOutput | TerminalExecOutput | BrowserTabsOutput | BrowserPageOutput
-        | BrowserActionOutput | ComputerCaptureOutput | ComputerActionOutput
-    )
-
-
-InvokeRequest = Annotated[
-    SystemPingRequest
-    | TerminalExecRequest
-    | BrowserListTabsRequest
-    | BrowserNavigateRequest
-    | BrowserSnapshotRequest
-    | BrowserFillRequest
-    | BrowserClickRequest
-    | BrowserScrollRequest
-    | BrowserTypeRequest
-    | BrowserBackRequest
-    | ComputerCaptureRequest
-    | ComputerClickRequest
-    | ComputerTypeRequest,
-    Field(discriminator="tool"),
-]
+    result: ProviderToolResult
 
 
 def create_app(settings: RelaySettings) -> FastAPI:
@@ -363,6 +269,12 @@ def create_app(settings: RelaySettings) -> FastAPI:
             yield
 
     app = FastAPI(lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def sanitized_request_validation_error(
+        _request: object, _exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse({"detail": "invalid request"}, status_code=422)
     app.state.registry = registry
     app.state.settings = settings
     app.state.mcp = mcp
@@ -398,6 +310,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
                     raw = json.loads(text)
                     message = parse_agent_message(raw)
                 except (ValueError, RecursionError, ValidationError):
+                    _debug_agent_frame("protocol-parse")
                     await connection.close(code=1002, reason="invalid protocol message")
                     return
                 if not registered:
@@ -409,9 +322,11 @@ def create_app(settings: RelaySettings) -> FastAPI:
                     try:
                         reply = await registry.register(connection, message)
                     except AuthenticationError:
+                        _debug_agent_frame("register-auth")
                         await connection.close(code=1008, reason="authentication failed")
                         return
                     except DeviceAlreadyConnectedError:
+                        _debug_agent_frame("register-duplicate")
                         await connection.close(code=1013, reason="device already connected")
                         return
                     await registry.send(connection, reply.model_dump(mode="json"))
@@ -448,7 +363,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
         finally:
             await registry.disconnect(connection)
 
-    @app.post("/v1/devices/{device_id}/invoke")
+    @app.post("/v2/devices/{device_id}/invoke")
     async def invoke(
         device_id: str,
         body: InvokeRequest,
@@ -466,108 +381,13 @@ def create_app(settings: RelaySettings) -> FastAPI:
             max(timeout, settings.min_timeout_seconds), settings.max_timeout_seconds
         )
         request_id = uuid.uuid4().hex
-        if isinstance(body, SystemPingRequest):
-            message = SystemPingInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="system.ping",
-            )
-        elif isinstance(body, TerminalExecRequest):
-            message = TerminalExecInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="terminal.exec",
-                command_id=body.command_id,
-            )
-        elif isinstance(body, BrowserListTabsRequest):
-            message = BrowserListTabsInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.list_tabs",
-            )
-        elif isinstance(body, BrowserNavigateRequest):
-            message = BrowserNavigateInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.navigate",
-                url=body.url,
-            )
-        elif isinstance(body, BrowserSnapshotRequest):
-            message = BrowserSnapshotInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.snapshot",
-            )
-        elif isinstance(body, BrowserFillRequest):
-            message = BrowserFillInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.fill",
-                element_id=body.element_id,
-                value=body.value,
-            )
-        elif isinstance(body, BrowserClickRequest):
-            message = BrowserClickInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.click",
-                element_id=body.element_id,
-            )
-        elif isinstance(body, BrowserScrollRequest):
-            message = BrowserScrollInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.scroll",
-                direction=body.direction,
-            )
-        elif isinstance(body, BrowserTypeRequest):
-            message = BrowserTypeInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.type",
-                element_id=body.element_id,
-                text=body.text,
-            )
-        elif isinstance(body, BrowserBackRequest):
-            message = BrowserBackInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="browser.back",
-            )
-        elif isinstance(body, ComputerCaptureRequest):
-            message = ComputerCaptureInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="computer.capture",
-            )
-        elif isinstance(body, ComputerClickRequest):
-            message = ComputerClickInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="computer.click",
-                element_id=body.element_id,
-            )
-        else:
-            message = ComputerTypeInvoke(
-                version=1,
-                type="invoke",
-                request_id=request_id,
-                tool="computer.type",
-                element_id=body.element_id,
-                text=body.text,
-            )
+        message = InvokeMessage(
+            version=2,
+            type="invoke",
+            request_id=request_id,
+            tool_name=body.tool_name,
+            arguments=body.arguments,
+        )
         try:
             result = await registry.invoke(device_id, message, timeout)
         except DeviceOfflineError as exc:
@@ -576,6 +396,8 @@ def create_app(settings: RelaySettings) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except DeviceBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except InvalidToolArgumentsError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except UnsupportedToolError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except TimeoutError as exc:
@@ -587,9 +409,11 @@ def create_app(settings: RelaySettings) -> FastAPI:
                 status_code=502, detail={"code": exc.code, "message": str(exc)}
             ) from exc
         try:
-            validated = validate_tool_output(message.tool, result)
+            validated = ProviderToolResult.model_validate(result)
         except ValidationError:
-            raise HTTPException(status_code=502, detail="device returned an invalid result") from None
+            raise HTTPException(
+                status_code=502, detail="device returned an invalid result"
+            ) from None
         return InvokeResponse(request_id=request_id, result=validated)
 
     # Mount last so the existing control and WebSocket routes retain priority.

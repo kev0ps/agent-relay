@@ -45,10 +45,8 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
         "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE",
     ):
         assert key in source
-    assert "relay_computer_capture" in (ROOT / "tests" / "e2e" / "scenarios.py").read_text(encoding="utf-8")
-    assert "spikes/computer-use-xvfb" not in source
-    assert "expected_computer_app=COMPUTER_APP_NAME" in source
-    assert "expected_computer_window_title=COMPUTER_WINDOW_TITLE" in source
+    assert "expected_cua_app=COMPUTER_APP_NAME" in source
+    assert "expected_cua_window_title=COMPUTER_WINDOW_TITLE" in source
 
 
 def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
@@ -59,27 +57,24 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     )[0]
     assert "name: Native Linux CUA end-to-end" in job
     assert "runs-on: ubuntu-24.04" in job
-    assert "uv sync --locked --extra browser --extra computer" in job
+    assert "uses: ./.github/actions/setup-python" in job
+    assert "profile: computer" in job
     assert "xvfb" in job.lower()
     assert "at-spi" in job.lower()
     assert "uv run --frozen python scripts/linux_computer_e2e.py" in job
-    assert "computer-events.jsonl" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile linux-cua" in job
     assert "docker" not in job.lower()
     assert "spikes/computer-use-xvfb" not in job
     assert "if: always()" in job
 
 
-def test_linux_cua_failure_evidence_does_not_require_fixture_event() -> None:
+def test_linux_cua_evidence_policy_is_externalized() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     job = workflow.split("  e2e-linux-cua:", 1)[1].split(
         "\n  e2e-windows-native:", 1
     )[0]
 
-    success_branch = job.index(
-        "if test \"$output\" = 'Linux CUA smoke scenario passed.'; then"
-    )
-    required_event = job.index('test -f "$evidence_dir/computer-events.jsonl"')
-
-    assert success_branch < required_event
-    assert 'if test -e "$evidence_dir/computer-events.jsonl"; then' in job
-    assert 'test ! -e "$path" && test ! -L "$path"' in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile linux-cua" in job
+    assert "computer-events.jsonl" not in job

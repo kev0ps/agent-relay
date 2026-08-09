@@ -205,6 +205,39 @@ def test_child_diagnostics_use_closed_categories_without_echoing_exception_names
     assert "token-value" not in category
 
 
+def test_startup_diagnostics_preserve_only_bounded_categories(tmp_path: Path) -> None:
+    harness = _load_harness()
+    diagnostic = tmp_path / "child.stderr.log"
+    diagnostic.write_text(
+        "computer startup failed: phase=process-spawn category=os-error\n"
+        "cua provider discovery failed: category=invalid-inventory\n"
+        "secret-path token-value\n",
+        encoding="utf-8",
+    )
+
+    category = harness._diagnostic_category(diagnostic)
+
+    assert category == "computer startup failure: phase=process-spawn category=os-error"
+    assert "secret-path" not in category
+    assert "token-value" not in category
+
+
+def test_startup_phase_diagnostic_uses_latest_bounded_phase(tmp_path: Path) -> None:
+    harness = _load_harness()
+    diagnostic = tmp_path / "child.stderr.log"
+    diagnostic.write_text(
+        "computer startup phase: windows-privacy-skip\n"
+        "computer startup phase: windows-daemon-spawn\n"
+        "computer startup phase: windows-daemon-probe\n",
+        encoding="utf-8",
+    )
+
+    category = harness._diagnostic_category(diagnostic)
+
+    assert category == "computer startup windows daemon probe"
+    assert "windows-privacy-skip" not in category
+
+
 def test_diagnostic_drain_is_bounded(tmp_path: Path) -> None:
     harness = _load_harness()
     diagnostic = tmp_path / "child.stderr.log"
@@ -279,18 +312,16 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "runs-on: windows-2022" not in job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in job
     assert "Verify checked-out commit" in job
-    assert "uv lock --check" in job
-    assert "uv sync --locked" in job
+    assert "uses: ./.github/actions/setup-python" in job
     assert "uv run --frozen ruff check ." in job
     assert "uv run --frozen pytest -q" in job
     assert "tests/test_windows_e2e.py tests/test_runner.py" in job
     assert "git_search_skips_relative_default_path_entries" in job
     assert "uv run --frozen pytest -q -m integration" in job
     assert "uv run --frozen python scripts/windows_e2e.py" in job
-    assert "-cnotmatch" in job
+    assert "python scripts/validate_e2e_evidence.py" in job
+    assert "--profile windows-terminal" in job
     assert "windows-evidence" in job
-    assert "success.json" in job
-    assert '{"status":"passed"}' in job
     assert "docker" not in job.lower()
     assert "browser" not in job.lower()
     assert "computer" not in job.lower()

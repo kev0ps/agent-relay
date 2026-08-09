@@ -58,54 +58,81 @@ def _scenarios() -> ModuleType:
     return _load_e2e("scenarios.py")
 
 
-class _ComputerScenarioResult:
-    def __init__(
-        self,
-        *,
-        generation: str | None = None,
-        is_error: bool = False,
-    ) -> None:
-        self.structuredContent = (
-            {"generation": generation} if generation is not None else {}
-        )
+class _CuaScenarioResult:
+    def __init__(self, *, structured: dict[str, object] | None = None, is_error: bool = False) -> None:
+        self.structuredContent = structured or {}
         self.isError = is_error
 
     def __str__(self) -> str:
         return "rejected"
 
 
-class _ComputerScenarioSession:
+class _CuaScenarioSession:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
-        self.capture_count = 0
+        self.snapshot_count = 0
+        self.old_button_token = "button-token-1"
 
-    async def __aenter__(self) -> "_ComputerScenarioSession":
+    async def __aenter__(self) -> "_CuaScenarioSession":
         return self
 
     async def __aexit__(self, *_args: object) -> None:
         return None
 
     async def list_tools(self) -> tuple[str, ...]:
-        return _scenarios().COMPUTER_MCP_TOOLS
+        return _scenarios().CUA_MCP_TOOLS
 
-    async def call(
-        self,
-        tool_name: str,
-        arguments: dict[str, object],
-    ) -> _ComputerScenarioResult:
-        if tool_name == "relay_computer_capture":
-            self.capture_count += 1
-            return _ComputerScenarioResult(
-                generation=f"generation-{self.capture_count}"
+    async def call(self, tool_name: str, arguments: dict[str, object]) -> _CuaScenarioResult:
+        if tool_name == "relay_cua_list_windows":
+            return _CuaScenarioResult(
+                structured={
+                    "windows": [
+                        {
+                            "window_id": 77,
+                            "pid": 1234,
+                            "app_name": "relay-desktop-fixture",
+                            "title": "Relay Desktop Fixture",
+                            "bounds": {"x": 0, "y": 0, "width": 800, "height": 600},
+                            "is_on_screen": True,
+                        }
+                    ]
+                }
             )
-        if (
-            tool_name == "relay_computer_click"
-            and arguments.get("element_id") == "button-1"
-        ):
-            return _ComputerScenarioResult(is_error=True)
-        return _ComputerScenarioResult()
+        if tool_name == "relay_cua_get_window_state":
+            self.snapshot_count += 1
+            suffix = self.snapshot_count
+            return _CuaScenarioResult(
+                structured={
+                    "window_id": 77,
+                    "pid": 1234,
+                    "snapshot_id": f"snapshot-{suffix}",
+                    "elements": [
+                        {
+                            "element_index": 0,
+                            "element_token": f"field-token-{suffix}",
+                            "role": "entry",
+                            "label": "Name",
+                            "enabled": True,
+                        },
+                        {
+                            "element_index": 1,
+                            "element_token": f"button-token-{suffix}",
+                            "role": "push button",
+                            "label": "Apply",
+                            "enabled": True,
+                        },
+                    ],
+                }
+            )
+        if tool_name == "relay_cua_click" and arguments.get("element_token") == self.old_button_token:
+            return _CuaScenarioResult(is_error=True)
+        if tool_name in {"relay_cua_click", "relay_cua_type_text"}:
+            return _CuaScenarioResult(
+                structured={"path": "native_input", "verified": False, "effect": "unverifiable"}
+            )
+        return _CuaScenarioResult()
 
 
-def _computer_runtime(
+def _cua_runtime(
     scenarios: ModuleType,
     tmp_path: Path,
     *,
@@ -122,42 +149,31 @@ def _computer_runtime(
     )
 
 
-def _install_computer_scenario_fakes(
+def _install_cua_scenario_fakes(
     monkeypatch: pytest.MonkeyPatch,
     scenarios: ModuleType,
     *,
-    session_type: type[_ComputerScenarioSession] = _ComputerScenarioSession,
+    session_type: type[_CuaScenarioSession] = _CuaScenarioSession,
 ) -> list[tuple[object, object]]:
     observed: list[tuple[object, object]] = []
 
-    def validate_capture(_result: object, **kwargs: object) -> tuple[str, str]:
-        observed.append(
-            (kwargs.get("expected_app"), kwargs.get("expected_window_title"))
-        )
-        capture_number = len(observed)
-        return f"field-{capture_number}", f"button-{capture_number}"
+    def validate_windows(_result: object, **kwargs: object) -> tuple[int, int]:
+        observed.append((kwargs.get("expected_app"), kwargs.get("expected_window_title")))
+        return 1234, 77
+
+    def validate_state(result: object, **kwargs: object) -> tuple[str, str, str]:
+        payload = getattr(result, "structuredContent", {})
+        assert isinstance(payload, dict)
+        count = payload.get("snapshot_id", "snapshot-1").split("-")[-1]
+        return f"snapshot-{count}", f"field-token-{count}", f"button-token-{count}"
 
     monkeypatch.setattr(scenarios._mcp, "MCPClientSession", session_type)
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_status",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_computer_capture",
-        validate_capture,
-    )
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_computer_action",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        scenarios._oracles,
-        "validate_computer_event",
-        lambda *_args, **_kwargs: b"stable-event",
-    )
+    monkeypatch.setattr(scenarios._oracles, "validate_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scenarios._oracles, "validate_cua_list_windows", validate_windows)
+    monkeypatch.setattr(scenarios._oracles, "validate_cua_window_state", validate_state)
+    monkeypatch.setattr(scenarios._oracles, "validate_cua_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scenarios._oracles, "validate_cua_event", lambda *_args, **_kwargs: b"stable-event")
+    monkeypatch.setattr(scenarios._oracles, "assert_no_fixture_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
     return observed
 
@@ -273,7 +289,7 @@ def test_portable_kernel_exposes_shared_core_browser_and_computer_scenarios() ->
     for name in (
         "run_core_scenario",
         "run_browser_scenario",
-        "run_computer_scenario",
+        "run_cua_scenario",
     ):
         assert callable(getattr(scenarios, name, None)), (
             f"tests/e2e/scenarios.py must expose {name} for every harness"
@@ -296,11 +312,11 @@ def test_browser_adapters_delegate_launch_to_playwright_persistent_context(scrip
 
 def test_computer_scenario_requires_harness_fixture_identity() -> None:
     """The portable CUA scenario must not imply one platform's fixture."""
-    parameters = inspect.signature(_scenarios().run_computer_scenario).parameters
+    parameters = inspect.signature(_scenarios().run_cua_scenario).parameters
 
-    assert parameters["expected_computer_app"].default is inspect.Parameter.empty
+    assert parameters["expected_cua_app"].default is inspect.Parameter.empty
     assert (
-        parameters["expected_computer_window_title"].default
+        parameters["expected_cua_window_title"].default
         is inspect.Parameter.empty
     )
 
@@ -376,34 +392,35 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
         value = kwargs.get("expected_capabilities")
         observed.append(value if isinstance(value, tuple) else None)
 
-    def reject_capture(_result: object, **_kwargs: object) -> tuple[str, str]:
+    def reject_list(_result: object, **_kwargs: object) -> tuple[int, int]:
         raise ValueError("stop after status assertion")
 
-    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", _ComputerScenarioSession)
+    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", _CuaScenarioSession)
     monkeypatch.setattr(scenarios._oracles, "validate_status", validate_status)
-    monkeypatch.setattr(scenarios._oracles, "validate_computer_capture", reject_capture)
+    monkeypatch.setattr(scenarios._oracles, "validate_cua_list_windows", reject_list)
 
-    runtime = _computer_runtime(
+    runtime = _cua_runtime(
         scenarios,
         tmp_path,
         device_id="linux-cua-e2e-agent",
         run_id="linux-cua-test",
     )
     expected = (
-        "computer.capture",
-        "computer.click",
-        "computer.type",
+        "cua.click",
+        "cua.get_window_state",
+        "cua.list_windows",
+        "cua.type_text",
         "system.ping",
         "terminal.exec",
     )
 
     with pytest.raises(ValueError, match="stop after status assertion"):
-        scenarios.run_computer_scenario(
+        scenarios.run_cua_scenario(
             runtime,
             "relay-value",
             expected_capabilities=expected,
-            expected_computer_app=_LINUX_COMPUTER_IDENTITY[0],
-            expected_computer_window_title=_LINUX_COMPUTER_IDENTITY[1],
+            expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
         )
 
     assert observed == [expected]
@@ -416,30 +433,30 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
         pytest.param(*_WINDOWS_COMPUTER_IDENTITY, id="windows"),
     ],
 )
-def test_computer_scenario_passes_platform_identity_to_both_capture_oracles(
+def test_cua_scenario_passes_platform_identity_to_window_inventory_oracle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     expected_app: str,
     expected_window_title: str,
 ) -> None:
     scenarios = _scenarios()
-    observed = _install_computer_scenario_fakes(monkeypatch, scenarios)
-    runtime = _computer_runtime(
+    observed = _install_cua_scenario_fakes(monkeypatch, scenarios)
+    runtime = _cua_runtime(
         scenarios,
         tmp_path,
         device_id="portable-cua-e2e-agent",
         run_id="portable-cua-test",
     )
 
-    scenarios.run_computer_scenario(
+    scenarios.run_cua_scenario(
         runtime,
         "relay-value",
-        expected_computer_app=expected_app,
-        expected_computer_window_title=expected_window_title,
+        expected_cua_app=expected_app,
+        expected_cua_window_title=expected_window_title,
     )
 
     expected_identity = (expected_app, expected_window_title)
-    assert observed == [expected_identity, expected_identity]
+    assert observed == [expected_identity]
 
 
 def test_computer_scenario_checks_tools_before_device_status(
@@ -449,36 +466,36 @@ def test_computer_scenario_checks_tools_before_device_status(
     scenarios = _scenarios()
     operations: list[str] = []
 
-    class InventorySession(_ComputerScenarioSession):
+    class InventorySession(_CuaScenarioSession):
         async def list_tools(self) -> tuple[str, ...]:
             operations.append("tools-list")
-            return scenarios.COMPUTER_MCP_TOOLS
+            return scenarios.CUA_MCP_TOOLS
 
         async def call(
             self,
             tool_name: str,
             arguments: dict[str, object],
-        ) -> _ComputerScenarioResult:
+        ) -> _CuaScenarioResult:
             operations.append(tool_name)
             return await super().call(tool_name, arguments)
 
-    _install_computer_scenario_fakes(
+    _install_cua_scenario_fakes(
         monkeypatch,
         scenarios,
         session_type=InventorySession,
     )
-    runtime = _computer_runtime(
+    runtime = _cua_runtime(
         scenarios,
         tmp_path,
         device_id="portable-cua-e2e-agent",
         run_id="portable-cua-inventory-test",
     )
 
-    scenarios.run_computer_scenario(
+    scenarios.run_cua_scenario(
         runtime,
         "relay-value",
-        expected_computer_app=_LINUX_COMPUTER_IDENTITY[0],
-        expected_computer_window_title=_LINUX_COMPUTER_IDENTITY[1],
+        expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+        expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
     )
 
     assert operations[:2] == ["tools-list", "relay_device_status"]
@@ -499,16 +516,16 @@ def test_computer_scenario_rejects_unexpected_tool_inventory(
     }
     unexpected_inventory = inventories[inventory_kind]
 
-    class UnexpectedInventorySession(_ComputerScenarioSession):
+    class UnexpectedInventorySession(_CuaScenarioSession):
         async def list_tools(self) -> tuple[str, ...]:
             return unexpected_inventory
 
-    _install_computer_scenario_fakes(
+    _install_cua_scenario_fakes(
         monkeypatch,
         scenarios,
         session_type=UnexpectedInventorySession,
     )
-    runtime = _computer_runtime(
+    runtime = _cua_runtime(
         scenarios,
         tmp_path,
         device_id="portable-cua-e2e-agent",
@@ -516,9 +533,9 @@ def test_computer_scenario_rejects_unexpected_tool_inventory(
     )
 
     with pytest.raises(ValueError, match="unexpected MCP tools"):
-        scenarios.run_computer_scenario(
+        scenarios.run_cua_scenario(
             runtime,
             "relay-value",
-            expected_computer_app=_WINDOWS_COMPUTER_IDENTITY[0],
-            expected_computer_window_title=_WINDOWS_COMPUTER_IDENTITY[1],
+            expected_cua_app=_WINDOWS_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_WINDOWS_COMPUTER_IDENTITY[1],
         )

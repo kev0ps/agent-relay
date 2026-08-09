@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,608 +13,617 @@ import pytest
 from agent_relay.capabilities.computer import (
     ComputerCapability,
     ComputerUnavailableError,
+    _AsyncPopenProcess,
+    _driver_stderr_category,
+    _driver_stderr_line_category,
+    _wait_for_windows_daemon_ready,
     safe_driver_environment,
     validate_driver_executable,
+    validate_windows_health,
 )
-from agent_relay.protocol import (
-    ComputerCaptureInvoke,
-    ComputerClickInvoke,
-    ComputerTypeInvoke,
-)
+from agent_relay.catalog import CUA_REFERENCE_TOOL_NAMES
+from agent_relay.output_models import ProviderTextContent, ProviderToolResult
+from agent_relay.providers.base import ProviderTimeoutError, ProviderToolError
 
-FAKE = r"""#!/usr/bin/env python3
-import json, os, subprocess, sys, time
-mode=os.environ.get("FAKE_MODE", "normal")
-log=os.environ.get("FAKE_LOG")
-def record(value):
-    if log:
-        with open(log,"a") as stream: stream.write(json.dumps(value,separators=(",",":"))+"\n")
-argv=sys.argv[1:]
-if argv == ["mcp", "--no-overlay"]:
-    record({"mcp_argv":argv,"env":dict(os.environ)})
-elif argv:
-    record({"argv":argv,"env":dict(os.environ)})
-    if argv==["telemetry","status","--json"]:
-        if mode=="telemetry_oversized":
-            sys.stdout.write("x"*300000); sys.stdout.flush(); time.sleep(10)
-        if mode=="telemetry_invalid_json":
-            print("{")
-            sys.exit(0)
-        print(json.dumps({"enabled": mode=="telemetry_on", "installation_id_present":False}))
-    sys.exit(0)
-else:
-    sys.exit(9)
-schemas={
- "start_session":{"session"}, "list_windows":{"on_screen_only","pid"},
- "get_window_state":{"session","pid","window_id","capture_mode","include_screenshot","screenshot_out_file","query","max_elements","max_depth"},
- "click":{"session","cursor_id","pid","window_id","x","y","element_index","element_token","button","count","from_zoom","delivery_mode"},
- "type_text":{"session","pid","window_id","text","element_index","element_token","x","y","delivery_mode"},
- "end_session":{"session"}}
-required={"start_session":{"session"},"list_windows":set(),
- "get_window_state":{"pid","window_id"},
- "click":set(),
- "type_text":{"pid","text"},
- "end_session":{"session"}}
-additional={"start_session":True,"end_session":True}
-calls=0
+_GENERIC_DRIVER = r'''#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+TOOLS = __TOOLS__
+MODE = __MODE__
+LOG = __LOG__
+
+
+def log(value):
+    with open(LOG, "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(value, separators=(",", ":")) + "\n")
+
+
+def emit(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def schema(name):
+    if MODE == "bad_schema" and name == "click":
+        return {"type": "evil"}
+    if name == "click":
+        return {
+            "type": "object",
+            "properties": {"target": {"type": "string", "minLength": 1}},
+            "required": ["target"],
+            "additionalProperties": False,
+        }
+    if name == "type_text":
+        return {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "minLength": 1},
+                "text": {"type": "string", "minLength": 1, "maxLength": 128},
+            },
+            "required": ["target", "text"],
+            "additionalProperties": False,
+        }
+    return {"type": "object", "properties": {}, "additionalProperties": False}
+
+
+args = sys.argv[1:]
+log({"startup_argv": args})
+if args not in (["mcp", "--no-overlay"], ["mcp", "--no-overlay", "--no-daemon-relaunch"]):
+    log({"argv": args, "env": dict(os.environ)})
+    if args == ["telemetry", "status", "--json"]:
+        sys.stdout.write(json.dumps({"enabled": False, "installation_id_present": False}) + "\n")
+        sys.stdout.flush()
+    raise SystemExit(0)
+
 for line in sys.stdin:
-    request=json.loads(line); record(request)
-    if "id" not in request: continue
-    ident=request["id"]
-    if mode=="wrong_id" and request["method"]=="initialize": ident+=1
-    if mode=="hang" and request.get("method")=="tools/call" and request["params"]["name"]=="click":
-        child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(10)"])
-        record({"child_pid":child.pid}); time.sleep(10)
-    if mode=="exit" and request.get("method")=="tools/call" and request["params"]["name"]=="click": os._exit(7)
-    if mode=="leader_exit" and request.get("method")=="tools/call" and request["params"]["name"]=="click":
-        child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(10)"])
-        record({"child_pid":child.pid}); os._exit(0)
-    if request["method"]=="initialize":
-        result={"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"},"instructions":"bounded"}
-        if mode=="bad_initialize_response": result.pop("serverInfo")
-    elif request["method"]=="tools/list":
-        result={"tools":[{"name":n,"inputSchema":{"type":"object","properties":{p:{} for p in ps},"required":list(required[n]),"additionalProperties":additional.get(n,False)}} for n,ps in schemas.items()]}
-        if mode=="bad_tool_schema": result["tools"][3]["inputSchema"]["properties"]["unexpected"]={}
-    else:
-        name=request["params"]["name"]; args=request["params"]["arguments"]
-        if name=="list_windows":
-            windows=[{"app_name":"Fixture","title":"Relay Desktop Fixture","pid":123,"window_id":456}]
-            if mode=="delayed_window" and calls==0: windows=[]
-            if mode=="ambiguous": windows*=2
-            if mode=="changed" and calls>=1: windows=[{"app_name":"Other","title":"Other","pid":1,"window_id":2}]
-            calls+=1; structured={"windows":windows}; error=False
-        elif name=="get_window_state":
-            structured={"elements":[
-              {"role":"entry","label":"Name","value":"","element_token":"driver-field","frame":{"x":1}},
-              {"role":"button","label":"Apply","element_token":"driver-button","index":7},
-              {"role":"button","label":"Grant Camera Permission","element_token":"driver-permission"},
-              {"role":"password","label":"Password","value":"secret","element_token":"driver-secret"}]}; error=False
-            if mode=="deep_controls":
-                structured["elements"]=[
-                  {"role":"heading","label":f"Section {index}","element_token":f"driver-heading-{index}"}
-                  for index in range(20)
-                ]+structured["elements"]
-            if mode=="browser_chrome_controls":
-                structured["elements"]=[
-                  {"role":"button","label":f"Chrome {index}","element_token":f"driver-chrome-{index}","element_index":index,"parent_index":None,"depth":1}
-                  for index in range(20)
-                ]+[
-                  {"role":"document web","label":"Fixture","element_token":"driver-document","element_index":20,"parent_index":None,"depth":1},
-                  {"role":"entry","label":"Name","value":"","element_token":"driver-field","element_index":21,"parent_index":20,"depth":2},
-                  {"role":"button","label":"Apply","element_token":"driver-button","element_index":22,"parent_index":20,"depth":2},
-                ]
-            if mode=="implicit_risky_control":
-                structured["elements"].append(
-                  {"role":"button","label":"Dormant Override","element_token":"driver-override"}
-                )
-            if mode=="unlabeled_field": structured["elements"][0].pop("label")
-            if mode=="disabled": structured["elements"][1]["enabled"]=False
-            if mode=="bad_enabled": structured["elements"][1]["enabled"]="false"
-        elif name=="type_text" and mode=="fallback" and "delivery_mode" not in args:
-            structured={"code":"background_unavailable","raw":"SECRET_DRIVER_ERROR"}; error=True
-        elif name=="click" and mode=="raw_error": structured={"code":"private","message":"SECRET_DRIVER_ERROR"}; error=True
-        elif name=="click" and mode=="unverified": structured={"verified":False,"effect":"suspected_noop"}; error=False
-        elif name=="click" and mode=="click_scalar": structured=7; error=False
-        else: structured={"ok":True}; error=False
-        result={"structuredContent":structured,"isError":error}
-    if mode=="oversized" and request["method"]=="initialize": sys.stdout.write("x"*300000+"\n"); sys.stdout.flush(); continue
-    if mode=="malformed" and request["method"]=="initialize": sys.stdout.write("not json\n"); sys.stdout.flush(); continue
-    print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
-"""
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    log(request)
+    request_id = request["id"]
+    method = request["method"]
+    if MODE == "wrong_id" and method == "initialize":
+        request_id += 1
+    if MODE == "oversized" and method == "initialize":
+        sys.stdout.write("x" * 300000 + "\n")
+        sys.stdout.flush()
+        continue
+    if MODE == "malformed" and method == "tools/list":
+        sys.stdout.write("not-json\n")
+        sys.stdout.flush()
+        continue
+    version = "1.0" if MODE == "wrong_version" else "2.0"
+    if method == "initialize":
+        emit({"jsonrpc": version, "id": request_id, "result": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "fixture-cua", "version": "1"},
+        }})
+    elif method == "tools/list":
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {
+            "tools": [
+                {"name": name, "description": "fixture tool", "inputSchema": schema(name)}
+                for name in TOOLS
+            ]
+        }})
+    elif method == "tools/call":
+        name = request["params"]["name"]
+        if MODE == "hang":
+            time.sleep(10)
+        elif MODE == "exit":
+            raise SystemExit(7)
+        elif MODE == "raw_error":
+            emit({"jsonrpc": "2.0", "id": request_id, "error": {
+                "code": -32000, "message": "backend secret must not escape"
+            }})
+        else:
+            emit({"jsonrpc": "2.0", "id": request_id, "result": {
+                "content": [{"type": "text", "text": "provider-result"}],
+                "structuredContent": {
+                    "tool": name, "arguments": request["params"].get("arguments", {})
+                },
+                "isError": False,
+            }})
+'''
 
 
-def fake_driver(tmp_path: Path) -> tuple[Path, Path]:
-    path, log = tmp_path / "cua-driver", tmp_path / "calls.jsonl"
-    path.write_text(FAKE)
-    path.chmod(0o755)
+def _write_driver(tmp_path: Path, *, mode: str = "normal", extra_tool: str | None = None) -> tuple[Path, Path]:
+    log = tmp_path / "driver.log"
+    tools = list(CUA_REFERENCE_TOOL_NAMES)
+    if extra_tool is not None:
+        tools.append(extra_tool)
+    script = (
+        _GENERIC_DRIVER.replace("__TOOLS__", repr(tools))
+        .replace("__MODE__", repr(mode))
+        .replace("__LOG__", repr(str(log)))
+    )
+    path = tmp_path / "cua-driver"
+    path.write_text(script, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path, log
 
 
-def message(tool: str, **values: str):
-    base = {"version": 1, "type": "invoke", "request_id": "r", "tool": tool} | values
-    return {
-        "computer.capture": ComputerCaptureInvoke,
-        "computer.click": ComputerClickInvoke,
-        "computer.type": ComputerTypeInvoke,
-    }[tool].model_validate(base)
-
-
-def configured(
-    path: Path, log: Path, mode: str = "normal", **kwargs: object
-) -> ComputerCapability:
-    env = {
-        "PATH": os.environ["PATH"],
-        "DISPLAY": ":99",
-        "HOME": str(path.parent),
-        "FAKE_MODE": mode,
-        "FAKE_LOG": str(log),
-        "AGENT_RELAY_AGENT_TOKEN": "SECRET",
-        "HTTPS_PROXY": "http://secret-proxy",
-        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/safe",
-    }
-    # Test controls are intentionally compiled into the fake: they are not allowlisted.
-    text = (
-        path.read_text()
-        .replace('mode=os.environ.get("FAKE_MODE", "normal")', f'mode="{mode}"')
-        .replace('log=os.environ.get("FAKE_LOG")', f"log={str(log)!r}")
-    )
-    path.write_text(text)
-    path.chmod(0o755)
+def _configured(path: Path, *, action_timeout: float = 1, **kwargs: object) -> ComputerCapability:
     return ComputerCapability(
         path,
         "Fixture",
         "Relay Desktop Fixture",
-        environ=env,
         startup_timeout_seconds=2,
-        action_timeout_seconds=0.15,
-        shutdown_timeout_seconds=0.15,
+        action_timeout_seconds=action_timeout,
+        shutdown_timeout_seconds=1,
         **kwargs,
     )
 
 
-def test_computer_capability_exposes_only_constrained_tools() -> None:
+def test_cua_reference_inventory_contains_exactly_fifty_generic_names() -> None:
+    assert len(CUA_REFERENCE_TOOL_NAMES) == 50
+    assert len(set(CUA_REFERENCE_TOOL_NAMES)) == 50
     assert ComputerCapability.tools == frozenset(
-        {"computer.capture", "computer.click", "computer.type"}
+        f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES
     )
 
 
-def test_driver_path_and_environment_are_safe(tmp_path: Path) -> None:
-    path, _ = fake_driver(tmp_path)
-    assert validate_driver_executable(path) == path
-    link = tmp_path / "link"
-    link.symlink_to(path)
-    for invalid in (Path("relative"), link, tmp_path):
-        with pytest.raises(ValueError):
-            validate_driver_executable(invalid)
-    env = safe_driver_environment(
-        {
-            "DISPLAY": ":1",
-            "PATH": "/bin",
-            "XDG_RUNTIME_DIR": "/run/private",
-            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/private/bus",
-            "NO_AT_BRIDGE": "0",
-            "GTK_MODULES": "gail:atk-bridge",
-            "AT_SPI_BUS_TYPE": "session",
-            "PSModulePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules",
-            "AGENT_RELAY_TOKEN": "x",
-            "HTTP_PROXY": "x",
-            "SECRET": "x",
-        }
-    )
-    assert env == {
-        "DISPLAY": ":1",
-        "PATH": "/bin",
-        "XDG_RUNTIME_DIR": "/run/private",
-        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/private/bus",
-        "NO_AT_BRIDGE": "0",
-        "GTK_MODULES": "gail:atk-bridge",
-        "AT_SPI_BUS_TYPE": "session",
-        "PSModulePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules",
-        "CUA_DRIVER_TELEMETRY": "0",
-        "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
-    }
+def test_driver_stderr_diagnostics_are_closed_and_bounded() -> None:
+    assert _driver_stderr_line_category(
+        b"named pipe connection failed: secret-token"
+    ) == "named-pipe"
+    assert _driver_stderr_line_category(
+        b"ConfigurationError: private-path"
+    ) == "configuration"
+    assert _driver_stderr_line_category(b"unclassified secret-value") == "driver-error"
+    assert _driver_stderr_category({"daemon", "named-pipe"}, True) == "named-pipe"
+    assert _driver_stderr_category(set(), False) is None
 
 
-def test_start_capture_actions_and_foreground_fallback_are_narrow(
-    tmp_path: Path,
-) -> None:
+def test_computer_capability_lists_and_calls_provider_native_tools(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "fallback")
+        path, log = _write_driver(tmp_path, extra_tool="provider_added_later")
+        capability = _configured(path)
         await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        assert set(capture) == {"app", "window_title", "generation", "elements"}
-        assert len(capture["elements"]) == 2
-        assert all(
-            set(item) <= {"element_id", "role", "name", "value", "enabled"}
-            for item in capture["elements"]
-        )
-        assert "driver-" not in json.dumps(capture) and "Password" not in json.dumps(
-            capture
-        )
-        field = next(item for item in capture["elements"] if item["role"] == "entry")[
-            "element_id"
-        ]
-        button = next(item for item in capture["elements"] if item["role"] == "button")[
-            "element_id"
-        ]
-        await capability.invoke(message("computer.click", element_id=field))
-        typed = await capability.invoke(
-            message("computer.type", element_id=field, text="hello")
-        )
-        assert typed == {
-            "success": True,
-            "generation": capture["generation"],
-            "element_id": field,
+        descriptors = await capability.list_tools()
+        assert len(descriptors) == 51
+        assert {item.tool_name for item in descriptors} == {
+            *CUA_REFERENCE_TOOL_NAMES,
+            "provider_added_later",
         }
-        await capability.invoke(message("computer.click", element_id=button))
-        await capability.aclose()
+
+        result = await capability.call_tool("provider_added_later", {})
+        assert isinstance(result.content[0], ProviderTextContent)
+        assert result.content[0].text == "provider-result"
+        assert result.structured_content == {
+            "tool": "provider_added_later",
+            "arguments": {},
+        }
+
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        initialize = next(item for item in calls if item.get("method") == "initialize")
-        assert initialize["params"]["protocolVersion"] == "2025-06-18"
-        tool_calls = [item for item in calls if item.get("method") == "tools/call"]
-        capture_args = [
-            item["params"]["arguments"]
-            for item in tool_calls
-            if item["params"]["name"] == "get_window_state"
+        startup = next(item for item in calls if "startup_argv" in item)
+        assert startup["startup_argv"] == [
+            "mcp",
+            "--no-overlay",
+            "--no-daemon-relaunch",
         ]
-        assert capture_args
-        assert all(
-            args["include_screenshot"] is False and args["max_elements"] == 300
-            for args in capture_args
-        )
-        type_args = [
-            item["params"]["arguments"]
-            for item in tool_calls
-            if item["params"]["name"] == "type_text"
-        ]
-        assert (
-            len(type_args) == 2
-            and "delivery_mode" not in type_args[0]
-            and type_args[1]["delivery_mode"] == "foreground"
-        )
-        assert all(
-            args["pid"] == 123
-            and args["window_id"] == 456
-            and args["element_token"] == "driver-field"
-            for args in type_args
-        )
-        assert any(
-            item.get("params", {}).get("name") == "end_session" for item in calls
-        )
-        telemetry = [item for item in calls if "argv" in item]
-        mcp_processes = [item for item in calls if "mcp_argv" in item]
-        assert [item["mcp_argv"] for item in mcp_processes] == [
-            ["mcp", "--no-overlay"]
-        ]
-        assert [item["argv"] for item in telemetry] == [
-            ["telemetry", "disable"],
-            ["telemetry", "reset-id"],
-            ["telemetry", "status", "--json"],
-        ]
-        assert all(
-            "AGENT_RELAY_AGENT_TOKEN" not in item["env"]
-            and "HTTPS_PROXY" not in item["env"]
-            and item["env"].get("CUA_DRIVER_TELEMETRY") == "0"
-            and item["env"].get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
-            for item in telemetry + mcp_processes
-        )
+        assert not any("argv" in item for item in calls if "startup_argv" not in item)
+        call = next(item for item in calls if item.get("method") == "tools/call")
+        assert call["params"] == {
+            "name": "provider_added_later",
+            "arguments": {},
+        }
+        await capability.aclose()
 
     asyncio.run(scenario())
 
 
-def test_start_retries_bounded_window_discovery(tmp_path: Path) -> None:
+def test_selected_cua_tools_are_scoped_to_the_configured_window(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "delayed_window")
+        path, _ = _write_driver(tmp_path)
+        capability = _configured(path)
+        calls: list[tuple[str, dict[str, object]]] = []
+        snapshot = 0
+
+        class ScopedClient:
+            async def call_tool(
+                self, name: str, arguments: dict[str, object]
+            ) -> ProviderToolResult:
+                nonlocal snapshot
+                calls.append((name, arguments))
+                if name == "list_windows":
+                    return ProviderToolResult(
+                        content=[{"type": "text", "text": "all desktop windows"}],
+                        structuredContent={
+                            "current_space_id": 1,
+                            "windows": [
+                                {
+                                    "pid": 41,
+                                    "window_id": 7,
+                                    "app_name": "Fixture",
+                                    "title": "Relay Desktop Fixture",
+                                    "is_on_screen": True,
+                                    "bounds": {
+                                        "x": 1,
+                                        "y": 2,
+                                        "width": 300,
+                                        "height": 200,
+                                    },
+                                },
+                                {
+                                    "pid": 99,
+                                    "window_id": 8,
+                                    "app_name": "Other",
+                                    "title": "Private window",
+                                    "is_on_screen": True,
+                                    "bounds": {
+                                        "x": 2,
+                                        "y": 3,
+                                        "width": 100,
+                                        "height": 100,
+                                    },
+                                },
+                            ],
+                        },
+                        isError=False,
+                    )
+                if name == "get_window_state":
+                    snapshot += 1
+                    return ProviderToolResult(
+                        content=[{"type": "text", "text": "raw state"}],
+                        structuredContent={
+                            "pid": 41,
+                            "window_id": 7,
+                            "snapshot_id": f"snapshot-{snapshot}",
+                            "screenshot": "must-not-escape",
+                            "elements": [
+                                {
+                                    "element_index": 20,
+                                    "role": "textbox",
+                                    "label": "Name",
+                                    "element_token": f"field-{snapshot}",
+                                    "value": "",
+                                    "bounds": {
+                                        "x": 1,
+                                        "y": 1,
+                                        "width": 10,
+                                        "height": 10,
+                                    },
+                                },
+                                {
+                                    "element_index": 40,
+                                    "role": "button",
+                                    "label": "Apply",
+                                    "element_token": f"button-{snapshot}",
+                                },
+                            ],
+                        },
+                        isError=False,
+                    )
+                return ProviderToolResult(
+                    content=[{"type": "text", "text": "raw action"}],
+                    structuredContent={
+                        "path": "uia",
+                        "verified": True,
+                        "effect": "confirmed",
+                        "private_detail": "must-not-escape",
+                    },
+                    isError=False,
+                )
+
+        client = ScopedClient()
+
+        listed = await capability._call_scoped_tool(client, "list_windows", {})
+        assert listed.content == []
+        assert listed.structured_content == {
+            "windows": [
+                {
+                    "pid": 41,
+                    "window_id": 7,
+                    "app_name": "Fixture",
+                    "title": "Relay Desktop Fixture",
+                    "is_on_screen": True,
+                    "bounds": {"x": 1, "y": 2, "width": 300, "height": 200},
+                }
+            ]
+        }
+
+        state = await capability._call_scoped_tool(
+            client,
+            "get_window_state",
+            {
+                "pid": 41,
+                "window_id": 7,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+        )
+        assert state.content == []
+        assert state.structured_content is not None
+        assert "screenshot" not in state.structured_content
+        assert "bounds" not in state.structured_content["elements"][0]
+        assert state.structured_content["elements"][0]["element_index"] == 0
+
+        action = await capability._call_scoped_tool(
+            client,
+            "click",
+            {"pid": 41, "window_id": 7, "element_token": "field-1"},
+        )
+        assert action.content == []
+        assert action.structured_content == {
+            "path": "uia",
+            "verified": True,
+            "effect": "confirmed",
+        }
+
+        typed = await capability._call_scoped_tool(
+            client,
+            "type_text",
+            {
+                "pid": 41,
+                "window_id": 7,
+                "element_token": "field-1",
+                "text": "hello",
+            },
+        )
+        assert typed.content == []
+        assert typed.structured_content == {
+            "path": "uia",
+            "verified": True,
+            "effect": "confirmed",
+        }
+
+        duplicate = await capability._call_scoped_tool(
+            client,
+            "click",
+            {"pid": 41, "window_id": 7, "element_token": "field-1"},
+        )
+        assert duplicate.is_error is True
+
+        await capability._call_scoped_tool(
+            client,
+            "get_window_state",
+            {
+                "pid": 41,
+                "window_id": 7,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+        )
+        rejected = await capability._call_scoped_tool(
+            client,
+            "click",
+            {"pid": 41, "window_id": 7, "element_token": "field-1"},
+        )
+        assert rejected.is_error is True
+
+        assert calls[0] == ("list_windows", {"on_screen_only": os.name == "nt"})
+        type_call = next(arguments for name, arguments in calls if name == "type_text")
+        expected_type_call = {
+            "pid": 41,
+            "window_id": 7,
+            "element_token": "field-1",
+            "text": "hello",
+        }
+        if sys.platform.startswith("linux"):
+            expected_type_call["delivery_mode"] = "foreground"
+        assert type_call == expected_type_call
+        assert [name for name, _arguments in calls].count("click") == 1
+
+    asyncio.run(scenario())
+
+
+def test_provider_arguments_are_validated_before_tools_call(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        path, log = _write_driver(tmp_path)
+        capability = _configured(path)
         await capability.start()
+        before = len(
+            [
+                line
+                for line in log.read_text().splitlines()
+                if '"method":"tools/call"' in line
+            ]
+        )
+        assert (await capability.call_tool("click", {})).is_error is True
+        assert (
+            await capability.call_tool("click", {"target": "ok", "extra": True})
+        ).is_error is True
+        after = len(
+            [
+                line
+                for line in log.read_text().splitlines()
+                if '"method":"tools/call"' in line
+            ]
+        )
+        assert before == after
         await capability.aclose()
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
-        assert sum(
-            item.get("params", {}).get("name") == "list_windows" for item in calls
-        ) == 2
+
+    asyncio.run(scenario())
+
+
+def test_provider_inventory_accepts_a_fifty_first_tool_without_relay_edit(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        path, _ = _write_driver(tmp_path, extra_tool="provider_added_later")
+        capability = _configured(path)
+        await capability.start()
+        descriptors = await capability.list_tools()
+        assert len(descriptors) == 51
+        assert any(item.tool_name == "provider_added_later" for item in descriptors)
+        await capability.aclose()
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
-    ("mode", "expected_phase"),
-    [
-        ("wrong_id", "initialize"),
-        ("malformed", "initialize"),
-        ("oversized", "initialize"),
-        ("bad_initialize_response", "initialize-response"),
-        ("bad_tool_schema", "tools-list"),
-        ("telemetry_oversized", "privacy-status"),
-        ("telemetry_invalid_json", "privacy-status-json"),
-        ("telemetry_on", "privacy-status-values"),
-        ("ambiguous", "window-select"),
-    ],
+    "mode", ["wrong_id", "wrong_version", "malformed", "oversized", "bad_schema"]
 )
-def test_startup_failures_are_closed_and_bounded(
-    tmp_path: Path, mode: str, expected_phase: str
-) -> None:
+def test_startup_protocol_failures_are_fail_closed(tmp_path: Path, mode: str) -> None:
     async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, mode)
-        with pytest.raises(ComputerUnavailableError) as error:
+        path, _ = _write_driver(tmp_path, mode=mode)
+        capability = _configured(path)
+        with pytest.raises(ComputerUnavailableError):
             await capability.start()
-        assert str(error.value) == "computer capability unavailable"
-        assert error.value.startup_phase == expected_phase
-        await asyncio.wait_for(capability.wait_unavailable(), 0.5)
+        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
         await capability.aclose()
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("mode", ["hang", "exit", "raw_error"])
-def test_action_failure_is_bounded_unavailable_and_secret_free(
-    tmp_path: Path, mode: str
-) -> None:
+def test_provider_error_is_safe_and_closes_idempotently(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, mode)
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        target = capture["elements"][1]["element_id"]
-        with pytest.raises(ComputerUnavailableError) as error:
-            await asyncio.wait_for(
-                capability.invoke(message("computer.click", element_id=target)), 0.4
-            )
-        assert "SECRET_DRIVER_ERROR" not in str(error.value)
-        await asyncio.wait_for(capability.wait_unavailable(), 0.5)
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_allowlisted_window_change_fails_fresh_capture(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "changed")
-        await capability.start()
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(message("computer.capture"))
-        await asyncio.wait_for(capability.wait_unavailable(), 0.5)
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_unverified_successful_click_is_accepted_exactly_once(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "unverified")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        target = capture["elements"][1]["element_id"]
-        assert await capability.invoke(
-            message("computer.click", element_id=target)
-        ) == {
-            "success": True,
-            "generation": capture["generation"],
-            "element_id": target,
-        }
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
-        assert sum(item.get("params", {}).get("name") == "click" for item in calls) == 1
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_capture_prioritizes_actionable_controls_after_structural_nodes(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "deep_controls")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        await capability.aclose()
-        assert len(capture["elements"]) == 12
-        names = {item["name"] for item in capture["elements"]}
-        assert {"Name", "Apply"} <= names
-        assert not {"Grant Camera Permission", "Password"} & names
-
-    asyncio.run(scenario())
-
-
-def test_capture_prioritizes_web_document_controls_over_browser_chrome(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "browser_chrome_controls")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        await capability.aclose()
-        assert len(capture["elements"]) == 12
-        names = {item["name"] for item in capture["elements"]}
-        assert {"Name", "Apply"} <= names
-
-    asyncio.run(scenario())
-
-
-def test_capture_omits_implicit_privileged_override_control(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "implicit_risky_control")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        await capability.aclose()
-        assert [item["name"] for item in capture["elements"]] == ["Name", "Apply"]
-
-    asyncio.run(scenario())
-
-
-def test_capture_keeps_unlabeled_editable_element_from_linux_driver(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "unlabeled_field")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        await capability.aclose()
-        fields = [item for item in capture["elements"] if item["role"] == "entry"]
-        assert len(fields) == 1
-        assert fields[0]["name"] == ""
-
-    asyncio.run(scenario())
-
-
-def test_capture_omits_disabled_and_rejects_non_boolean_enabled(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "disabled")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        assert [item["name"] for item in capture["elements"]] == ["Name"]
-        assert capture["elements"][0]["value"] == ""
-        await capability.aclose()
-
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "bad_enabled")
-        await capability.start()
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(message("computer.capture"))
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_click_rejects_malformed_non_object_driver_result(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "click_scalar")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(message("computer.click", element_id=capture["elements"][1]["element_id"]))
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_leader_exit_still_terminates_process_group_descendant(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "leader_exit")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        target = capture["elements"][1]["element_id"]
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(message("computer.click", element_id=target))
-        await asyncio.wait_for(capability.wait_unavailable(), 0.5)
-        child_pid = next(
-            item["child_pid"]
-            for item in map(json.loads, log.read_text().splitlines())
-            if "child_pid" in item
+        path, _ = _write_driver(
+            tmp_path,
+            mode="raw_error",
+            extra_tool="provider_added_later",
         )
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_oversized_request_does_not_leak_pending_entry(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log)
+        capability = _configured(path)
         await capability.start()
-        with pytest.raises(ValueError):
-            await capability._request(
-                "oversized", {"value": "x" * 300000}, capability._action_timeout
-            )
-        assert capability._pending == {}
-        assert (await capability.invoke(message("computer.capture")))["elements"]
+        with pytest.raises(ProviderToolError) as error:
+            await capability.call_tool("provider_added_later", {})
+        assert "backend secret" not in str(error.value)
         await capability.aclose()
+        await capability.aclose()
+        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
 
     asyncio.run(scenario())
 
 
-def test_concurrent_reset_is_idempotent(tmp_path: Path) -> None:
+def test_cancellation_terminates_owned_provider_process(tmp_path: Path) -> None:
     async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log)
+        path, _ = _write_driver(
+            tmp_path,
+            mode="hang",
+            extra_tool="provider_added_later",
+        )
+        capability = _configured(path, action_timeout=10)
         await capability.start()
         process = capability._process
         assert process is not None
-        await asyncio.gather(
-            capability._reset(), capability._reset(), capability._reset()
-        )
-        assert capability._process is None
-        assert capability._reader_task is None
-        assert capability._exit_task is None
-        assert capability._pending == {}
-        await asyncio.wait_for(capability.wait_unavailable(), 0.5)
-        with pytest.raises(ProcessLookupError):
-            os.kill(process.pid, 0)
-
-    asyncio.run(scenario())
-
-
-def test_stale_duplicate_and_semantic_actions_are_local(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log)
-        await capability.start()
-        first = await capability.invoke(message("computer.capture"))
-        field, button = (
-            first["elements"][0]["element_id"],
-            first["elements"][1]["element_id"],
-        )
-        before = log.read_text().count('"name":"type_text"')
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(
-                message("computer.type", element_id=field, text="before")
-            )
-        assert log.read_text().count('"name":"type_text"') == before
-        await capability.invoke(message("computer.click", element_id=button))
-        before = log.read_text().count('"name":"click"')
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(message("computer.click", element_id=button))
-        assert log.read_text().count('"name":"click"') == before
-        fresh = await capability.invoke(message("computer.capture"))
-        with pytest.raises(ComputerUnavailableError):
-            await capability.invoke(
-                message("computer.click", element_id=first["elements"][1]["element_id"])
-            )
-        assert fresh["generation"] != first["generation"]
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_cancellation_terminates_backend_process_group(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = fake_driver(tmp_path)
-        capability = configured(path, log, "hang")
-        await capability.start()
-        capture = await capability.invoke(message("computer.capture"))
-        task = asyncio.create_task(
-            capability.invoke(
-                message(
-                    "computer.click", element_id=capture["elements"][1]["element_id"]
-                )
-            )
-        )
-        pid = capability._process.pid
-        await asyncio.sleep(0.03)
+        task = asyncio.create_task(capability.call_tool("provider_added_later", {}))
+        await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.wait_for(capability.wait_unavailable(), 0.5)
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
-        child_pid = next(
-            item["child_pid"]
-            for item in map(json.loads, log.read_text().splitlines())
-            if "child_pid" in item
+        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
+        await capability.aclose()
+        assert process.returncode is not None
+
+    asyncio.run(scenario())
+
+
+def test_timeout_terminates_owned_provider_process(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        path, _ = _write_driver(
+            tmp_path,
+            mode="hang",
+            extra_tool="provider_added_later",
         )
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
+        capability = _configured(path, action_timeout=0.05)
+        await capability.start()
+        process = capability._process
+        assert process is not None
+        with pytest.raises(ProviderTimeoutError):
+            await capability.call_tool("provider_added_later", {})
+        assert process.returncode is not None
+        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
         await capability.aclose()
 
     asyncio.run(scenario())
+
+
+def test_safe_driver_environment_excludes_relay_credentials() -> None:
+    environment = safe_driver_environment(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/home",
+            "AGENT_RELAY_AGENT_TOKEN": "[REDACTED]",
+            "HTTPS_PROXY": "http://proxy.invalid",
+            "CUA_DRIVER_RS_TELEMETRY_ENABLED": "1",
+            "CUA_DRIVER_TELEMETRY_HOME": "/tmp/cua-home",
+            "CUA_TELEMETRY_ENABLED": "1",
+        }
+    )
+    assert environment == {
+        "PATH": "/usr/bin",
+        "HOME": "/tmp/home",
+        "CUA_DRIVER_TELEMETRY_HOME": "/tmp/cua-home",
+        "CUA_DRIVER_INSTALL_CHANNEL": "python_package",
+        "CUA_DRIVER_TELEMETRY": "0",
+        "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
+        "CUA_TELEMETRY_ENABLED": "0",
+    }
+
+
+def test_no_operation_specific_cua_dispatch_remains() -> None:
+    source = Path(__file__).parents[1].joinpath(
+        "src", "agent_relay", "capabilities", "computer.py"
+    ).read_text(encoding="utf-8")
+    assert "computer.capture" not in source
+    assert "computer.click" not in source
+    assert "computer.type" not in source
+    assert "element_id" not in source
+
+
+def test_driver_path_validation_rejects_relative_and_symlink(tmp_path: Path) -> None:
+    relative = Path("cua-driver")
+    with pytest.raises(ValueError):
+        validate_driver_executable(relative)
+    target = tmp_path / "driver"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    target.chmod(0o755)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(ValueError):
+        validate_driver_executable(link)
+
+
+def test_windows_health_requires_all_required_checks() -> None:
+    payload = {
+        "schema_version": "1",
+        "platform": "win32",
+        "overall": "ok",
+        "checks": [
+            {"name": name, "status": "pass", "message": "ok"}
+            for name in (
+                "binary_version",
+                "platform_supported",
+                "session_active",
+                "ax_capability",
+            )
+        ],
+    }
+    validate_windows_health(payload)
+    payload["checks"][-1]["status"] = "fail"
+    with pytest.raises(ValueError):
+        validate_windows_health(payload)
+
+
+def test_windows_daemon_readiness_wait_is_bounded_and_retries() -> None:
+    class Process:
+        returncode = None
+
+    attempts = 0
+
+    def pipe_ready() -> bool:
+        nonlocal attempts
+        attempts += 1
+        return attempts == 3
+
+    async def scenario() -> None:
+        await _wait_for_windows_daemon_ready(
+            Process(),
+            1,
+            pipe_ready=pipe_ready,
+        )
+
+    asyncio.run(scenario())
+    assert attempts == 3
+
+
+def test_async_popen_process_adapter_waits_without_driver_execution() -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    adapted = _AsyncPopenProcess(process)
+    assert adapted.pid == process.pid
+    assert asyncio.run(adapted.wait()) == 0
+    assert adapted.returncode == 0
