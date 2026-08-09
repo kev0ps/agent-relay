@@ -11,6 +11,7 @@ def test_windows_installer_is_a_self_contained_user_scope_bootstrapper() -> None
     for phrase in (
         "Set-StrictMode -Version Latest",
         "codeload.github.com/kev0ps/agent-relay",
+        "python install",
         "uv tool install",
         '"config", "init", "server"',
         'config init agent --stdin --no-tools',
@@ -29,6 +30,7 @@ def test_linux_installer_is_a_self_contained_user_scope_bootstrapper() -> None:
     for phrase in (
         "set -euo pipefail",
         "codeload.github.com/kev0ps/agent-relay",
+        "python install",
         "uv_path",
         "tool install --force",
         "config init server",

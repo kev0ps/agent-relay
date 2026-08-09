@@ -5,6 +5,7 @@ set -euo pipefail
 repository="https://github.com/kev0ps/agent-relay"
 source_ref="${AGENT_RELAY_REF:-main}"
 source_ref_kind="${AGENT_RELAY_REF_KIND:-heads}"
+python_version="${AGENT_RELAY_PYTHON_VERSION:-3.13.5}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     printf 'Agent Relay Linux installer requires Linux.\n' >&2
@@ -16,6 +17,10 @@ if [[ "$source_ref_kind" != "heads" && "$source_ref_kind" != "tags" ]]; then
 fi
 if [[ ! "$source_ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
     printf 'AGENT_RELAY_REF contains unsupported characters.\n' >&2
+    exit 1
+fi
+if [[ ! "$python_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+    printf 'AGENT_RELAY_PYTHON_VERSION contains unsupported characters.\n' >&2
     exit 1
 fi
 if ! command -v curl >/dev/null 2>&1; then
@@ -58,6 +63,33 @@ if ! uv_path="$(find_uv)"; then
         printf 'uv was installed but could not be found on PATH.\n' >&2
         exit 1
     fi
+fi
+
+printf 'Installing or verifying Python %s with uv...\n' "$python_version"
+"$uv_path" python install "$python_version"
+export UV_PYTHON="$python_version"
+
+sync_root="${AGENT_RELAY_SYNC_ROOT:-}"
+if [[ -n "$sync_root" ]]; then
+    if [[ ! -d "$sync_root" || ! -f "$sync_root/pyproject.toml" || ! -f "$sync_root/uv.lock" ]]; then
+        printf 'AGENT_RELAY_SYNC_ROOT is not a locked Agent Relay project: %s\n' "$sync_root" >&2
+        exit 1
+    fi
+    sync_profile="${AGENT_RELAY_SYNC_PROFILE:-base}"
+    case "$sync_profile" in
+        base) sync_arguments=(sync --locked) ;;
+        browser) sync_arguments=(sync --locked --extra browser) ;;
+        computer) sync_arguments=(sync --locked --extra browser --extra computer) ;;
+        *)
+            printf "AGENT_RELAY_SYNC_PROFILE must be 'base', 'browser', or 'computer'.\n" >&2
+            exit 1
+            ;;
+    esac
+    printf 'Installing locked %s dependencies with uv...\n' "$sync_profile"
+    (
+        cd -- "$sync_root"
+        "$uv_path" "${sync_arguments[@]}"
+    )
 fi
 
 archive_path="$temporary_root/agent-relay.tar.gz"

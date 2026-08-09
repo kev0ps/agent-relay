@@ -17,12 +17,20 @@ $sourceRefKind = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_REF_KIND)) {
 } else {
     $env:AGENT_RELAY_REF_KIND
 }
+$script:pythonVersion = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_PYTHON_VERSION)) {
+    "3.13.5"
+} else {
+    $env:AGENT_RELAY_PYTHON_VERSION
+}
 
 if ($sourceRefKind -notin @("heads", "tags")) {
     throw "AGENT_RELAY_REF_KIND must be 'heads' or 'tags'."
 }
 if ($sourceRef -notmatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$") {
     throw "AGENT_RELAY_REF contains unsupported characters."
+}
+if ($script:pythonVersion -notmatch "^[0-9]+(\.[0-9]+){1,2}$") {
+    throw "AGENT_RELAY_PYTHON_VERSION contains unsupported characters."
 }
 
 function Get-UvPath {
@@ -77,6 +85,54 @@ function Ensure-Uv {
     return $uvPath
 }
 
+function Ensure-Python([string] $uvPath) {
+    Write-Host "Installing or verifying Python $script:pythonVersion with uv..."
+    & $uvPath python install $script:pythonVersion
+    if ($LASTEXITCODE -ne 0) {
+        throw "uv python install failed with exit code $LASTEXITCODE."
+    }
+    $env:UV_PYTHON = $script:pythonVersion
+}
+
+function Sync-Project([string] $uvPath) {
+    $syncRootValue = $env:AGENT_RELAY_SYNC_ROOT
+    if ([string]::IsNullOrWhiteSpace($syncRootValue)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $syncRootValue -PathType Container) -or
+        -not (Test-Path -LiteralPath (Join-Path $syncRootValue "pyproject.toml") -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $syncRootValue "uv.lock") -PathType Leaf)) {
+        throw "AGENT_RELAY_SYNC_ROOT is not a locked Agent Relay project: $syncRootValue"
+    }
+
+    $syncProfile = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_SYNC_PROFILE)) {
+        "base"
+    } else {
+        $env:AGENT_RELAY_SYNC_PROFILE.ToLowerInvariant()
+    }
+    if ($syncProfile -notin @("base", "browser", "computer")) {
+        throw "AGENT_RELAY_SYNC_PROFILE must be 'base', 'browser', or 'computer'."
+    }
+    $syncArguments = @("sync", "--locked")
+    if ($syncProfile -eq "browser") {
+        $syncArguments += @("--extra", "browser")
+    } elseif ($syncProfile -eq "computer") {
+        $syncArguments += @("--extra", "browser", "--extra", "computer")
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $syncRootValue).Path
+    Write-Host "Installing locked $syncProfile dependencies with uv..."
+    Push-Location -LiteralPath $resolvedRoot
+    try {
+        & $uvPath @syncArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv sync failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Add-UserPathEntry([string] $entry) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $entries = @(
@@ -101,6 +157,8 @@ New-Item -ItemType Directory -Path $script:temporaryRoot -Force | Out-Null
 
 try {
     $uv = Ensure-Uv
+    Ensure-Python $uv
+    Sync-Project $uv
     $projectRoot = $env:AGENT_RELAY_PROJECT_ROOT
     if ([string]::IsNullOrWhiteSpace($projectRoot)) {
         $archivePath = Join-Path $script:temporaryRoot "agent-relay.zip"

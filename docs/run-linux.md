@@ -13,15 +13,18 @@ For the moving development branch, the user-level bootstrapper is:
 curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/install.sh | bash
 ```
 
-It installs `agent-relay` through `uv`, asks whether to initialize a local
-Server and Agent, and keeps the Agent allowlist empty by default. For a release,
-use an immutable tag for both the script and source. Inspect a downloaded
-script before executing it when the source is not trusted; a mutable `main`
-URL is not an integrity pin.
+It installs or verifies `uv` and managed Python, installs the Agent Relay
+runtime dependencies through `uv tool install`, asks whether to initialize a
+local Server and Agent, and keeps the Agent allowlist empty by default. For a
+release, use an immutable tag for both the script and source. Inspect a
+downloaded script before executing it when the source is not trusted; a
+mutable `main` URL is not an integrity pin.
 
 ## Installation and initialization
 
-From the repository root, install `uv` according to its documentation, then:
+For a checkout-based development environment, run the following from the
+repository root; this installs the locked development dependencies used by
+tests and tooling:
 
 ```sh
 uv sync --locked --group dev

@@ -52,8 +52,10 @@ The script:
 
 - uses WinGet to install `uv` when it is missing, with an official uv installer
   fallback when WinGet is unavailable;
+- installs or verifies managed Python 3.13.5 through `uv`;
 - downloads the Agent Relay source archive without requiring Git;
-- installs only for the current user through `uv tool install`;
+- installs the runtime and its Python dependencies for the current user through
+  `uv tool install`;
 - leaves an existing `%USERPROFILE%\.agent-relay` configuration untouched;
 - creates a new local Server and Agent configuration only when requested;
 - creates no enabled Agent tools by default.
@@ -61,7 +63,13 @@ The script:
 Set `AGENT_RELAY_SETUP=skip` for installation only, or
 `AGENT_RELAY_SETUP=local` to avoid the setup prompt. `AGENT_RELAY_REF` and
 `AGENT_RELAY_REF_KIND` select a branch or tag; `heads/main` is the default and
-is intended for development until a release process exists.
+is intended for development until a release process exists. Override the
+managed Python with `AGENT_RELAY_PYTHON_VERSION` when necessary.
+
+The CI-only `AGENT_RELAY_SYNC_ROOT` and `AGENT_RELAY_SYNC_PROFILE` variables
+also let the same bootstrapper install the locked development/test profile.
+They are not set by the public one-line installer, so end users do not receive
+pytest, Browser, or Computer Use test dependencies by default.
 
 The Linux installer uses the same variables:
 

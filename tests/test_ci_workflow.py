@@ -179,4 +179,8 @@ def test_ci_uses_one_closed_locked_python_setup_action() -> None:
     assert "tar --exclude=.git" in setup
     assert "scripts/install.sh" in setup
     assert "install.ps1" in setup
+    assert setup.count("if: inputs.installer != 'true'") == 3
+    assert "AGENT_RELAY_SYNC_ROOT" in setup
+    assert "AGENT_RELAY_SYNC_PROFILE" in setup
+    assert 'printf \'%s\\n\' "$(dirname "$uv_path")" >> "$GITHUB_PATH"' in setup
     assert "RELAY_E2E_AGENT_RELAY_COMMAND" in setup

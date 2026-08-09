@@ -1,5 +1,5 @@
 name: Set up locked Python environment
-description: Install pinned uv and one closed Agent Relay dependency profile
+description: Set up a locked Python profile or bootstrap the Agent Relay runtime
 
 inputs:
   profile:
@@ -15,6 +15,7 @@ runs:
   using: composite
   steps:
     - name: Install uv and Python
+      if: inputs.installer != 'true'
       uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
       with:
         version: "0.11.6"
@@ -23,10 +24,12 @@ runs:
         cache-dependency-glob: uv.lock
 
     - name: Verify committed lockfile
+      if: inputs.installer != 'true'
       shell: bash
       run: uv lock --check
 
     - name: Install locked dependencies
+      if: inputs.installer != 'true'
       shell: bash
       env:
         RELAY_CI_DEPENDENCY_PROFILE: ${{ inputs.profile }}
@@ -44,6 +47,8 @@ runs:
       env:
         AGENT_RELAY_SETUP: skip
         AGENT_RELAY_SKIP_PATH_UPDATE: "1"
+        AGENT_RELAY_SYNC_ROOT: ${{ github.workspace }}
+        AGENT_RELAY_SYNC_PROFILE: ${{ inputs.profile }}
       run: |
         set -euo pipefail
         archive_source="$RUNNER_TEMP/agent-relay-source.tar.gz"
@@ -51,9 +56,21 @@ runs:
           -czf "$archive_source" -C "$GITHUB_WORKSPACE" .
         export AGENT_RELAY_ARCHIVE_SOURCE="$archive_source"
         bash scripts/install.sh
-        tool_bin="$(uv tool dir --bin)"
+        uv_path="$(command -v uv || true)"
+        if test -z "$uv_path"; then
+          for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+            if test -x "$candidate"; then
+              uv_path="$candidate"
+              export PATH="$(dirname "$candidate"):$PATH"
+              break
+            fi
+          done
+        fi
+        test -n "$uv_path"
+        tool_bin="$("$uv_path" tool dir --bin)"
         test -x "$tool_bin/agent-relay"
         printf 'RELAY_E2E_AGENT_RELAY_COMMAND=%s\n' "$tool_bin/agent-relay" >> "$GITHUB_ENV"
+        printf '%s\n' "$(dirname "$uv_path")" >> "$GITHUB_PATH"
         printf '%s\n' "$tool_bin" >> "$GITHUB_PATH"
 
     - name: Install Agent Relay runtime through the Windows bootstrapper
@@ -62,6 +79,8 @@ runs:
       env:
         AGENT_RELAY_SETUP: skip
         AGENT_RELAY_SKIP_PATH_UPDATE: "1"
+        AGENT_RELAY_SYNC_ROOT: ${{ github.workspace }}
+        AGENT_RELAY_SYNC_PROFILE: ${{ inputs.profile }}
       run: |
         $ErrorActionPreference = "Stop"
         $archiveSource = Join-Path $env:RUNNER_TEMP "agent-relay-source.zip"
@@ -71,10 +90,28 @@ runs:
           -Force
         $env:AGENT_RELAY_ARCHIVE_SOURCE = $archiveSource
         & "$env:GITHUB_WORKSPACE\scripts\install.ps1"
-        $toolBin = (uv tool dir --bin).Trim()
+        $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
+        if ($null -eq $uvCommand) {
+          $uvCandidates = @(
+            (Join-Path $env:USERPROFILE ".local\bin\uv.exe"),
+            (Join-Path $env:LOCALAPPDATA "uv\uv.exe"),
+            (Join-Path $env:LOCALAPPDATA "Programs\uv\uv.exe")
+          )
+          $uvPath = $uvCandidates | Where-Object {
+            Test-Path -LiteralPath $_ -PathType Leaf
+          } | Select-Object -First 1
+        } else {
+          $uvPath = $uvCommand.Source
+        }
+        if ([string]::IsNullOrWhiteSpace($uvPath)) {
+          throw "The uv command was not found after running the installer."
+        }
+        $env:Path = "$(Split-Path -Parent $uvPath);$env:Path"
+        $toolBin = (& $uvPath tool dir --bin).Trim()
         $command = Join-Path $toolBin "agent-relay.exe"
         if (-not (Test-Path -LiteralPath $command -PathType Leaf)) {
           throw "The installed agent-relay command is missing: $command"
         }
         "RELAY_E2E_AGENT_RELAY_COMMAND=$command" | Add-Content -LiteralPath $env:GITHUB_ENV
+        (Split-Path -Parent $uvPath) | Add-Content -LiteralPath $env:GITHUB_PATH
         $toolBin | Add-Content -LiteralPath $env:GITHUB_PATH
