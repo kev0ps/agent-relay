@@ -60,6 +60,27 @@ def test_server_and_agent_are_the_only_runtime_dispatch_commands(
     assert received_agent == [["--config", str(path)]]
 
 
+def test_agent_can_use_runtime_environment_without_default_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    received_agent: list[list[str] | None] = []
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(cli.config, "DEFAULT_CONFIG_PATH", tmp_path / "config.yaml")
+    monkeypatch.setattr(cli.config, "discover_local_catalog", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        cli.agent,
+        "main",
+        lambda argv=None, **_kwargs: received_agent.append(argv),
+    )
+    monkeypatch.setenv("RELAY_URL", "ws://127.0.0.1:8000/ws/agent")
+    monkeypatch.setenv("RELAY_AGENT_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RELAY_AGENT_TOKEN", "agent-token")
+
+    assert cli.main(["agent"]) == 0
+    assert received_agent == [[]]
+
+
 def test_legacy_runtime_commands_are_rejected() -> None:
     with pytest.raises(SystemExit) as error:
         cli.main(["client"])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -221,6 +222,17 @@ def _catalog_required(args: argparse.Namespace) -> bool:
     )
 
 
+def _agent_environment_is_available(path: Path) -> bool:
+    """Allow a clean installed Agent to start from its runtime environment."""
+    return (
+        path == config.DEFAULT_CONFIG_PATH
+        and not path.exists()
+        and bool(os.environ.get("RELAY_URL"))
+        and bool(os.environ.get("RELAY_AGENT_WORKSPACE"))
+        and bool(os.environ.get("RELAY_AGENT_TOKEN") or os.environ.get("RELAY_AGENT_TOKEN_FILE"))
+    )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -276,6 +288,9 @@ def main(
             server.main(["--config", str(path)])
             return 0
         if args.command == "agent":
+            if _agent_environment_is_available(path):
+                agent.main([], catalog=effective_catalog)
+                return 0
             config.load_agent_settings(path, catalog=effective_catalog)
             if effective_catalog is None:
                 agent.main(["--config", str(path)])

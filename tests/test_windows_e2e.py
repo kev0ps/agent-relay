@@ -33,9 +33,10 @@ def test_generate_credentials_are_distinct_and_bounded() -> None:
 
 
 def test_windows_commands_are_fixed_loopback_module_entrypoints(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     harness = _load_harness()
+    monkeypatch.delenv("RELAY_E2E_AGENT_RELAY_COMMAND", raising=False)
 
     server = harness.server_command(23456)
     agent = harness.agent_command(23456, tmp_path)

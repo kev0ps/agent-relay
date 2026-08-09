@@ -37,8 +37,11 @@ def test_generate_credentials_are_distinct_and_bounded() -> None:
     assert len(control_token) <= 128
 
 
-def test_native_commands_use_fixed_module_entrypoints(tmp_path: Path) -> None:
+def test_native_commands_use_fixed_module_entrypoints(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     harness = _load_harness()
+    monkeypatch.delenv("RELAY_E2E_AGENT_RELAY_COMMAND", raising=False)
 
     server = harness.server_command(23456)
     agent = harness.agent_command(23456, tmp_path)
