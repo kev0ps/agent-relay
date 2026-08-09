@@ -87,6 +87,23 @@ def test_empty_canonical_token_environment_override_is_rejected(
         config.load_server_runtime(config_path, env={"RELAY_MCP_TOKEN": ""})
 
 
+def test_server_runtime_reports_sanitized_validation_errors(tmp_path: Path) -> None:
+    config_path = tmp_path / "missing.yaml"
+    secret = "SHARED_TOKEN_SENTINEL"
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load_server_runtime(
+            config_path,
+            env={"RELAY_MCP_TOKEN": secret, "RELAY_AGENT_TOKEN": secret},
+        )
+
+    message = str(error.value)
+    assert message == (
+        "invalid server configuration: mcp and agent tokens must be distinct"
+    )
+    assert secret not in message
+
+
 def test_yaml_boolean_and_environment_boolean_are_parsed_strictly(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config.init_config(config_path, "agent", token="test-agent-token", tools=[], env={})

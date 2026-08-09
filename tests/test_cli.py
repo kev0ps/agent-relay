@@ -78,6 +78,22 @@ def test_start_commands_return_configuration_error_status_for_missing_config(
     assert "error" in capsys.readouterr().err.lower()
 
 
+def test_server_start_prints_sanitized_validation_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "SHARED_TOKEN_SENTINEL"
+    monkeypatch.setenv("RELAY_MCP_TOKEN", secret)
+    monkeypatch.setenv("RELAY_AGENT_TOKEN", secret)
+
+    assert cli.main(["--config", str(tmp_path / "missing.yaml"), "server"]) == 1
+
+    stderr = capsys.readouterr().err
+    assert "mcp and agent tokens must be distinct" in stderr
+    assert secret not in stderr
+
+
 def test_application_configuration_failures_return_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

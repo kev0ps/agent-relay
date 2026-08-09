@@ -989,6 +989,13 @@ def render_validation(report: ValidationReport) -> str:
     return _render_report(report)
 
 
+def _invalid_configuration_message(scope: str, report: ValidationReport) -> str:
+    """Render only sanitized validation errors for runtime startup failures."""
+    details = "; ".join(issue.message for issue in report.errors)
+    prefix = f"invalid {scope} configuration"
+    return f"{prefix}: {details}" if details else prefix
+
+
 def _existing_allowlist(section: Mapping[str, Any]) -> list[str]:
     tools = section.get("tools", {})
     if not isinstance(tools, Mapping):
@@ -1544,7 +1551,7 @@ def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | Non
         document = {"server": _default_document("server")}
     report = _validate_server(document, config_path, effective_env, require=True)
     if not report.valid:
-        raise ConfigError("invalid server configuration")
+        raise ConfigError(_invalid_configuration_message("server", report))
     section = _effective_server(document, effective_env)
     mcp_token = _secret_value(document, "server", "mcp", config_path, effective_env)
     agent_token = _secret_value(document, "server", "agent", config_path, effective_env)
