@@ -108,6 +108,60 @@ jobs:
           docker run --rm --platform="$PLATFORM" "$IMAGE" --help
           docker run --rm --platform="$PLATFORM" "$IMAGE" --version
 
+  relay-compose-link:
+    name: Relay Compose Link - Server / Linux Agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install locked Python environment
+        uses: ./.github/actions/setup-python
+
+      - name: Start Compose Server and verify relay_device_status via MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_dir="$RUNNER_TEMP/relay-compose-link"
+          env_file="$runtime_dir/.env"
+          mcp_token_file="$runtime_dir/mcp.token"
+          agent_token_file="$runtime_dir/agent.token"
+          mkdir -p "$runtime_dir"
+          chmod 700 "$runtime_dir"
+          umask 077
+          openssl rand -hex 32 > "$mcp_token_file"
+          openssl rand -hex 32 > "$agent_token_file"
+          {
+            printf 'RELAY_MCP_TOKEN='
+            cat "$mcp_token_file"
+            printf '\nRELAY_AGENT_TOKEN='
+            cat "$agent_token_file"
+            printf '\nRELAY_ALLOW_INSECURE_WS=true\n'
+          } > "$env_file"
+          docker compose --env-file "$env_file" config --quiet
+          docker compose --env-file "$env_file" up --build --detach
+          uv run --frozen python scripts/relay_compose_link.py \
+            --mcp-token-file "$mcp_token_file" \
+            --agent-token-file "$agent_token_file" \
+            --workspace "$runtime_dir/workspace" \
+            --home "$runtime_dir/home"
+
+      - name: Stop Compose Server and remove ephemeral credentials
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_dir="$RUNNER_TEMP/relay-compose-link"
+          env_file="$runtime_dir/.env"
+          if test -f "$env_file"; then
+            docker compose --env-file "$env_file" down
+          fi
+          rm -f "$runtime_dir/.env" "$runtime_dir/mcp.token" "$runtime_dir/agent.token"
+
   e2e-linux-native:
     name: Native Linux Terminal end-to-end
     needs: python
@@ -434,7 +488,7 @@ jobs:
 
       - name: Install pinned cua-driver for Windows UI Automation
         shell: pwsh
-        run: ./scripts/install_windows_cua_driver.ps1
+        run: ./scripts/windows_install_cua_driver.ps1
 
       - name: Probe Windows CUA daemon-backed MCP startup
         shell: pwsh

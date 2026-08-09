@@ -74,6 +74,18 @@ docker compose up -d
 docker compose ps
 ```
 
+## CI smoke coverage
+
+The GitHub Actions job `Relay Compose Link - Server / Linux Agent` runs this
+same Compose example on an Ubuntu runner. It starts the Server in the
+container, starts one native Linux Agent against the published WebSocket
+endpoint, and calls only `relay_device_status` through MCP. The check requires
+the status response to report that the expected Agent is connected with no
+optional capabilities enabled.
+
+The job generates distinct temporary credentials, keeps them in private files,
+and removes the Compose stack and credentials in an always-run cleanup step.
+
 Confirm that the host firewall exposes port `8000` only to the intended Agent
 network. MCP clients on the Server host use:
 
@@ -127,7 +139,8 @@ policy.
 ## Limits of this guide
 
 - It does not configure TLS, a reverse proxy, systemd, or a Windows service.
-- It does not validate a mixed-platform deployment in CI.
+- CI validates the Linux Server container plus native Linux Agent status path;
+  it does not validate a mixed-platform deployment.
 - Docker image checks cover packaging and CLI startup, not Browser or CUA.
 - Browser and CUA require their native Agent dependencies and configuration.
 
