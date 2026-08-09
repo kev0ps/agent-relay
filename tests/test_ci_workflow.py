@@ -42,6 +42,23 @@ def test_ci_keeps_docker_image_smoke_without_container_ui_e2e() -> None:
     assert "Run ten fresh hardened Gate 4 scenarios" not in workflow
 
 
+def test_ci_smokes_compose_server_with_native_linux_agent_status() -> None:
+    workflow = WORKFLOW.read_text()
+    job = workflow.split("  relay-compose-link:", 1)[1].split(
+        "\n  e2e-linux-native:", 1
+    )[0]
+
+    assert "name: Relay Compose Link - Server / Linux Agent" in job
+    assert "runs-on: ubuntu-24.04" in job
+    assert "docker compose --env-file \"$env_file\" config --quiet" in job
+    assert "docker compose --env-file \"$env_file\" up --build --detach" in job
+    assert "scripts/relay_compose_link.py" in job
+    assert "relay_device_status" in job
+    assert "docker compose --env-file \"$env_file\" down" in job
+    assert "relay_system_ping" not in job
+    assert "relay_terminal_exec" not in job
+
+
 def test_ci_labels_native_gates_by_capability() -> None:
     workflow = WORKFLOW.read_text()
 
@@ -131,7 +148,7 @@ def test_ci_uses_one_closed_locked_python_setup_action() -> None:
     workflow = WORKFLOW.read_text()
     setup = PYTHON_SETUP.read_text()
 
-    assert workflow.count("uses: ./.github/actions/setup-python") == 7
+    assert workflow.count("uses: ./.github/actions/setup-python") == 8
     assert "astral-sh/setup-uv@" not in workflow
     assert "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990" in setup
     assert 'default: "base"' in setup
