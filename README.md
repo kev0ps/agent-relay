@@ -154,26 +154,10 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${RELAY_MCP_TOKEN}"
     supports_parallel_tool_calls: false
-    tools:
-      include:
-        - relay_device_status
-        - relay_system_ping
-        - relay_terminal_exec
-        - relay_browser_list_tabs
-        - relay_browser_navigate
-        - relay_browser_snapshot
-        - relay_browser_fill
-        - relay_browser_click
-        - relay_browser_scroll
-        - relay_browser_type
-        - relay_browser_back
-        - relay_cua_list_windows
-        - relay_cua_get_window_state
-        - relay_cua_click
-        - relay_cua_type_text
 ```
 
-Tool availability still depends on what the Relay Agent has enabled locally.
+Hermes discovers the currently announced tools through MCP. Tool availability
+still depends on what the Relay Agent has enabled locally.
 
 ## Security model
 

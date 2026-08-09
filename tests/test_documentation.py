@@ -39,7 +39,7 @@ def test_package_metadata_declares_mit_license() -> None:
 
 
 @pytest.mark.parametrize("relative_path", ["README.md", "docs/run-linux.md"])
-def test_hermes_examples_use_tools_include_mapping(relative_path: str) -> None:
+def test_hermes_examples_disable_parallel_tool_calls(relative_path: str) -> None:
     text = (Path(__file__).parents[1] / relative_path).read_text()
     snippet = next(
         block.split("```", 1)[0]
@@ -48,8 +48,11 @@ def test_hermes_examples_use_tools_include_mapping(relative_path: str) -> None:
     )
 
     assert "    supports_parallel_tool_calls: false\n" in snippet
-    assert "    tools:\n      include:\n" in snippet
-    assert "    tools:\n      - relay_device_status\n" not in snippet
+    if relative_path == "README.md":
+        assert "    tools:\n" not in snippet
+    else:
+        assert "    tools:\n      include:\n" in snippet
+        assert "    tools:\n      - relay_device_status\n" not in snippet
 
 
 CONTRACT_PATH = Path(__file__).parents[1] / "docs/e2e-client-capabilities.md"
