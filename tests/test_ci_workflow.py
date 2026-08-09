@@ -50,6 +50,7 @@ def test_ci_smokes_compose_server_with_native_linux_agent_status() -> None:
 
     assert "name: Relay Compose Link - Server / Linux Agent" in job
     assert "runs-on: ubuntu-24.04" in job
+    assert 'installer: "true"' in job
     assert "docker compose --env-file \"$env_file\" config --quiet" in job
     assert "docker compose --env-file \"$env_file\" up --build --detach" in job
     assert "scripts/relay_compose_link.py" in job

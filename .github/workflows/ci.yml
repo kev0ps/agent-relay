@@ -121,6 +121,8 @@ jobs:
 
       - name: Install locked Python environment
         uses: ./.github/actions/setup-python
+        with:
+          installer: "true"
 
       - name: Start Compose Server and verify relay_device_status via MCP
         shell: bash

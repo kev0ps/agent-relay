@@ -75,16 +75,22 @@ def _minimal_environment(home: Path, values: dict[str, str]) -> dict[str, str]:
         "HOME": str(home),
         "LANG": "C.UTF-8",
         "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
         "PYTHONUNBUFFERED": "1",
     }
+    if not os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND"):
+        environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
     environment.update(values)
     return environment
 
 
 def _spawn_agent(workspace: Path, token: str, home: Path) -> subprocess.Popen[Any]:
-    """Start the fixed native Agent command in an owned process group."""
-    command = [sys.executable, "-m", "agent_relay.agent"]
+    """Start the installed or source Agent command in an owned process group."""
+    installed_command = os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND")
+    command = (
+        [installed_command, "agent"]
+        if installed_command
+        else [sys.executable, "-m", "agent_relay.agent"]
+    )
     environment = _minimal_environment(
         home,
         {

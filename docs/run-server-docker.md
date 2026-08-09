@@ -87,7 +87,8 @@ docker compose ps
 
 The GitHub Actions job `Relay Compose Link - Server / Linux Agent` runs this
 same Compose example on an Ubuntu runner. It starts the Server in the
-container, starts one native Linux Agent against the published WebSocket
+container, installs the Linux Agent client through `scripts/install.sh`, starts
+the installed `agent-relay agent` command against the published WebSocket
 endpoint, and calls only `relay_device_status` through MCP. The check requires
 the status response to report that the expected Agent is connected with no
 optional capabilities enabled.
