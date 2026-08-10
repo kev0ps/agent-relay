@@ -100,6 +100,26 @@ def _debug_agent_phase(phase: str) -> None:
         print(f"agent lifecycle phase: {phase}", file=sys.stderr, flush=True)
 
 
+def _operator_agent_info(message: str) -> None:
+    """Emit concise lifecycle information without enabling native diagnostics."""
+    print(f"INFO agent: {message}", file=sys.stderr, flush=True)
+
+
+def safe_server_target(value: str) -> str:
+    """Render only the scheme, host, and port from a configured Relay URL."""
+    try:
+        parsed = urlparse(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "<configured Relay>"
+    if not parsed.scheme or not host:
+        return "<configured Relay>"
+    display_host = f"[{host}]" if ":" in host else host
+    display_port = f":{port}" if port is not None else ""
+    return f"{parsed.scheme}://{display_host}{display_port}"
+
+
 def _selected_cua_tool_names(settings: AgentSettings) -> frozenset[str] | None:
     if settings.tools_allowlist is None:
         return None
@@ -577,14 +597,30 @@ def _is_explicit_loopback(hostname: str) -> bool:
 
 
 def _read_token_file(path: Path) -> str:
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    if os.name == "nt":
+        try:
+            if stat.S_ISLNK(path.lstat().st_mode):
+                raise OSError("agent token file must not be a symlink")
+        except FileNotFoundError:
+            pass
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)
         if (
             not stat.S_ISREG(info.st_mode)
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+            or (
+                os.name != "nt"
+                and (
+                    stat.S_IMODE(info.st_mode) != 0o600
+                    or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+                )
+            )
             or info.st_size > 4096
         ):
             raise ValueError("agent token file is not a private regular file")
@@ -609,6 +645,58 @@ def _read_token_file(path: Path) -> str:
 class TextSocket(Protocol):
     async def send(self, payload: str) -> None: ...
     async def recv(self) -> str: ...
+
+
+def _connection_options_for(
+    settings: AgentSettings,
+    connector: Callable[..., Any],
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "max_size": settings.max_ws_message_bytes,
+        "proxy": None,
+    }
+    headers = {"Authorization": "Bearer " + settings.agent_token.get_secret_value()}
+    try:
+        parameters = inspect.signature(connector).parameters
+    except (TypeError, ValueError):
+        parameter_names: set[str] = set()
+    else:
+        parameter_names = set(parameters)
+    header_option = (
+        "additional_headers"
+        if "additional_headers" in parameter_names or "extra_headers" not in parameter_names
+        else "extra_headers"
+    )
+    options[header_option] = headers
+    return options
+
+
+async def check_connection(
+    settings: AgentSettings,
+    *,
+    connector: Callable[..., AsyncContextManager[TextSocket]] | None = None,
+) -> None:
+    """Verify reachability and authentication with the existing register exchange."""
+    connect = connector or websockets.connect
+    async with connect(
+        settings.server_url,
+        **_connection_options_for(settings, connect),
+    ) as socket:
+        await socket.send(
+            json.dumps(
+                {"version": 1, "type": "register", "device_id": settings.agent_id},
+                separators=(",", ":"),
+            )
+        )
+        raw = await socket.recv()
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > settings.max_ws_message_bytes:
+            raise ConnectionError("invalid registration response")
+        try:
+            registered = parse_server_message(json.loads(raw))
+        except (TypeError, ValueError) as exc:
+            raise ConnectionError("invalid registration response") from exc
+        if not isinstance(registered, Registered) or registered.device_id != settings.agent_id:
+            raise ConnectionError("Relay Server rejected registration")
 
 
 class RelayAgent:
@@ -782,27 +870,7 @@ class RelayAgent:
         self._stop_event.set()
 
     def _connection_options(self) -> dict[str, Any]:
-        options: dict[str, Any] = {
-            "max_size": self.settings.max_ws_message_bytes,
-            "proxy": None,
-        }
-        headers = {
-            "Authorization": "Bearer " + self.settings.agent_token.get_secret_value()
-        }
-        try:
-            parameters = inspect.signature(self._connector).parameters
-        except (TypeError, ValueError):
-            parameter_names: set[str] = set()
-        else:
-            parameter_names = set(parameters)
-        header_option = (
-            "additional_headers"
-            if "additional_headers" in parameter_names
-            or "extra_headers" not in parameter_names
-            else "extra_headers"
-        )
-        options[header_option] = headers
-        return options
+        return _connection_options_for(self.settings, self._connector)
 
     async def run(self) -> None:
         try:
@@ -810,15 +878,21 @@ class RelayAgent:
             while not self._stop_event.is_set():
                 self._session_registered = False
                 self._registered_at = None
+                connection_open = False
                 try:
                     _debug_agent_phase("capabilities-start")
                     await self._start_capabilities()
                     _debug_agent_phase("capabilities-ready")
+                    _operator_agent_info(
+                        f"connection attempt to {safe_server_target(self.settings.server_url)}"
+                    )
                     _debug_agent_phase("connect")
                     async with self._connector(
                         self.settings.server_url,
                         **self._connection_options(),
                     ) as socket:
+                        connection_open = True
+                        _operator_agent_info("WebSocket connection established")
                         _debug_agent_phase("connected")
                         await self.run_session(socket)
                 except BrowserStartupError:
@@ -828,8 +902,19 @@ class RelayAgent:
                 except asyncio.CancelledError:
                     raise
                 except ProviderUnavailableError:
+                    _operator_agent_info("local capability became unavailable; stopping")
                     self.stop()
                 except Exception as error:
+                    if self._session_registered:
+                        _operator_agent_info("Relay disconnected; reconnecting")
+                    elif connection_open:
+                        _operator_agent_info(
+                            "registration was rejected or closed before authentication; retrying"
+                        )
+                    else:
+                        _operator_agent_info(
+                            "connection or authentication failed; retrying"
+                        )
                     if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
                         phase = getattr(error, "startup_phase", None)
                         detail = (
@@ -843,9 +928,19 @@ class RelayAgent:
                             flush=True,
                         )
                     pass
+                else:
+                    if self._session_registered and not self._stop_event.is_set():
+                        _operator_agent_info("Relay disconnected; reconnecting")
+                    elif connection_open and not self._stop_event.is_set():
+                        _operator_agent_info(
+                            "registration was rejected; retrying"
+                        )
                 if self._session_was_stable():
                     delay = self.settings.reconnect_min_seconds
                 if not self._stop_event.is_set():
+                    _operator_agent_info(
+                        f"retrying in {delay:g}s (maximum {self.settings.reconnect_max_seconds:g}s)"
+                    )
                     await self._sleep_or_stop(delay)
                     delay = min(delay * 2, self.settings.reconnect_max_seconds)
         finally:
@@ -1012,6 +1107,9 @@ class RelayAgent:
         _debug_agent_phase("registered")
         self._session_registered = True
         self._registered_at = self._monotonic()
+        _operator_agent_info(
+            f"authenticated registration succeeded for agent {self.settings.agent_id}"
+        )
         await self._send(
             socket,
             Capabilities(
@@ -1024,6 +1122,10 @@ class RelayAgent:
                     else []
                 ),
             ).model_dump(mode="json", exclude_defaults=True),
+        )
+        capability_summary = ", ".join(self._announcement_tools) or "none"
+        _operator_agent_info(
+            f"capabilities announced ({len(self._announcement_tools)}): {capability_summary}"
         )
         _debug_agent_phase("capabilities-send")
         heartbeat = asyncio.create_task(self._heartbeat(socket))

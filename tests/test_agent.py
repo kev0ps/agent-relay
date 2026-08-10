@@ -20,7 +20,9 @@ from agent_relay.agent import (
     _read_token_file,
     _run_with_runtime_catalog,
     _run_with_signal_handlers,
+    check_connection,
     main,
+    safe_server_target,
 )
 from agent_relay.capabilities.terminal import TerminalCapability
 from agent_relay.catalog import CatalogService, CatalogSnapshot, ProviderRegistration
@@ -499,7 +501,8 @@ def test_canonical_agent_environment_uses_private_token_file_and_redacts_secret(
     assert "canonical-agent-secret" not in repr(settings)
     assert token_file.is_file()
     assert not token_file.is_symlink()
-    assert token_file.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert token_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_generated_agent_id_is_stable_across_configuration_reloads(tmp_path: Path) -> None:
@@ -960,6 +963,55 @@ class _Connection(AbstractAsyncContextManager["_Socket"]):
         return None
 
 
+def test_agent_reports_operator_lifecycle_at_info_without_secrets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class DisconnectingSocket(_Socket):
+        async def recv(self) -> str:
+            if self.inbound.empty():
+                raise ConnectionError("socket lost")
+            return await super().recv()
+
+    async def scenario() -> None:
+        socket = DisconnectingSocket(
+            [json.dumps({"version": 1, "type": "registered", "device_id": "d"})]
+        )
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="wss://relay.example.test/ws/agent?token=secret",
+                device_id="d",
+                agent_token="secret-token",
+                workspace=tmp_path,
+                reconnect_min_seconds=1,
+                reconnect_max_seconds=4,
+                heartbeat_interval_seconds=60,
+            ),
+            connector=lambda *_, **__: _Connection(socket),
+        )
+
+        async def stop_after_delay(delay: float) -> None:
+            assert delay == 1
+            agent.stop()
+
+        agent._sleep_or_stop = stop_after_delay  # type: ignore[method-assign]
+        await agent.run()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().err
+    for phrase in (
+        "connection attempt",
+        "WebSocket connection established",
+        "authenticated registration succeeded",
+        "capabilities announced",
+        "Relay disconnected; reconnecting",
+        "retrying in 1s",
+    ):
+        assert phrase in output
+    assert "secret-token" not in output
+    assert "token=secret" not in output
+    assert "wss://relay.example.test" in output
+
+
 def test_backoff_does_not_reset_after_registered_session_disconnects(tmp_path: Path) -> None:
     class DisconnectingSocket(_Socket):
         async def recv(self) -> str:
@@ -1228,6 +1280,50 @@ class _Socket:
 
     async def recv(self) -> str:
         return await self.inbound.get()
+
+
+def test_safe_server_target_drops_userinfo_path_and_query() -> None:
+    assert safe_server_target(
+        "wss://user:secret@relay.example.test:8443/ws/agent?token=secret"
+    ) == "wss://relay.example.test:8443"
+
+
+def test_authenticated_connection_check_reuses_register_without_token(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        socket = _Socket(
+            [json.dumps({"version": 1, "type": "registered", "device_id": "d"})]
+        )
+        observed_options: dict[str, object] = {}
+
+        class Connection(AbstractAsyncContextManager[_Socket]):
+            async def __aenter__(self) -> _Socket:
+                return socket
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+        def connector(*_: object, **kwargs: object) -> Connection:
+            observed_options.update(kwargs)
+            return Connection()
+
+        await check_connection(
+            AgentSettings(
+                server_url="ws://localhost:8765/ws/agent",
+                device_id="d",
+                agent_token="secret-token",
+                workspace=tmp_path,
+            ),
+            connector=connector,
+        )
+        assert socket.sent == [{"version": 1, "type": "register", "device_id": "d"}]
+        assert "secret-token" not in json.dumps(socket.sent)
+        headers = observed_options.get("additional_headers")
+        assert isinstance(headers, dict)
+        assert headers["Authorization"] == "Bearer secret-token"
+
+    asyncio.run(scenario())
 
 
 def test_agent_register_frame_contains_no_agent_token(tmp_path: Path) -> None:
@@ -2189,6 +2285,7 @@ def test_agent_suppresses_result_from_provider_that_swallows_cancellation(
     asyncio.run(scenario())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not available")
 def test_token_file_must_be_private(tmp_path: Path) -> None:
     token_file = tmp_path / "token"
     token_file.write_text("secret")
@@ -2205,6 +2302,7 @@ def test_token_file_must_be_private(tmp_path: Path) -> None:
     assert "secret" not in repr(AgentSettings.from_environment(env))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX special-file contract")
 def test_token_file_refuses_symlink_fifo_and_oversize(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.write_text("secret")

@@ -18,7 +18,8 @@ def test_init_server_creates_private_yaml_and_secret_files(
     assert cli.main(["--config", str(config_path), "config", "init", "server"]) == 0
 
     assert config_path.is_file()
-    assert os.stat(config_path).st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert os.stat(config_path).st_mode & 0o777 == 0o600
     assert (config_path.parent / "secrets/server/mcp_token").is_file()
     assert (config_path.parent / "secrets/server/agent_token").is_file()
     assert "token" not in capsys.readouterr().out.lower()
@@ -104,7 +105,8 @@ def test_init_agent_explicitly_starts_with_empty_allowlist(
     assert document["agent"]["identity"]["id"]
     token_path = config_path.parent / "secrets/agent/agent_token"
     assert token_path.read_text(encoding="utf-8") == "agent-secret\n"
-    assert os.stat(token_path).st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert os.stat(token_path).st_mode & 0o777 == 0o600
 
 
 def test_reinit_in_tty_preserves_existing_allowlist(

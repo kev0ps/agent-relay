@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +27,7 @@ def _setup_fake_uv(
     returncode: int = 0,
 ) -> list[list[str]]:
     commands: list[list[str]] = []
+    monkeypatch.setattr(cli.uninstall, "_is_windows", lambda: False)
     monkeypatch.setattr(cli.uninstall, "find_uv", lambda: Path("uv"))
 
     def run(command: list[str], *, check: bool) -> SimpleNamespace:
@@ -195,6 +200,7 @@ def test_uv_subprocess_errors_are_converted_to_cli_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr(cli.uninstall, "_is_windows", lambda: False)
     monkeypatch.setattr(cli.uninstall, "find_uv", lambda: Path("uv"))
 
     def run(_command: list[str], *, check: bool) -> SimpleNamespace:
@@ -207,3 +213,66 @@ def test_uv_subprocess_errors_are_converted_to_cli_errors(
     captured = capsys.readouterr()
     assert "could not start uv" in captured.err
     assert "not exposed" not in captured.err
+
+
+def test_windows_uninstall_delegates_until_the_cli_exits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log_path = tmp_path / "uninstall.log"
+    fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
+    launches: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr(cli.uninstall, "find_uv", lambda: Path("C:/uv/uv.exe"))
+    monkeypatch.setattr(cli.uninstall, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        cli.uninstall, "_find_powershell", lambda: Path("C:/Windows/powershell.exe")
+    )
+    monkeypatch.setattr(
+        cli.uninstall.tempfile,
+        "mkstemp",
+        lambda **_: (fd, str(log_path)),
+    )
+
+    def popen(command: list[str], **kwargs: object) -> SimpleNamespace:
+        launches.append((command, kwargs))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(cli.uninstall.subprocess, "Popen", popen)
+
+    assert cli.main(["uninstall"]) == 0
+    output = capsys.readouterr().out
+    assert "scheduled Agent Relay uninstallation" in output
+    assert len(launches) == 1
+    assert "-EncodedCommand" in launches[0][0]
+    assert "tool uninstall agent-relay" not in " ".join(launches[0][0])
+    log_path.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows file locking")
+def test_windows_uninstall_real_process_lock_boundary(tmp_path: Path) -> None:
+    """A running executable in the uv tool tree must block its deletion."""
+    if Path(sys.executable).suffix.lower() != ".exe":
+        pytest.skip("a native Python executable is required")
+    tool_root = tmp_path / "uv" / "tools" / "agent-relay"
+    tool_root.mkdir(parents=True)
+    running_executable = tool_root / "Scripts" / "agent-relay.exe"
+    running_executable.parent.mkdir()
+    shutil.copy2(sys.executable, running_executable)
+    ready = tmp_path / "ready"
+    code = (
+        "from pathlib import Path; import time; "
+        f"Path({str(ready)!r}).write_text('ready'); time.sleep(30)"
+    )
+    process = subprocess.Popen([str(running_executable), "-c", code])
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "the copied executable did not start"
+        with pytest.raises(OSError):
+            running_executable.unlink()
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+    shutil.rmtree(tool_root)

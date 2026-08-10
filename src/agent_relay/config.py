@@ -166,6 +166,7 @@ _CONFIG_KEYS: dict[str, frozenset[str]] = {
         {
             "identity.id",
             "relay_url",
+            "allow_insecure_ws",
             "workspace",
             "tools.allowlist",
             "secrets.agent_token_file",
@@ -509,6 +510,12 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dic
     section = _deep_merge(_default_document("agent"), document.get("agent", {}))
     if (value := _env_value(env, "RELAY_URL")) is not None:
         section["relay_url"] = value
+    if (value := _env_value(env, "RELAY_ALLOW_INSECURE_WS")) is not None:
+        section["allow_insecure_ws"] = _env_bool(
+            env,
+            "RELAY_ALLOW_INSECURE_WS",
+            section.get("allow_insecure_ws", _SERVER_DEFAULTS["allow_insecure_ws"]),
+        )
     if (value := _env_value(env, "RELAY_AGENT_ID")) is not None:
         section.setdefault("identity", {})["id"] = value
     if (value := _env_value(env, "RELAY_AGENT_WORKSPACE")) is not None:
@@ -555,6 +562,27 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dic
         if (value := _env_value(env, env_key)) is not None:
             computer[field] = value
     return section
+
+
+def _effective_agent_allow_insecure_ws(
+    document: Mapping[str, Any], env: Mapping[str, str]
+) -> object:
+    """Resolve the Agent transport policy without widening old configs."""
+    raw_agent = document.get("agent")
+    if "RELAY_ALLOW_INSECURE_WS" in env or (
+        isinstance(raw_agent, Mapping) and "allow_insecure_ws" in raw_agent
+    ):
+        return _effective_agent(document, env).get("allow_insecure_ws", False)
+    # Combined YAML continues to use the canonical Server policy. Legacy
+    # Agent-only YAML keeps its historical default until onboarding writes an
+    # explicit policy key.
+    if not isinstance(document.get("server"), Mapping):
+        # Preserve the historical config-init contract. Guided onboarding
+        # writes an explicit Agent policy, while legacy scripted Agent YAML
+        # continues to accept a trusted LAN ws:// URL until the operator opts
+        # into the stricter policy.
+        return _SERVER_DEFAULTS["allow_insecure_ws"]
+    return _effective_server(document, env).get("allow_insecure_ws", False)
 
 
 def discover_local_catalog(
@@ -650,6 +678,13 @@ def _secret_value(
     return _read_private_text(token_path)
 
 
+def read_private_secret(path: str | Path) -> str:
+    """Read one operator-supplied private secret file safely."""
+    secret_path = Path(path).expanduser()
+    _assert_no_symlink(secret_path)
+    return _read_private_text(secret_path)
+
+
 def read_server_agent_token(
     path: str | Path | None,
     *,
@@ -691,6 +726,21 @@ def _url_is_valid(value: object) -> bool:
         and parsed.password is None
         and not parsed.fragment
     )
+
+
+def validate_relay_url(value: str) -> None:
+    """Validate a Relay WebSocket URL without exposing user input in errors."""
+    if not _url_is_valid(value):
+        raise ConfigError("agent relay_url must be a ws:// or wss:// URL")
+
+
+def validate_agent_transport(value: str, *, allow_insecure_ws: bool) -> None:
+    """Validate a Relay URL together with its local transport policy."""
+    validate_relay_url(value)
+    parsed = urlparse(value)
+    if parsed.scheme == "ws" and not _is_loopback(parsed.hostname or ""):
+        if not allow_insecure_ws:
+            raise ConfigError("non-loopback ws:// requires allow_insecure_ws")
 
 
 def _is_loopback(hostname: str) -> bool:
@@ -851,11 +901,13 @@ def _validate_agent(
         issues.append(ValidationIssue("ERROR", "agent relay_url must be a ws:// or wss:// URL"))
     else:
         parsed = urlparse(str(relay_url))
-        insecure = _effective_server(document, env).get("allow_insecure_ws", False)
+        insecure = _effective_agent_allow_insecure_ws(document, env)
         try:
             insecure = _parse_bool(insecure)
         except ConfigError:
             insecure = False
+            if isinstance(document.get("agent"), Mapping) and "allow_insecure_ws" in document["agent"]:
+                issues.append(ValidationIssue("ERROR", "agent allow_insecure_ws must be boolean"))
         if parsed.scheme == "ws" and not _is_loopback(parsed.hostname or "") and not insecure:
             issues.append(ValidationIssue("ERROR", "non-loopback ws:// requires allow_insecure_ws"))
         elif parsed.scheme == "ws" and not _is_loopback(parsed.hostname or ""):
@@ -1056,6 +1108,9 @@ def init_config(
     use_stdin: bool = False,
     env: Mapping[str, str] | None = None,
     catalog: CatalogSnapshot | None = None,
+    relay_url: str | None = None,
+    workspace: str | Path | None = None,
+    allow_insecure_ws: bool | None = None,
 ) -> Path:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
@@ -1088,6 +1143,12 @@ def init_config(
             if not token_path.exists():
                 _write_private_text(token_path, secrets.token_urlsafe(32), overwrite=False)
     else:
+        if relay_url is not None:
+            section["relay_url"] = relay_url
+        if workspace is not None:
+            section["workspace"] = str(workspace)
+        if allow_insecure_ws is not None:
+            section["allow_insecure_ws"] = allow_insecure_ws
         if "RELAY_AGENT_TOKEN" in effective_env and not effective_env["RELAY_AGENT_TOKEN"]:
             raise ConfigError("agent token is empty")
         if "RELAY_AGENT_TOKEN_FILE" in effective_env and not effective_env["RELAY_AGENT_TOKEN_FILE"]:
@@ -1514,14 +1575,18 @@ def load_agent_settings(
     workspace = _relative_path(section["workspace"], config_path)
     from .agent import AgentSettings
 
-    server_policy = _effective_server(document, effective_env)
+    allow_insecure_ws = _effective_agent_allow_insecure_ws(document, effective_env)
+    try:
+        allow_insecure_ws = _parse_bool(allow_insecure_ws)
+    except ConfigError:
+        allow_insecure_ws = False
     return AgentSettings(
         server_url=section["relay_url"],
         device_id=identity,
         agent_id=identity,
         agent_token=token,
         workspace=workspace,
-        allow_insecure_ws=_parse_bool(server_policy.get("allow_insecure_ws", False)),
+        allow_insecure_ws=allow_insecure_ws,
         tools_allowlist=tuple(section["tools"]["allowlist"]),
         heartbeat_interval_seconds=float(runtime["heartbeat_interval_seconds"]),
         reconnect_min_seconds=float(runtime["reconnect_min_seconds"]),

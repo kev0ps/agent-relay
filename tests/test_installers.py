@@ -26,6 +26,7 @@ def test_windows_installer_is_a_self_contained_user_scope_bootstrapper() -> None
         "uv tool install",
         '"config", "init", "server"',
         '"agent", "--from-server", "--no-tools"',
+        '"onboard", "--role", "server", "--non-interactive"',
         "AGENT_RELAY_SETUP",
     ):
         assert phrase in installer
@@ -164,6 +165,7 @@ def test_linux_installer_is_a_self_contained_user_scope_bootstrapper() -> None:
         "tool install --force",
         "config init server",
         "config init agent --from-server --no-tools",
+        "invoke_agent_relay onboard --role server --non-interactive",
         "AGENT_RELAY_SETUP",
     ):
         assert phrase in installer

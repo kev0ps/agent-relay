@@ -65,6 +65,18 @@ Server Agent token without echoing it. This honors a configured relative or
 absolute token path and supported environment overrides. To select tools
 interactively, omit `--no-tools`; submitting an empty selection is valid.
 
+The same setup can be guided by the onboarding command:
+
+```sh
+uv run --frozen agent-relay onboard
+```
+
+It offers Local Server + Agent, Server-only, and Agent connected to a remote
+Server. `--role server`, `--role agent`, and `--role local` select a flow for
+automation or installer integration. Use `--non-interactive` with an explicit
+role and secret-file/stdin options; it never prints a credential. Validation is
+offline unless `--check` is explicitly selected for the remote Agent flow.
+
 The initial Agent tool allowlist is empty. Select tools interactively during
 initialization or enable them explicitly:
 
@@ -201,6 +213,11 @@ do not copy Authorization headers into logs. A `401` from `/mcp` means a
 missing/invalid MCP token; `503` means the Agent is offline; `409` means a tool
 is unavailable or an invocation is already in progress; `504` means timeout.
 
+At the default INFO level the Agent also reports connection attempts, the
+WebSocket connection, authenticated `registered`, the capability summary,
+disconnects, and bounded reconnect delays. Internal phases and exception detail
+remain behind `RELAY_NATIVE_DEBUG=1`.
+
 ## Private LAN or external WSS
 
 For a trusted LAN/test connection, set the Server policy and the Agent URL in
@@ -220,6 +237,13 @@ the application does not implement TLS:
 
 ```sh
 uv run --frozen agent-relay config set agent relay_url wss://tls.example.test/relay
+```
+
+For an Agent-only YAML file, set the Agent policy explicitly instead of the
+shared Server policy:
+
+```sh
+uv run --frozen agent-relay config set agent allow_insecure_ws true
 ```
 
 ## Docker image CI validation
