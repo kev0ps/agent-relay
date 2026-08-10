@@ -152,13 +152,13 @@ def _diagnose_pwd_mismatch(result: object, expected: str) -> None:
     payload = getattr(result, "structuredContent", None)
     actual = payload.get("stdout") if isinstance(payload, dict) else None
     if not isinstance(actual, str):
-        print("Native E2E pwd diagnostic: stdout unavailable.", file=sys.stderr)
+        print("E2E pwd diagnostic: stdout unavailable.", file=sys.stderr)
         return
     normalized_actual = actual.replace("\\", "/")
     expected_output = expected + "\n"
     normalized_expected = expected_output.replace("\\", "/")
     print(
-        "Native E2E pwd diagnostic: "
+        "E2E pwd diagnostic: "
         f"actual_len={len(actual)} expected_len={len(expected_output)} "
         f"exact={actual == expected_output} "
         f"casefold={actual.casefold() == expected_output.casefold()} "

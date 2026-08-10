@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded native Linux Browser persistent-context smoke scenario."""
+"""Run the bounded Linux Browser persistent-context smoke scenario."""
 
 from __future__ import annotations
 
@@ -158,9 +158,9 @@ def _stderr_hint(path: Path) -> str | None:
 
 
 def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None = None) -> None:
-    """Run the native Linux Browser persistent-context scenario."""
+    """Run the Linux Browser persistent-context scenario."""
     if sys.platform != "linux":
-        raise LinuxBrowserE2EError("native Linux Browser harness requires Linux")
+        raise LinuxBrowserE2EError("Linux Browser harness requires Linux")
 
     agent_token, control_token = native.generate_credentials()
     server_port = native.choose_loopback_port()
@@ -346,7 +346,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Native Linux Browser Agent Relay smoke")
+    parser = argparse.ArgumentParser(description="Linux Browser Agent Relay smoke")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--output-file", type=Path)
     args = parser.parse_args(argv)

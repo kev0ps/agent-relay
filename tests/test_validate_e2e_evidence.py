@@ -10,7 +10,7 @@ SCRIPT = Path(__file__).parents[1] / "scripts" / "validate_e2e_evidence.py"
 VALID_PROFILES = (
     (
         "linux-terminal",
-        "Native Linux MCP end-to-end scenario passed.\n",
+        "Linux MCP end-to-end scenario passed.\n",
         None,
         None,
     ),
@@ -36,7 +36,7 @@ VALID_PROFILES = (
     ),
     (
         "windows-terminal",
-        "Native Windows MCP end-to-end scenario passed.\n",
+        "Windows MCP end-to-end scenario passed.\n",
         None,
         None,
     ),
@@ -95,10 +95,10 @@ def test_validator_accepts_each_success_profile(
 @pytest.mark.parametrize(
     ("profile", "failure"),
     (
-        ("linux-terminal", "Native Linux E2E failed at scenario-start: bounded failure.\n"),
+        ("linux-terminal", "Linux E2E failed at scenario-start: bounded failure.\n"),
         ("linux-browser", "Linux Browser E2E failed at scenario-start: bounded failure.\n"),
         ("linux-cua", "Linux CUA E2E failed at scenario-start: bounded failure.\n"),
-        ("windows-terminal", "Native Windows E2E failed at scenario-start: bounded failure.\n"),
+        ("windows-terminal", "Windows E2E failed at scenario-start: bounded failure.\n"),
         ("windows-browser", "Windows Browser E2E failed at scenario-start: bounded failure.\n"),
         ("windows-cua", "Windows CUA E2E failed at scenario-start: bounded failure.\n"),
     ),
@@ -128,7 +128,7 @@ def test_validator_rejects_unexpected_or_false_success_evidence(
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "output.log").write_text(
-        "Native Linux E2E failed at scenario-start: bounded failure.\n",
+        "Linux E2E failed at scenario-start: bounded failure.\n",
         encoding="utf-8",
     )
     (evidence / filename).write_text(payload, encoding="utf-8")
@@ -148,7 +148,7 @@ def test_validator_rejects_oversized_or_symlinked_evidence(tmp_path: Path) -> No
     evidence = tmp_path / "symlinked"
     evidence.mkdir()
     target = tmp_path / "outside.log"
-    target.write_text("Native Linux E2E cleanup failed.\n", encoding="utf-8")
+    target.write_text("Linux E2E cleanup failed.\n", encoding="utf-8")
     try:
         (evidence / "output.log").symlink_to(target)
     except (NotImplementedError, OSError):
@@ -179,7 +179,7 @@ def test_validator_requires_success_marker_and_correlated_event(tmp_path: Path) 
     terminal = tmp_path / "terminal"
     terminal.mkdir()
     (terminal / "output.log").write_text(
-        "Native Linux MCP end-to-end scenario passed.\n", encoding="utf-8"
+        "Linux MCP end-to-end scenario passed.\n", encoding="utf-8"
     )
     with pytest.raises(validator.EvidenceValidationError):
         validator.validate_evidence("linux-terminal", terminal)
@@ -201,7 +201,7 @@ def test_validator_rejects_unbounded_output_text(tmp_path: Path) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "output.log").write_text(
-        "Native Linux E2E failed with secret diagnostic content.\n",
+        "Linux E2E failed with secret diagnostic content.\n",
         encoding="utf-8",
     )
 

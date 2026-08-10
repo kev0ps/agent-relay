@@ -61,7 +61,7 @@ def test_windows_ci_has_a_native_cua_job_and_bounded_oracle() -> None:
     job = workflow.split("  e2e-windows-cua:", 1)[1].split(
         "\n  e2e-windows-browser:", 1
     )[0]
-    assert "name: Native Windows CUA end-to-end" in job
+    assert "name: Windows CUA end-to-end" in job
     assert "runs-on: windows-2025" in job
     assert "windows-cua-evidence" in job
     assert "docker run" not in job.lower()

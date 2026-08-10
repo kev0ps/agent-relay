@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded native Linux Computer Use Agent Relay scenario."""
+"""Run the bounded Linux Computer Use Agent Relay scenario."""
 
 from __future__ import annotations
 
@@ -355,9 +355,9 @@ def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[
 def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None = None) -> None:
     """Run real Server + Agent + public MCP Computer Use calls under Xvfb."""
     if sys.platform != "linux":
-        raise LinuxCuaE2EError("native Linux Computer Use harness requires Linux")
+        raise LinuxCuaE2EError("Linux Computer Use harness requires Linux")
     if platform.machine() != "x86_64":
-        raise LinuxCuaE2EError("native Linux Computer Use harness requires x86_64")
+        raise LinuxCuaE2EError("Linux Computer Use harness requires x86_64")
 
     agent_token, control_token = native.generate_credentials()
     server_port = native.choose_loopback_port()
@@ -586,7 +586,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Native Linux Computer Use Agent Relay smoke")
+    parser = argparse.ArgumentParser(description="Linux Computer Use Agent Relay smoke")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--output-file", type=Path)
     args = parser.parse_args(argv)

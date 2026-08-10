@@ -14,8 +14,8 @@ The project is currently pre-1.0 and has no formal release tag.
 - Contributor guide and security-reporting policy.
 - YAML-first Server and Agent configuration with private secret files and
   copyable tool profiles.
-- Native Linux and Windows Terminal and Browser E2E gates.
-- Native Linux CUA E2E and an experimental Windows CUA candidate gate.
+- Linux and Windows Terminal and Browser E2E gates.
+- Linux CUA E2E and an experimental Windows CUA candidate gate.
 - AMD64 and ARM64 Docker image contract and CLI smoke validation.
 
 ### Changed

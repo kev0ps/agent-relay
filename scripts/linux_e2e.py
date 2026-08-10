@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the minimal native Linux Agent Relay MCP scenario."""
+"""Run the minimal Linux Agent Relay MCP scenario."""
 
 from __future__ import annotations
 
@@ -262,7 +262,7 @@ class NativeLifecycle:
                 failures.append(error)
         self._cleaned = True
         if failures:
-            raise NativeE2EError("native E2E cleanup failed") from failures[0]
+            raise NativeE2EError("Linux E2E cleanup failed") from failures[0]
 
     def __enter__(self) -> NativeLifecycle:
         return self
@@ -478,9 +478,9 @@ def _write_success(evidence_dir: Path) -> None:
 def run_scenario(
     evidence_dir: Path | None = None, *, output_file: Path | None = None
 ) -> None:
-    """Run core native MCP, offline detection, and real reconnect."""
+    """Run core MCP, offline detection, and real reconnect on Linux."""
     if os.name != "posix":
-        raise NativeE2EError("native Linux harness requires POSIX")
+        raise NativeE2EError("Linux harness requires POSIX")
 
     agent_token, control_token = generate_credentials()
     port = choose_loopback_port()
@@ -544,7 +544,7 @@ def run_scenario(
                 lifecycle=lifecycle,
             )
             _wait_for(
-                "native server",
+                "Linux server",
                 lambda: _status(
                     mcp_url, control_token, connected=False, allow_unenrolled=True
                 )
@@ -553,7 +553,7 @@ def run_scenario(
             )
             if server.poll() is not None:
                 raise NativeE2EError(
-                    f"native server exited during startup ({server.returncode})"
+                    f"Linux server exited during startup ({server.returncode})"
                 )
 
             phase = "agent-start"
@@ -564,7 +564,7 @@ def run_scenario(
                 lifecycle=lifecycle,
             )
             _wait_for(
-                "native agent registration",
+                "Linux agent registration",
                 lambda: _status(
                     mcp_url,
                     control_token,
@@ -575,7 +575,7 @@ def run_scenario(
                 timeout=AGENT_READY_TIMEOUT_SECONDS,
             )
             if agent.poll() is not None:
-                raise NativeE2EError("native agent exited after registration")
+                raise NativeE2EError("Linux agent exited after registration")
 
             phase = "core-scenario"
             portable_scenarios.run_core_scenario(
@@ -589,7 +589,7 @@ def run_scenario(
             terminate_process_group(agent)
             phase = "offline-detection"
             _wait_for(
-                "native agent offline state",
+                "Linux agent offline state",
                 lambda: _status(mcp_url, control_token, connected=False) is None,
                 timeout=AGENT_READY_TIMEOUT_SECONDS,
             )
@@ -602,7 +602,7 @@ def run_scenario(
                 lifecycle=lifecycle,
             )
             _wait_for(
-                "native agent reconnection",
+                "Linux agent reconnection",
                 lambda: _status(
                     mcp_url,
                     control_token,
@@ -623,10 +623,10 @@ def run_scenario(
             phase = "server-stop"
             terminate_process_group(server)
             if server.poll() is None:
-                raise NativeE2EError("native server did not stop")
+                raise NativeE2EError("Linux server did not stop")
             phase = "server-unavailable"
             _wait_for(
-                "native server unavailable state",
+                "Linux server unavailable state",
                 lambda: not _server_endpoint_available(mcp_url, control_token),
                 timeout=SERVER_READY_TIMEOUT_SECONDS,
             )
@@ -639,12 +639,12 @@ def run_scenario(
                 lifecycle=lifecycle,
             )
             _wait_for(
-                "restarted native server",
+                "restarted Linux server",
                 lambda: _server_endpoint_available(mcp_url, control_token),
                 timeout=SERVER_READY_TIMEOUT_SECONDS,
             )
             _wait_for(
-                "native agent registration after server restart",
+                "Linux agent registration after server restart",
                 lambda: _status(
                     mcp_url,
                     control_token,
@@ -662,12 +662,12 @@ def run_scenario(
                 expected_pwd=str(workspace),
             )
             if server.poll() is not None:
-                raise NativeE2EError("native server exited after restart")
+                raise NativeE2EError("Linux server exited after restart")
         if output_file is not None:
             _write_artifact(
                 output_file.parent,
                 output_file.name,
-                b"Native Linux MCP end-to-end scenario passed.\n",
+                b"Linux MCP end-to-end scenario passed.\n",
             )
         if evidence_dir is not None:
             _write_success(evidence_dir)
@@ -685,11 +685,11 @@ def run_scenario(
         )
         if "scenario_phase" in locals() and scenario_phase:
             detail += f" (phase-{scenario_phase[-1]})"
-        failure_line = f"Native Linux E2E failed at scenario-{phase}{detail}."
+        failure_line = f"Linux E2E failed at scenario-{phase}{detail}."
         output_lines.append(failure_line)
         print(failure_line, file=sys.stderr)
         if lifecycle.cleanup_error is not None:
-            cleanup_line = "Native Linux E2E cleanup failed."
+            cleanup_line = "Linux E2E cleanup failed."
             output_lines.append(cleanup_line)
             print(cleanup_line, file=sys.stderr)
         if output_file is not None and output_lines:
@@ -700,15 +700,15 @@ def run_scenario(
                     ("\n".join(output_lines) + "\n").encode("ascii"),
                 )
             except BaseException:
-                print("Native Linux E2E artifact write failed.", file=sys.stderr)
+                print("Linux E2E artifact write failed.", file=sys.stderr)
 
     if primary_error is not None:
         raise primary_error
-    print("Native Linux MCP end-to-end scenario passed.")
+    print("Linux MCP end-to-end scenario passed.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Native Linux Agent Relay E2E")
+    parser = argparse.ArgumentParser(description="Linux Agent Relay E2E")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--output-file", type=Path)
     args = parser.parse_args(argv)

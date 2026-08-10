@@ -209,7 +209,7 @@ with the root `--help` and `--version` commands.
 
 These jobs validate packaging and startup only. They do not run Browser or
 Computer Use, do not create a two-container desktop topology, and do not upload
-runtime UI evidence. Native Linux Terminal, Browser, and Xvfb/AT-SPI Computer
+runtime UI evidence. Linux Terminal, Browser, and Xvfb/AT-SPI Computer
 Use jobs are the current repeatable Linux paths. Windows Computer Use has a
 hosted candidate job, but remains experimental until its complete
 fixture-backed UI Automation sequence is repeatable. See [`e2e.md`](e2e.md) for

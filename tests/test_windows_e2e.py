@@ -318,17 +318,17 @@ def test_write_artifact_rejects_preexisting_symlink(tmp_path: Path) -> None:
 
 def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "  e2e-windows-native:" in workflow
-    job = workflow.split("  e2e-windows-native:", 1)[1].split("\n  e2e-", 1)[0]
+    assert "  e2e-windows-terminal:" in workflow
+    job = workflow.split("  e2e-windows-terminal:", 1)[1].split("\n  e2e-", 1)[0]
 
-    assert "name: Native Windows Terminal end-to-end" in job
+    assert "name: Windows Terminal end-to-end" in job
     assert "needs: python" in job
     assert "runs-on: windows-2025" in job
     assert "runs-on: windows-2022" not in job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in job
     assert "Verify checked-out commit" in job
     assert "uses: ./.github/actions/setup-python" in job
-    assert "uv run --frozen ruff check ." in job
+    assert "uv run --frozen ruff check ." not in job
     assert "uv run --frozen pytest -q" in job
     assert "tests/test_windows_e2e.py tests/test_runner.py" in job
     assert "git_search_skips_relative_default_path_entries" in job
@@ -352,7 +352,7 @@ def test_e2e_guide_declares_windows_terminal_scope_and_limits() -> None:
         "## Windows Browser", 1
     )[0]
 
-    assert "e2e-windows-native" in section
+    assert "e2e-windows-terminal" in section
     assert "Windows Job Object" in section
     assert "does not use Docker, Browser, or CUA" in section
     assert "mixed Linux Server and Windows Agent" in section

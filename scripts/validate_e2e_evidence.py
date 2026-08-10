@@ -1,4 +1,4 @@
-"""Cross-platform validation for bounded native E2E evidence."""
+"""Cross-platform validation for bounded E2E evidence."""
 
 from __future__ import annotations
 
@@ -42,11 +42,11 @@ def _output_pattern(
 
 PROFILES: dict[str, EvidenceProfile] = {
     "linux-terminal": EvidenceProfile(
-        success_line="Native Linux MCP end-to-end scenario passed.",
+        success_line="Linux MCP end-to-end scenario passed.",
         output_pattern=_output_pattern(
-            success="Native Linux MCP end-to-end scenario passed.",
-            cleanup="Native Linux E2E cleanup failed.",
-            failure_prefix="Native Linux E2E failed at scenario-",
+            success="Linux MCP end-to-end scenario passed.",
+            cleanup="Linux E2E cleanup failed.",
+            failure_prefix="Linux E2E failed at scenario-",
         ),
         maximum_file_bytes=4096,
     ),
@@ -79,11 +79,11 @@ PROFILES: dict[str, EvidenceProfile] = {
         event_value_pattern=re.compile(r"relay-gh-cua-linux-cua-[0-9a-f]{24}"),
     ),
     "windows-terminal": EvidenceProfile(
-        success_line="Native Windows MCP end-to-end scenario passed.",
+        success_line="Windows MCP end-to-end scenario passed.",
         output_pattern=_output_pattern(
-            success="Native Windows MCP end-to-end scenario passed.",
-            cleanup="Native Windows E2E cleanup failed.",
-            failure_prefix="Native Windows E2E failed at scenario-",
+            success="Windows MCP end-to-end scenario passed.",
+            cleanup="Windows E2E cleanup failed.",
+            failure_prefix="Windows E2E failed at scenario-",
         ),
         maximum_file_bytes=4096,
     ),

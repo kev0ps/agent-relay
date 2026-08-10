@@ -11,6 +11,8 @@ def test_ci_reports_informational_python_coverage_without_threshold() -> None:
     workflow = WORKFLOW.read_text()
     python_job = workflow.split("  python:", 1)[1].split("\n  container:", 1)[0]
 
+    assert "uv run --frozen ruff check ." in python_job
+    assert workflow.count("uv run --frozen ruff check .") == 1
     assert "Run test suite with informational coverage" in python_job
     assert "COVERAGE_FILE: ${{ runner.temp }}/agent-relay.coverage" in python_job
     assert "--cov=agent_relay" in python_job
@@ -67,13 +69,15 @@ def test_ci_labels_native_gates_by_capability() -> None:
     assert "name: Linux Terminal end-to-end" in workflow
     assert "name: Linux Browser end-to-end" in workflow
     assert "name: Linux CUA end-to-end" in workflow
-    assert "name: Native Windows Terminal end-to-end" in workflow
-    assert "name: Native Windows Browser end-to-end" in workflow
+    assert "name: Windows Terminal end-to-end" in workflow
+    assert "name: Windows Browser end-to-end" in workflow
+    assert "name: Native Linux" not in workflow
+    assert "name: Native Windows" not in workflow
 
     linux_job = workflow.split("  e2e-linux:", 1)[1].split(
-        "\n  e2e-windows-native:", 1
+        "\n  e2e-windows-terminal:", 1
     )[0]
-    windows_job = workflow.split("  e2e-windows-native:", 1)[1].split(
+    windows_job = workflow.split("  e2e-windows-terminal:", 1)[1].split(
         "\n  e2e-windows-browser:", 1
     )[0]
     browser_job = workflow.split("  e2e-windows-browser:", 1)[1]
@@ -94,7 +98,7 @@ def test_terminal_e2e_jobs_use_the_platform_installer_path() -> None:
     linux_job = workflow.split("  e2e-linux:", 1)[1].split(
         "\n  e2e-linux-browser:", 1
     )[0]
-    windows_job = workflow.split("  e2e-windows-native:", 1)[1].split(
+    windows_job = workflow.split("  e2e-windows-terminal:", 1)[1].split(
         "\n  e2e-windows-cua:", 1
     )[0]
 
@@ -123,13 +127,13 @@ def test_terminal_native_jobs_share_platform_independent_ci_gates() -> None:
     linux_job = workflow.split("  e2e-linux:", 1)[1].split(
         "\n  e2e-linux-browser:", 1
     )[0]
-    windows_job = workflow.split("  e2e-windows-native:", 1)[1].split(
+    windows_job = workflow.split("  e2e-windows-terminal:", 1)[1].split(
         "\n  e2e-windows-browser:", 1
     )[0]
 
     for job in (linux_job, windows_job):
         assert "Verify checked-out commit" in job
-        assert "uv run --frozen ruff check ." in job
+        assert "uv run --frozen ruff check ." not in job
         assert "tests/test_runner.py" in job
         assert "uv run --frozen pytest -q -m integration" in job
         assert "if: always()" in job
@@ -145,7 +149,7 @@ def test_ci_externalizes_evidence_validation_and_cua_platform_helpers() -> None:
         "e2e-linux": "linux-terminal",
         "e2e-linux-browser": "linux-browser",
         "e2e-linux-cua": "linux-cua",
-        "e2e-windows-native": "windows-terminal",
+        "e2e-windows-terminal": "windows-terminal",
         "e2e-windows-cua": "windows-cua",
         "e2e-windows-browser": "windows-browser",
     }

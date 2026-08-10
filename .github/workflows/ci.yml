@@ -190,9 +190,6 @@ jobs:
         with:
           installer: "true"
 
-      - name: Check Linux Python quality
-        run: uv run --frozen ruff check .
-
       - name: Run Linux contract tests
         run: uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_runner.py
 
@@ -203,26 +200,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          evidence_dir="$GITHUB_WORKSPACE/native-evidence"
+          evidence_dir="$GITHUB_WORKSPACE/linux-terminal-evidence"
           mkdir -p "$evidence_dir"
           uv run --frozen python scripts/linux_e2e.py \
             --evidence-dir "$evidence_dir" \
             --output-file "$evidence_dir/output.log"
 
       - name: Validate bounded Linux evidence
-        id: validate-native-evidence
+        id: validate-linux-terminal-evidence
         if: always()
         run: >-
           python scripts/validate_e2e_evidence.py
           --profile linux-terminal
-          --evidence-dir native-evidence
+          --evidence-dir linux-terminal-evidence
 
       - name: Upload bounded Linux evidence
-        if: always() && steps.validate-native-evidence.outcome == 'success'
+        if: always() && steps.validate-linux-terminal-evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: native-linux-e2e-evidence
-          path: native-evidence/**
+          name: linux-terminal-e2e-evidence
+          path: linux-terminal-evidence/**
           if-no-files-found: warn
           retention-days: 7
 
@@ -250,9 +247,6 @@ jobs:
         uses: ./.github/actions/setup-python
         with:
           profile: browser
-
-      - name: Check Linux Browser smoke quality
-        run: uv run --frozen ruff check .
 
       - name: Run Linux Browser contract tests
         run: uv run --frozen pytest -q tests/test_linux_browser_e2e.py tests/test_browser_capability.py
@@ -282,7 +276,7 @@ jobs:
         if: always() && steps.validate-linux-browser-evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: native-linux-browser-e2e-evidence
+          name: linux-browser-e2e-evidence
           path: linux-browser-evidence/**
           if-no-files-found: warn
           retention-days: 7
@@ -345,9 +339,6 @@ jobs:
             printf 'CUA_DRIVER_RS_INSTALL_DIR=%s\n' "$driver_bin"
           } >> "$GITHUB_ENV"
 
-      - name: Check Linux CUA smoke quality
-        run: uv run --frozen ruff check .
-
       - name: Probe Linux CUA MCP JSON-RPC startup
         shell: bash
         run: |
@@ -383,13 +374,13 @@ jobs:
         if: always() && steps.validate-linux-cua-evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: native-linux-cua-e2e-evidence
+          name: linux-cua-e2e-evidence
           path: linux-cua-evidence/**
           if-no-files-found: warn
           retention-days: 7
 
-  e2e-windows-native:
-    name: Native Windows Terminal end-to-end
+  e2e-windows-terminal:
+    name: Windows Terminal end-to-end
     needs: python
     runs-on: windows-2025
     timeout-minutes: 5
@@ -416,10 +407,6 @@ jobs:
         with:
           installer: "true"
 
-      - name: Check Windows Python quality
-        shell: pwsh
-        run: uv run --frozen ruff check .
-
       - name: Run Windows test suite
         shell: pwsh
         run: >-
@@ -430,7 +417,7 @@ jobs:
         shell: pwsh
         run: uv run --frozen pytest -q -m integration
 
-      - name: Run native Windows Terminal MCP end-to-end scenario
+      - name: Run Windows Terminal MCP end-to-end scenario
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -440,7 +427,7 @@ jobs:
             --evidence-dir $evidenceDir `
             --output-file (Join-Path $evidenceDir "output.log")
 
-      - name: Validate bounded native Windows evidence
+      - name: Validate bounded Windows evidence
         id: validate-windows-evidence
         if: always()
         run: >-
@@ -448,17 +435,17 @@ jobs:
           --profile windows-terminal
           --evidence-dir windows-evidence
 
-      - name: Upload bounded native Windows evidence
+      - name: Upload bounded Windows evidence
         if: always() && steps.validate-windows-evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: native-windows-e2e-evidence
+          name: windows-terminal-e2e-evidence
           path: windows-evidence/**
           if-no-files-found: warn
           retention-days: 7
 
   e2e-windows-cua:
-    name: Native Windows CUA end-to-end
+    name: Windows CUA end-to-end
     needs: python
     runs-on: windows-2025
     timeout-minutes: 3
@@ -500,17 +487,13 @@ jobs:
         shell: pwsh
         run: uv run --frozen python scripts/probe_cua_driver.py --platform windows
 
-      - name: Check Windows CUA Python quality
-        shell: pwsh
-        run: uv run --frozen ruff check .
-
       - name: Run Windows CUA contract tests
         shell: pwsh
         run: >-
           uv run --frozen pytest -q tests/test_windows_computer_e2e.py tests/test_windows_e2e.py tests/test_runner.py
           -k "not git_search_skips_relative_default_path_entries"
 
-      - name: Run native Windows CUA Agent Relay end-to-end scenario
+      - name: Run Windows CUA Agent Relay end-to-end scenario
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -520,7 +503,7 @@ jobs:
             --evidence-dir $evidenceDir `
             --output-file (Join-Path $evidenceDir "output.log")
 
-      - name: Validate bounded native Windows CUA evidence
+      - name: Validate bounded Windows CUA evidence
         id: validate-windows-cua-evidence
         if: always()
         run: >-
@@ -528,17 +511,17 @@ jobs:
           --profile windows-cua
           --evidence-dir windows-cua-evidence
 
-      - name: Upload bounded native Windows CUA evidence
+      - name: Upload bounded Windows CUA evidence
         if: always() && steps.validate-windows-cua-evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: native-windows-cua-e2e-evidence
+          name: windows-cua-e2e-evidence
           path: windows-cua-evidence/**
           if-no-files-found: warn
           retention-days: 7
 
   e2e-windows-browser:
-    name: Native Windows Browser end-to-end
+    name: Windows Browser end-to-end
     needs: python
     runs-on: windows-2025
     timeout-minutes: 3
@@ -565,10 +548,6 @@ jobs:
         with:
           profile: browser
 
-      - name: Check Windows Browser smoke quality
-        shell: pwsh
-        run: uv run --frozen ruff check .
-
       - name: Run Browser contract tests
         shell: pwsh
         run: uv run --frozen pytest -q tests/test_windows_browser_e2e.py tests/test_browser_capability.py
@@ -577,7 +556,7 @@ jobs:
         shell: pwsh
         run: uv run --frozen playwright install chromium
 
-      - name: Run native Windows Browser end-to-end scenario
+      - name: Run Windows Browser end-to-end scenario
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the minimal native Windows Agent Relay MCP scenario."""
+"""Run the minimal Windows Agent Relay MCP scenario."""
 
 from __future__ import annotations
 
@@ -795,7 +795,7 @@ def run_scenario(
 ) -> None:
     """Run core MCP, offline detection, and real reconnect on Windows."""
     if os.name != "nt":
-        raise WindowsE2EError("native Windows harness requires Windows")
+        raise WindowsE2EError("Windows harness requires Windows")
 
     agent_token, control_token = generate_credentials()
     port = choose_loopback_port()
@@ -883,7 +883,7 @@ def run_scenario(
             diagnostic_file=diagnostics / "server.stderr.log",
         )
         _wait_for(
-            "native Windows server",
+            "Windows server",
             lambda: _status(
                 mcp_url, control_token, connected=False, allow_unenrolled=True
             )
@@ -891,7 +891,7 @@ def run_scenario(
             timeout=SERVER_READY_TIMEOUT_SECONDS,
         )
         if server.poll() is not None:
-            raise WindowsE2EError("native Windows server exited during startup")
+            raise WindowsE2EError("Windows server exited during startup")
 
         phase = "agent-start"
         agent = _spawn(
@@ -905,7 +905,7 @@ def run_scenario(
         def agent_ready() -> bool:
             if agent.poll() is not None:
                 raise WindowsE2EError(
-                    f"native Windows agent exited during startup (code {agent.returncode})"
+                    f"Windows agent exited during startup (code {agent.returncode})"
                 )
             _status(
                 mcp_url,
@@ -916,12 +916,12 @@ def run_scenario(
             return True
 
         _wait_for(
-            "native Windows agent registration",
+            "Windows agent registration",
             agent_ready,
             timeout=AGENT_READY_TIMEOUT_SECONDS,
         )
         if agent.poll() is not None:
-            raise WindowsE2EError("native Windows agent exited after registration")
+            raise WindowsE2EError("Windows agent exited after registration")
         if lifecycle.job.active_processes() < 2:
             raise WindowsE2EError("Windows Job Object did not retain Server and Agent")
 
@@ -938,7 +938,7 @@ def run_scenario(
         lifecycle.stop_process(agent)
         phase = "offline-detection"
         _wait_for(
-            "native Windows agent offline state",
+            "Windows agent offline state",
             lambda: _status(mcp_url, control_token, connected=False) is None,
             timeout=AGENT_READY_TIMEOUT_SECONDS,
         )
@@ -952,7 +952,7 @@ def run_scenario(
             diagnostic_file=diagnostics / "agent-reconnect.stderr.log",
         )
         _wait_for(
-            "native Windows agent reconnection",
+            "Windows agent reconnection",
             lambda: _status(
                 mcp_url,
                 control_token,
@@ -973,10 +973,10 @@ def run_scenario(
         phase = "server-stop"
         lifecycle.stop_process(server)
         if server.poll() is None:
-            raise WindowsE2EError("native Windows server did not stop")
+            raise WindowsE2EError("Windows server did not stop")
         phase = "server-unavailable"
         _wait_for(
-            "native Windows server unavailable state",
+            "Windows server unavailable state",
             lambda: not _server_endpoint_available(mcp_url, control_token),
             timeout=SERVER_READY_TIMEOUT_SECONDS,
         )
@@ -990,12 +990,12 @@ def run_scenario(
             diagnostic_file=diagnostics / "server-restart.stderr.log",
         )
         _wait_for(
-            "restarted native Windows server",
+            "restarted Windows server",
             lambda: _server_endpoint_available(mcp_url, control_token),
             timeout=SERVER_READY_TIMEOUT_SECONDS,
         )
         _wait_for(
-            "native Windows agent registration after server restart",
+            "Windows agent registration after server restart",
             lambda: _status(
                 mcp_url,
                 control_token,
@@ -1030,12 +1030,12 @@ def run_scenario(
 
     for label, category in diagnostic_categories:
         print(
-            f"Native Windows E2E {label} diagnostics: {category}.",
+            f"Windows E2E {label} diagnostics: {category}.",
             file=sys.stderr,
         )
     if cleanup_error is not None:
         print(
-            "Native Windows E2E cleanup: "
+            "Windows E2E cleanup: "
             f"{_cleanup_category(cleanup_error)}.",
             file=sys.stderr,
         )
@@ -1046,7 +1046,7 @@ def run_scenario(
                 write_artifact(
                     output_file.parent,
                     output_file.name,
-                    b"Native Windows MCP end-to-end scenario passed.\n",
+                    b"Windows MCP end-to-end scenario passed.\n",
                 )
             if evidence_dir is not None:
                 _write_success(evidence_dir)
@@ -1062,11 +1062,11 @@ def run_scenario(
         )
         if scenario_phase:
             detail += f" (phase-{scenario_phase[-1]})"
-        failure_line = f"Native Windows E2E failed at scenario-{phase}{detail}."
+        failure_line = f"Windows E2E failed at scenario-{phase}{detail}."
         output_lines.append(failure_line)
         print(failure_line, file=sys.stderr)
         if scenario_error is not None and cleanup_error is not None:
-            cleanup_line = "Native Windows E2E cleanup failed."
+            cleanup_line = "Windows E2E cleanup failed."
             output_lines.append(cleanup_line)
             print(cleanup_line, file=sys.stderr)
         if output_file is not None and output_lines:
@@ -1077,14 +1077,14 @@ def run_scenario(
                     ("\n".join(output_lines) + "\n").encode("ascii"),
                 )
             except BaseException:
-                print("Native Windows E2E artifact write failed.", file=sys.stderr)
+                print("Windows E2E artifact write failed.", file=sys.stderr)
 
         raise primary_error
-    print("Native Windows MCP end-to-end scenario passed.")
+    print("Windows MCP end-to-end scenario passed.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Native Windows Agent Relay E2E")
+    parser = argparse.ArgumentParser(description="Windows Agent Relay E2E")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--output-file", type=Path)
     args = parser.parse_args(argv)

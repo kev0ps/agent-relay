@@ -221,7 +221,7 @@ What is validated today:
 - the official MCP facade;
 - constrained terminal behavior;
 - Linux Terminal, Browser and CUA-provider E2E gates;
-- native Windows Terminal and headless Browser E2E gates;
+- Windows Terminal and headless Browser E2E gates;
 - Browser locator and generic CUA-provider API contracts;
 - AMD64/ARM64 image build and CLI smoke tests;
 - strict schemas, authentication, bounded outputs and deterministic local

@@ -121,7 +121,7 @@ def test_windows_browser_ci_job_is_persistent_context_and_bounded() -> None:
     assert "  e2e-windows-browser:" in workflow
     job = workflow.split("  e2e-windows-browser:", 1)[1]
 
-    assert "name: Native Windows Browser end-to-end" in job
+    assert "name: Windows Browser end-to-end" in job
     assert "needs: python" in job
     assert "runs-on: windows-2025" in job
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in job

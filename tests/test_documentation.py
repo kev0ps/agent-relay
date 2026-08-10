@@ -138,7 +138,7 @@ def test_e2e_document_covers_linux_windows_and_docker_boundaries() -> None:
         "e2e-linux",
         "e2e-linux-browser",
         "e2e-linux-cua",
-        "e2e-windows-native",
+        "e2e-windows-terminal",
         "e2e-windows-browser",
         "e2e-windows-cua",
         "Docker image smoke",

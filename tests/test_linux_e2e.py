@@ -103,7 +103,7 @@ def test_lifecycle_preserves_primary_failure_when_cleanup_fails() -> None:
             raise ValueError("primary failure")
 
     assert lifecycle.cleanup_error is not None
-    assert str(lifecycle.cleanup_error) == "native E2E cleanup failed"
+    assert str(lifecycle.cleanup_error) == "Linux E2E cleanup failed"
     assert lifecycle.cleanup_error.__cause__ is not None
     assert str(lifecycle.cleanup_error.__cause__) == "cleanup failure"
 
@@ -114,7 +114,7 @@ def test_lifecycle_reports_cleanup_failure_without_primary_failure() -> None:
 
     lifecycle.add_cleanup(lambda: (_ for _ in ()).throw(RuntimeError("cleanup failure")))
 
-    with pytest.raises(RuntimeError, match="native E2E cleanup failed"):
+    with pytest.raises(RuntimeError, match="Linux E2E cleanup failed"):
         with lifecycle:
             pass
 
@@ -308,7 +308,7 @@ def test_failed_cleanup_does_not_leave_success_marker(
         harness.NativeLifecycle,
         "cleanup",
         lambda _self: (_ for _ in ()).throw(
-            harness.NativeE2EError("native E2E cleanup failed")
+            harness.NativeE2EError("Linux E2E cleanup failed")
         ),
     )
 
@@ -358,9 +358,9 @@ def test_primary_failure_reports_secondary_cleanup_without_raw_error(
         harness.run_scenario(evidence, output_file=evidence / "output.log")
 
     stderr = capsys.readouterr().err
-    assert "Native Linux E2E cleanup failed." in stderr
+    assert "Linux E2E cleanup failed." in stderr
     assert "secret cleanup detail" not in stderr
-    assert "Native Linux E2E cleanup failed." in (evidence / "output.log").read_text(
+    assert "Linux E2E cleanup failed." in (evidence / "output.log").read_text(
         encoding="ascii"
     )
 
@@ -409,6 +409,6 @@ def test_ci_defines_bounded_native_linux_gate_without_container_privileges() -> 
     assert "docker.sock" not in job.lower()
     assert "OPENAI_API_KEY" not in job
     assert "TOKEN" not in job
-    assert "id: validate-native-evidence" in job
+    assert "id: validate-linux-terminal-evidence" in job
     assert "if: always()" in job
-    assert "steps.validate-native-evidence.outcome == 'success'" in job
+    assert "steps.validate-linux-terminal-evidence.outcome == 'success'" in job

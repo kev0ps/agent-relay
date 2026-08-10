@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the experimental native Windows CUA Agent Relay scenario."""
+"""Run the experimental Windows CUA Agent Relay scenario."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ WindowsCuaE2EError = windows.WindowsE2EError
 
 def _current_session_id() -> int:
     if os.name != "nt":
-        raise WindowsCuaE2EError("native Windows CUA harness requires Windows")
+        raise WindowsCuaE2EError("Windows CUA harness requires Windows")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.ProcessIdToSessionId.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
     kernel32.ProcessIdToSessionId.restype = ctypes.c_int
@@ -200,7 +200,7 @@ def run_scenario(
     are validated in the supported CI environment.
     """
     if os.name != "nt":
-        raise WindowsCuaE2EError("native Windows CUA harness requires Windows")
+        raise WindowsCuaE2EError("Windows CUA harness requires Windows")
     if _current_session_id() == 0:
         raise WindowsCuaE2EError("Windows runner is in Session 0")
 
@@ -305,7 +305,7 @@ def run_scenario(
         )
         processes.append(server)
         windows._wait_for(
-            "native Windows CUA server",
+            "Windows CUA server",
             lambda: windows._server_endpoint_available(mcp_url, control_token),
             timeout=windows.SERVER_READY_TIMEOUT_SECONDS,
         )
@@ -346,7 +346,7 @@ def run_scenario(
 
         try:
             windows._wait_for(
-                "native Windows CUA fixture",
+                "Windows CUA fixture",
                 fixture_ready,
                 timeout=FIXTURE_READY_TIMEOUT_SECONDS,
             )
@@ -374,7 +374,7 @@ def run_scenario(
             return True
 
         windows._wait_for(
-            "native Windows CUA Agent registration",
+            "Windows CUA Agent registration",
             agent_ready,
             timeout=AGENT_READY_TIMEOUT_SECONDS,
         )
@@ -455,7 +455,7 @@ def run_scenario(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Native Windows Computer Use Agent Relay E2E")
+    parser = argparse.ArgumentParser(description="Windows Computer Use Agent Relay E2E")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--output-file", type=Path)
     args = parser.parse_args(argv)

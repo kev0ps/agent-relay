@@ -47,8 +47,8 @@ owned explicitly, and a failed cleanup cannot leave a passing marker.
 
 | Platform | Terminal | Browser | CUA | Current interpretation |
 |---|---|---|---|---|
-| Linux | Native E2E | Native headless Chromium E2E | Native X11/Xvfb/AT-SPI E2E | Current repeatable CI paths |
-| Windows | Native E2E | Native headless Chromium E2E | Hosted UI Automation candidate | CUA remains experimental until the complete fixture-backed gate is repeatable |
+| Linux | E2E | Headless Chromium E2E | X11/Xvfb/AT-SPI E2E | Current repeatable CI paths |
+| Windows | E2E | Headless Chromium E2E | Hosted UI Automation candidate | CUA remains experimental until the complete fixture-backed gate is repeatable |
 | Docker image | CLI smoke only | Not validated | Not validated | Packaging evidence, not capability E2E |
 
 The workflow definitions in `.github/workflows/ci.yml` are authoritative for
@@ -120,7 +120,7 @@ uv run --frozen pytest -q tests/test_linux_computer_e2e.py tests/test_computer_c
 
 ## Windows Terminal
 
-The `e2e-windows-native` job runs the Server and Agent natively on the hosted
+The `e2e-windows-terminal` job runs the Server and Agent directly on the hosted
 Windows runner. A Windows Job Object owns the process tree. The scenario covers
 the same core MCP status, ping, terminal, stop, reconnect, restart, and cleanup
 behavior as the Linux Terminal gate.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded native Windows Browser persistent-context smoke scenario."""
+"""Run the bounded Windows Browser persistent-context smoke scenario."""
 
 from __future__ import annotations
 
@@ -145,9 +145,9 @@ def run_scenario(
     *,
     output_file: Path | None = None,
 ) -> None:
-    """Run the native Windows Browser persistent-context scenario."""
+    """Run the Windows Browser persistent-context scenario."""
     if os.name != "nt":
-        raise WindowsBrowserE2EError("native Windows Browser harness requires Windows")
+        raise WindowsBrowserE2EError("Windows Browser harness requires Windows")
 
     agent_token, control_token = windows.generate_credentials()
     server_port = choose_loopback_port()
@@ -362,7 +362,7 @@ def run_scenario(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Native Windows Browser Agent Relay smoke")
+    parser = argparse.ArgumentParser(description="Windows Browser Agent Relay smoke")
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--output-file", type=Path)
     args = parser.parse_args(argv)

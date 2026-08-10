@@ -53,7 +53,7 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "  e2e-linux-cua:" in workflow
     job = workflow.split("  e2e-linux-cua:", 1)[1].split(
-        "\n  e2e-windows-native:", 1
+        "\n  e2e-windows-terminal:", 1
     )[0]
     assert "name: Linux CUA end-to-end" in job
     assert "runs-on: ubuntu-24.04" in job
@@ -72,7 +72,7 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
 def test_linux_cua_evidence_policy_is_externalized() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     job = workflow.split("  e2e-linux-cua:", 1)[1].split(
-        "\n  e2e-windows-native:", 1
+        "\n  e2e-windows-terminal:", 1
     )[0]
 
     assert "python scripts/validate_e2e_evidence.py" in job
