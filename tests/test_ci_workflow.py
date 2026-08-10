@@ -140,7 +140,7 @@ def test_terminal_native_jobs_share_platform_independent_ci_gates() -> None:
 
     assert "EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in linux_job
     assert "scripts/linux_e2e.py" in linux_job
-    assert "tests/test_windows_installer.py" in windows_job
+    assert "tests/test_installers.py" in windows_job
     assert "test_init_agent_from_server_uses_the_effective_custom_token_source" in windows_job
     assert "scripts/windows_e2e.py" in windows_job
 

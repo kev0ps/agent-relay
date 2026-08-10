@@ -331,7 +331,7 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "uv run --frozen pytest -q" in job
     for test_path in (
         "tests/test_windows_e2e.py",
-        "tests/test_windows_installer.py",
+        "tests/test_installers.py",
         "test_init_agent_from_server_uses_the_effective_custom_token_source",
         "tests/test_runner.py",
     ):
