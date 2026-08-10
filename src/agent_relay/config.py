@@ -650,6 +650,22 @@ def _secret_value(
     return _read_private_text(token_path)
 
 
+def read_server_agent_token(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Read the effective Server-to-Agent credential without exposing its path."""
+    config_path = _config_path(path)
+    document = _load_yaml(config_path)
+    if "server" not in document:
+        raise ConfigError("server configuration is not initialized")
+    if not isinstance(document["server"], Mapping):
+        raise ConfigError("server configuration must be a mapping")
+    effective_env = os.environ if env is None else env
+    return _secret_value(document, "server", "agent", config_path, effective_env)
+
+
 def _identity_is_valid(value: object) -> bool:
     if not isinstance(value, str) or not value:
         return False
@@ -1318,9 +1334,11 @@ PUBLIC_TOOLS = frozenset(PUBLIC_TO_INTERNAL) | {SERVER_LOCAL_TOOL}
 def get_section(path: str | Path | None, scope: Literal["server", "agent"]) -> dict[str, Any]:
     config_path = _config_path(path)
     document = _load_yaml(config_path)
-    section = document.get(scope)
-    if not isinstance(section, Mapping):
+    if scope not in document:
         raise ConfigError(f"{scope} configuration is not initialized")
+    section = document[scope]
+    if not isinstance(section, Mapping):
+        raise ConfigError(f"{scope} configuration must be a mapping")
     return copy.deepcopy(dict(section))
 
 

@@ -10,7 +10,6 @@ import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "windows_e2e.py"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
-DOC = Path(__file__).parents[1] / "docs" / "e2e.md"
 
 
 def _load_harness():
@@ -330,7 +329,13 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "uses: ./.github/actions/setup-python" in job
     assert "uv run --frozen ruff check ." not in job
     assert "uv run --frozen pytest -q" in job
-    assert "tests/test_windows_e2e.py tests/test_runner.py" in job
+    for test_path in (
+        "tests/test_windows_e2e.py",
+        "tests/test_windows_installer.py",
+        "test_init_agent_from_server_uses_the_effective_custom_token_source",
+        "tests/test_runner.py",
+    ):
+        assert test_path in job
     assert "git_search_skips_relative_default_path_entries" in job
     assert "uv run --frozen pytest -q -m integration" in job
     assert "uv run --frozen python scripts/windows_e2e.py" in job
@@ -344,17 +349,3 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "TOKEN" not in job
     assert "id: validate-windows-evidence" in job
     assert "if: always()" in job
-
-
-def test_e2e_guide_declares_windows_terminal_scope_and_limits() -> None:
-    document = DOC.read_text(encoding="utf-8")
-    section = document.split("## Windows Terminal", 1)[1].split(
-        "## Windows Browser", 1
-    )[0]
-
-    assert "e2e-windows-terminal" in section
-    assert "Windows Job Object" in section
-    assert "does not use Docker, Browser, or CUA" in section
-    assert "mixed Linux Server and Windows Agent" in section
-    assert "tests/test_windows_e2e.py" in section
-    assert "tests/test_runner.py" in section

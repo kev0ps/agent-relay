@@ -21,17 +21,22 @@ curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/ins
 
 The installer downloads the source archive, installs `agent-relay` through
 `uv`, adds the user-level tool directory to `PATH`, and asks whether to create
-the local configuration. It starts with an empty Agent allowlist and never
-prints token values.
+the local configuration. A newly initialized Agent starts with an empty
+allowlist, and the installer never prints token values.
 
-For a release, host the script and source from the same immutable tag. The
-installer accepts an explicit source reference when needed:
+For a release, host the script and source from the same reviewed release tag.
+Replace the placeholder only with a tag that actually exists:
 
 ```powershell
-$env:AGENT_RELAY_REF = "v0.1.0"
+$releaseTag = "<RELEASE_TAG>"
+$env:AGENT_RELAY_REF = $releaseTag
 $env:AGENT_RELAY_REF_KIND = "tags"
-iex (irm https://raw.githubusercontent.com/kev0ps/agent-relay/v0.1.0/scripts/install.ps1)
+iex (irm "https://raw.githubusercontent.com/kev0ps/agent-relay/$releaseTag/scripts/install.ps1")
 ```
+
+A Git tag can be moved and is not a cryptographic integrity proof. Verify the
+resolved commit independently and use a published hash or signature when the
+release process provides one.
 
 Inspect a downloaded script before executing it when the source or tag is not
 trusted:
@@ -56,9 +61,11 @@ The script:
 - downloads the Agent Relay source archive without requiring Git;
 - installs the runtime and its Python dependencies for the current user through
   `uv tool install`;
-- leaves an existing `%USERPROFILE%\.agent-relay` configuration untouched;
-- creates a new local Server and Agent configuration only when requested;
-- creates no enabled Agent tools by default.
+- preserves an existing Agent section, including custom token paths and tool
+  allowlists;
+- creates a local Server configuration when requested and no configuration file
+  exists, then adds an Agent section only when one is missing;
+- enables no tools in a newly created Agent section.
 
 Set `AGENT_RELAY_SETUP=skip` for installation only, or
 `AGENT_RELAY_SETUP=local` to avoid the setup prompt. `AGENT_RELAY_REF` and
@@ -74,9 +81,10 @@ pytest, Browser, or Computer Use test dependencies by default.
 The Linux installer uses the same variables:
 
 ```bash
-export AGENT_RELAY_REF=v0.1.0
+release_tag='<RELEASE_TAG>'
+export AGENT_RELAY_REF="$release_tag"
 export AGENT_RELAY_REF_KIND=tags
-curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/v0.1.0/scripts/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/kev0ps/agent-relay/$release_tag/scripts/install.sh" | bash
 ```
 
 After installation, run these commands in separate PowerShell windows:

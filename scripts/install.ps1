@@ -53,9 +53,10 @@ function Get-UvPath {
 }
 
 function Refresh-ProcessPath {
+    $processPath = $env:Path
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $env:Path = @($userPath, $machinePath) -join ";"
+    $env:Path = @($processPath, $userPath, $machinePath) -join ";"
 }
 
 function Ensure-Uv {
@@ -159,6 +160,31 @@ function Add-UserPathEntry([string] $entry) {
     [Environment]::SetEnvironmentVariable("Path", (@($entries) + $entry) -join ";", "User")
 }
 
+function Get-AgentConfigurationState([string] $commandPath) {
+    $probeOutput = @()
+    $probeExitCode = -1
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $probeOutput = @(& $commandPath config get agent 2>&1)
+        $probeExitCode = $LASTEXITCODE
+    } catch {
+        throw "Could not inspect existing Agent configuration; it was left unchanged."
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($probeExitCode -eq 0) {
+        return "present"
+    }
+    $probeText = (@($probeOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine).Trim()
+    $missingError = "agent-relay: error: agent configuration is not initialized"
+    if ($probeExitCode -eq 1 -and $probeText -eq $missingError) {
+        return "missing"
+    }
+    throw "Could not inspect existing Agent configuration (exit code $probeExitCode); it was left unchanged."
+}
+
 function Invoke-AgentRelay([string[]] $Arguments) {
     & $script:agentRelayCommand @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -252,20 +278,11 @@ try {
             Write-Host "Existing Agent Relay configuration found; leaving it unchanged."
         }
 
-        $agentTokenPath = Join-Path $env:USERPROFILE ".agent-relay\secrets\server\agent_token"
-        $agentConfigMarker = Join-Path $env:USERPROFILE ".agent-relay\secrets\agent\agent_token"
-        if ((Test-Path -LiteralPath $configPath -PathType Leaf) -and
-            -not (Test-Path -LiteralPath $agentConfigMarker -PathType Leaf)) {
-            if (-not (Test-Path -LiteralPath $agentTokenPath -PathType Leaf)) {
-                throw "The Server Agent token file was not created."
-            }
-            Get-Content -Raw -LiteralPath $agentTokenPath |
-                & $script:agentRelayCommand config init agent --stdin --no-tools
-            if ($LASTEXITCODE -ne 0) {
-                throw "Agent configuration initialization failed with exit code $LASTEXITCODE."
-            }
+        $agentConfigurationState = Get-AgentConfigurationState $script:agentRelayCommand
+        if ($agentConfigurationState -eq "missing") {
+            Invoke-AgentRelay @("config", "init", "agent", "--from-server", "--no-tools")
         } else {
-            Write-Host "Existing Agent secret found; leaving it unchanged."
+            Write-Host "Existing Agent configuration found; leaving it unchanged."
         }
     }
 

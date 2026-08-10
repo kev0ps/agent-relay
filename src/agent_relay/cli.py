@@ -56,7 +56,13 @@ def _parser() -> _Parser:
     init_parser = config_commands.add_parser("init", add_help=False)
     init_parser.add_argument("scope", choices=("server", "agent"))
     init_parser.add_argument("--force", action="store_true")
-    init_parser.add_argument("--stdin", action="store_true", help="read an Agent token from stdin")
+    token_source = init_parser.add_mutually_exclusive_group()
+    token_source.add_argument("--stdin", action="store_true", help="read an Agent token from stdin")
+    token_source.add_argument(
+        "--from-server",
+        action="store_true",
+        help="reuse the effective Server Agent token",
+    )
     init_parser.add_argument("--tools", help="comma-separated Agent tool names")
     init_parser.add_argument("--no-tools", action="store_true")
 
@@ -160,7 +166,9 @@ def _run_config(
     catalog: CatalogSnapshot | None = None,
 ) -> int:
     if args.config_command == "init":
-        if args.scope == "server" and (args.stdin or args.tools is not None or args.no_tools):
+        if args.scope == "server" and (
+            args.stdin or args.from_server or args.tools is not None or args.no_tools
+        ):
             raise config.ConfigError("server init does not accept Agent-only options")
         tools = _init_tools(args, path, catalog=catalog) if args.scope == "agent" else None
         token = None
@@ -169,6 +177,8 @@ def _run_config(
                 token = sys.stdin.readline().strip()
             except OSError as exc:
                 raise config.ConfigError("secret cannot be read from stdin") from exc
+        elif args.scope == "agent" and args.from_server:
+            token = config.read_server_agent_token(path)
         config.init_config(
             path,
             args.scope,

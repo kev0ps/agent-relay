@@ -221,6 +221,66 @@ def test_init_agent_supports_explicit_no_tools_and_stdin_token(
     ).read_text(encoding="utf-8")
 
 
+def test_init_agent_from_server_uses_the_effective_custom_token_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "server", env={})
+    default_server_token = config_path.parent / "secrets/server/agent_token"
+    stale_token = default_server_token.read_text(encoding="utf-8")
+
+    custom_dir = config_path.parent / "custom"
+    custom_dir.mkdir(mode=0o700)
+    custom_dir.chmod(0o700)
+    custom_server_token = custom_dir / "server-agent-token"
+    custom_server_token.write_text("custom-server-token\n", encoding="utf-8")
+    custom_server_token.chmod(0o600)
+    config.set_value(
+        config_path,
+        "server",
+        "secrets.agent_token_file",
+        "./custom/server-agent-token",
+    )
+    monkeypatch.delenv("RELAY_AGENT_TOKEN", raising=False)
+    monkeypatch.delenv("RELAY_AGENT_TOKEN_FILE", raising=False)
+
+    assert (
+        cli.main(
+            [
+                "--config",
+                str(config_path),
+                "config",
+                "init",
+                "agent",
+                "--from-server",
+                "--no-tools",
+            ]
+        )
+        == 0
+    )
+
+    agent_token = (config_path.parent / "secrets/agent/agent_token").read_text(
+        encoding="utf-8"
+    )
+    assert agent_token == "custom-server-token\n"
+    assert agent_token != stale_token
+    output = capsys.readouterr()
+    assert "custom-server-token" not in output.out
+    assert "custom-server-token" not in output.err
+
+
+def test_server_agent_token_source_honors_environment_override(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "server", env={})
+
+    assert config.read_server_agent_token(
+        config_path,
+        env={"RELAY_AGENT_TOKEN": "environment-server-token"},
+    ) == "environment-server-token"
+
+
 def test_get_outputs_yaml_without_secret_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -234,6 +294,26 @@ def test_get_outputs_yaml_without_secret_values(
     assert "mcp_token_file:" in output
     assert "must-not-appear" not in output
     assert "mcp_token:" not in output
+
+
+def test_get_distinguishes_a_missing_section_from_an_invalid_section(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "server", env={})
+
+    assert cli.main(["--config", str(config_path), "config", "get", "agent"]) == 1
+    assert "agent configuration is not initialized" in capsys.readouterr().err
+
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    document["agent"] = "invalid"
+    config_path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    assert cli.main(["--config", str(config_path), "config", "get", "agent"]) == 1
+    error = capsys.readouterr().err
+    assert "agent configuration must be a mapping" in error
+    assert "agent configuration is not initialized" not in error
 
 
 def test_set_get_and_unset_scalar_value(

@@ -6,6 +6,8 @@ repository="https://github.com/kev0ps/agent-relay"
 source_ref="${AGENT_RELAY_REF:-main}"
 source_ref_kind="${AGENT_RELAY_REF_KIND:-heads}"
 python_version="${AGENT_RELAY_PYTHON_VERSION:-3.13.5}"
+project_root="${AGENT_RELAY_PROJECT_ROOT:-}"
+archive_source="${AGENT_RELAY_ARCHIVE_SOURCE:-}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     printf 'Agent Relay Linux installer requires Linux.\n' >&2
@@ -22,6 +24,12 @@ fi
 if [[ ! "$python_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
     printf 'AGENT_RELAY_PYTHON_VERSION contains unsupported characters.\n' >&2
     exit 1
+fi
+if [[ -z "$project_root" && -n "$archive_source" ]]; then
+    if [[ ! -f "$archive_source" || ! -r "$archive_source" ]]; then
+        printf 'AGENT_RELAY_ARCHIVE_SOURCE is not a file or is unreadable: %s\n' "$archive_source" >&2
+        exit 1
+    fi
 fi
 if ! command -v curl >/dev/null 2>&1; then
     printf 'curl is required. Install curl and rerun the installer.\n' >&2
@@ -94,15 +102,13 @@ fi
 
 archive_path="$temporary_root/agent-relay.tar.gz"
 expanded_root="$temporary_root/expanded"
-project_root="${AGENT_RELAY_PROJECT_ROOT:-}"
 if [[ -n "$project_root" ]]; then
     if [[ ! -d "$project_root" || ! -f "$project_root/pyproject.toml" ]]; then
         printf 'AGENT_RELAY_PROJECT_ROOT is not a valid Agent Relay project: %s\n' "$project_root" >&2
         exit 1
     fi
 else
-    archive_source="${AGENT_RELAY_ARCHIVE_SOURCE:-}"
-    if [[ -n "$archive_source" && -f "$archive_source" ]]; then
+    if [[ -n "$archive_source" ]]; then
         cp -- "$archive_source" "$archive_path"
     else
         archive_uri="https://codeload.github.com/kev0ps/agent-relay/tar.gz/refs/$source_ref_kind/$source_ref"
@@ -179,16 +185,20 @@ if [[ "$setup_mode" == "local" ]]; then
         printf 'Existing Agent Relay configuration found; leaving it unchanged.\n'
     fi
 
-    agent_token_path="$HOME/.agent-relay/secrets/server/agent_token"
-    agent_config_marker="$HOME/.agent-relay/secrets/agent/agent_token"
-    if [[ -f "$config_path" && ! -f "$agent_config_marker" ]]; then
-        if [[ ! -f "$agent_token_path" ]]; then
-            printf 'The Server Agent token file was not created.\n' >&2
+    agent_probe_output=''
+    if agent_probe_output="$(invoke_agent_relay config get agent 2>&1)"; then
+        printf 'Existing Agent configuration found; leaving it unchanged.\n'
+    else
+        agent_probe_exit=$?
+        agent_missing_error='agent-relay: error: agent configuration is not initialized'
+        if [[ "$agent_probe_exit" -ne 1 || "$agent_probe_output" != "$agent_missing_error" ]]; then
+            if [[ -n "$agent_probe_output" ]]; then
+                printf '%s\n' "$agent_probe_output" >&2
+            fi
+            printf 'Could not inspect existing Agent configuration; it was left unchanged.\n' >&2
             exit 1
         fi
-        invoke_agent_relay config init agent --stdin --no-tools < "$agent_token_path"
-    else
-        printf 'Existing Agent secret found; leaving it unchanged.\n'
+        invoke_agent_relay config init agent --from-server --no-tools
     fi
 fi
 

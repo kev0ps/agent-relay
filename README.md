@@ -73,77 +73,99 @@ The server keeps the live device registry and exposes the MCP tools. The Relay
 Agent runs beside the resources it controls and opens the connection back to the
 server. Today, one configured device can process one invocation at a time.
 
-## Quick start on Linux
+## Install
 
-Agent Relay currently targets Python 3.11 or newer and uses
-[`uv`](https://docs.astral.sh/uv/) for installation. The CLI stores the shared
-YAML configuration at `~/.agent-relay/config.yaml` by default. The Server and
-Agent use separate secret files below `~/.agent-relay/secrets/` and never put
-token values in YAML.
+Agent Relay requires Python 3.11 or newer. The platform installers install or
+verify `uv` and a managed Python 3.13.5, install the `agent-relay` command for
+the current user, and can initialize a new local Server and outbound Agent for
+loopback only. Existing settings are preserved. Before starting an existing
+configuration, verify `server.host`, the Agent relay URL, and the host firewall.
+A newly initialized Agent starts with no enabled tools.
 
-```sh
-git clone https://github.com/kev0ps/agent-relay.git
-cd agent-relay
-uv sync --locked --group dev
-uv run --frozen agent-relay config init server
-uv run --frozen agent-relay config set server host 127.0.0.1
+There is no stable release yet. These commands install the moving `main` branch
+and execute a remote script that is not an immutable integrity pin. Review the
+script first when appropriate; the platform guides include inspect-before-run
+and reviewed release-tag examples. A Git tag alone is not a cryptographic
+integrity guarantee.
 
-# Reuse the Server's Agent token without printing it or putting it in history.
-# The Agent still starts with zero enabled tools.
-uv run --frozen agent-relay config init agent --stdin --no-tools \
-  < "$HOME/.agent-relay/secrets/server/agent_token"
-uv run --frozen agent-relay config validate server
-uv run --frozen agent-relay config validate agent
-uv run --frozen agent-relay tools list
-```
+### Linux
 
-`config init agent` can also be run without `--no-tools` for interactive tool
-selection; submitting an empty selection is valid. The shared YAML file is
-`~/.agent-relay/config.yaml` by default. Relative workspace and secret paths are
-resolved from that file, and secret values remain in separate private files.
-Canonical `RELAY_*` environment variables override YAML values when both are
-present; legacy `AGENT_RELAY_*` variables are not supported.
-
-Start the Server in the first terminal:
-
-```sh
-uv run --frozen agent-relay server
-```
-
-Start the outbound Agent in a second terminal:
-
-```sh
-uv run --frozen agent-relay agent
-```
-
-Enable only the tools the local operator wants to expose:
+Linux requires Bash, `curl`, and `tar`:
 
 ```bash
-uv run --frozen agent-relay tools enable relay_system_ping
-uv run --frozen agent-relay tools enable relay_terminal_exec
-uv run --frozen agent-relay config validate agent
+curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/install.sh | bash
 ```
 
-`config get server` and `config get agent` print YAML with sensitive values
-redacted. `doctor` performs the combined offline audit. The complete setup
-guide covers token checks, direct local control calls, diagnostics and shutdown.
-Optional capability settings are part of the Agent YAML section.
+See **[Linux setup](docs/run-linux.md)** for manual checkout setup, custom paths,
+LAN/WSS configuration, diagnostics, and shutdown.
 
-**[Run Agent Relay on Linux →](docs/run-linux.md)**
+### Windows
+
+Run from Windows PowerShell 5.1 or newer:
+
+```powershell
+iex (irm https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/install.ps1)
+```
+
+The bootstrapper uses WinGet to install `uv` when available. If WinGet itself is
+unavailable, it uses the official `uv` installer. It does not require Git, an
+MSI, or an existing Python installation. See
+**[Windows setup](docs/run-windows.md)** for script inspection, immutable-tag
+installation, setup modes, and current platform limits.
+
+### Start a local relay
+
+If you accepted the configuration prompt, start the Server and outbound Agent
+in separate terminal windows:
+
+```sh
+agent-relay server
+agent-relay agent
+```
+
+Enable only the tools the local operator wants to expose, then validate the
+configuration:
+
+```sh
+agent-relay tools enable relay_system_ping
+agent-relay tools enable relay_terminal_exec
+agent-relay config validate server
+agent-relay config validate agent
+agent-relay doctor
+```
+
+If you skipped configuration, follow the relevant platform guide before
+starting the processes. The shared YAML file is stored under the current user's
+`.agent-relay` directory; Server and Agent credentials remain in separate
+private secret files and are never written to YAML. `config get server` and
+`config get agent` redact sensitive values. Canonical `RELAY_*` environment
+variables override YAML values when both are present.
+
+Browser and Computer Use require separate local dependencies and configuration;
+they are not enabled by the base one-line installation.
 
 For a Linux Server container with a native Windows Agent, see the
 **[Docker server deployment guide →](docs/run-server-docker.md)**.
 
 ## Connect Hermes
 
-The MCP endpoint is `http://127.0.0.1:8000/mcp`. In the shell that launches
-Hermes, load the distinct MCP token from the private Server secret file without
-printing it or placing its value in shell history:
+The MCP endpoint is `http://127.0.0.1:8000/mcp`. In the environment that
+launches Hermes, load the distinct MCP token from the private Server secret file
+without printing it or placing its value in shell history.
+
+Linux shell:
 
 ```sh
 export RELAY_MCP_TOKEN="$(
   cat "$HOME/.agent-relay/secrets/server/mcp_token"
 )"
+```
+
+Windows PowerShell:
+
+```powershell
+$tokenPath = Join-Path $HOME ".agent-relay\secrets\server\mcp_token"
+$env:RELAY_MCP_TOKEN = (Get-Content -Raw -LiteralPath $tokenPath).Trim()
 ```
 
 If you initialized a custom configuration with `--config`, read the matching
@@ -215,9 +237,11 @@ Agent Relay is a prototype under active development, not an MVP, a turnkey
 remote desktop, or a multi-tenant automation platform. There is no stable
 release or compatibility guarantee yet.
 
-What is validated today:
+The current automated test design covers:
 
-- the packaged Linux application and its server/agent topology;
+- Linux bootstrap execution and native Windows installer regressions; an exact
+  commit Windows CI run is required before treating a change as validated;
+- installed CLI Server/Agent topology gates on both platforms;
 - the official MCP facade;
 - constrained terminal behavior;
 - Linux Terminal, Browser and CUA-provider E2E gates;
@@ -233,14 +257,14 @@ A container runtime is not used as product proof for Browser or Computer Use.
 
 Still outside the validated product boundary:
 
-- a packaged, versioned and validated native Windows deployment procedure;
+- a packaged, versioned native Windows release and service deployment procedure;
 - multiple devices, RBAC and automatic credential rotation;
 - arbitrary shell commands, files, browser profiles or desktop control;
 - personal sessions, secrets, purchases, uploads and external form submissions;
 - public internet exposure without a trusted private TLS/WSS layer.
 
 The next work is driven by concrete gaps rather than a published roadmap:
-repeatable Windows CUA evidence, simpler third-party installation and
+repeatable Windows CUA evidence, release-quality versioned installation and
 operations, explicit credential lifecycle, and a first coherent release and
 compatibility policy.
 

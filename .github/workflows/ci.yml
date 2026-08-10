@@ -410,7 +410,10 @@ jobs:
       - name: Run Windows test suite
         shell: pwsh
         run: >-
-          uv run --frozen pytest -q tests/test_windows_e2e.py tests/test_runner.py
+          uv run --frozen pytest -q tests/test_windows_e2e.py
+          tests/test_windows_installer.py
+          tests/test_cli_config_mvp.py::test_init_agent_from_server_uses_the_effective_custom_token_source
+          tests/test_runner.py
           -k "not git_search_skips_relative_default_path_entries"
 
       - name: Run Windows integration suite

@@ -14,11 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/ins
 ```
 
 It installs or verifies `uv` and managed Python, installs the Agent Relay
-runtime dependencies through `uv tool install`, asks whether to initialize a
-local Server and Agent, and keeps the Agent allowlist empty by default. For a
-release, use an immutable tag for both the script and source. Inspect a
-downloaded script before executing it when the source is not trusted; a
-mutable `main` URL is not an integrity pin.
+runtime dependencies through `uv tool install`, and asks whether to initialize
+a local Server and Agent. A new Agent starts with an empty allowlist; an
+existing Agent section keeps its custom token path and allowlist. For a release,
+use an immutable tag for both the script and source. Inspect a downloaded script
+before executing it when the source is not trusted; a mutable `main` URL is not
+an integrity pin.
 
 ## Installation and initialization
 
@@ -31,17 +32,17 @@ uv sync --locked --group dev
 uv run --frozen agent-relay config init server
 uv run --frozen agent-relay config set server host 127.0.0.1
 
-# Reuse the Server's Agent token without printing it or putting it in history.
+# Reuse the effective Server Agent token source without printing it.
 # The Agent starts with zero enabled tools.
-uv run --frozen agent-relay config init agent --stdin --no-tools \
-  < "$HOME/.agent-relay/secrets/server/agent_token"
+uv run --frozen agent-relay config init agent --from-server --no-tools
 ```
 
 `config init server` creates the shared YAML file and two private Server secret
-files. `config init agent` creates or reuses the persistent Agent identity,
-creates `./workspace` relative to the configuration file, and consumes the same
-Agent token through stdin without echoing it. To select tools interactively,
-omit `--no-tools`; submitting an empty selection is valid.
+files. `config init agent` creates or reuses the persistent Agent identity, creates
+`./workspace` relative to the configuration file, and reads the effective
+Server Agent token without echoing it. This honors a configured relative or
+absolute token path and supported environment overrides. To select tools
+interactively, omit `--no-tools`; submitting an empty selection is valid.
 
 The initial Agent tool allowlist is empty. Select tools interactively during
 initialization or enable them explicitly:
