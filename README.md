@@ -123,6 +123,20 @@ agent-relay server
 agent-relay agent
 ```
 
+For a guided first run, use the onboarding command. It offers Local Server +
+Agent, Server-only, and Agent connected to a remote Server flows. It asks only
+for settings relevant to the selected role; Agent credentials are masked or
+read from a private file and are never printed:
+
+```sh
+agent-relay onboard
+```
+
+The installer also accepts `AGENT_RELAY_SETUP=local`, `server`, `agent`, or
+`skip`. Existing `config init` commands remain available for scripted setup;
+`--non-interactive` onboarding defaults to an empty Agent allowlist and never
+performs a live connection check unless `--check` is selected.
+
 Enable only the tools the local operator wants to expose, then validate the
 configuration:
 
@@ -133,6 +147,11 @@ agent-relay config validate server
 agent-relay config validate agent
 agent-relay doctor
 ```
+
+`doctor` is an offline audit. Agent startup reports its connection attempt,
+WebSocket connection, authenticated registration, announced capability summary,
+disconnects, and bounded retry delays at the default INFO level. Detailed
+internal phases and exception types remain behind `RELAY_NATIVE_DEBUG=1`.
 
 If you skipped configuration, follow the relevant platform guide before
 starting the processes. The shared YAML file is stored under the current user's
@@ -155,6 +174,9 @@ The default configuration, secrets, and workspace remain in `~/.agent-relay`.
 To remove that default data too, use `agent-relay uninstall --purge`; the
 command asks for confirmation (or accepts `--yes` in automation). Custom
 configurations and data outside `~/.agent-relay` are always preserved.
+On Windows, stop other `agent-relay server` and `agent-relay agent` processes
+first; the command delegates uv removal until its own executable is no longer
+locked.
 
 For a Linux Server container with a native Windows Agent, see the
 **[Docker server deployment guide →](docs/run-server-docker.md)**.

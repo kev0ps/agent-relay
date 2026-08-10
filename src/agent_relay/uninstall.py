@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import config
@@ -45,14 +47,11 @@ def find_uv() -> Path | None:
     return None
 
 
-def uninstall_tool() -> None:
-    """Remove the user-scoped uv tool installation of Agent Relay."""
-    uv_path = find_uv()
-    if uv_path is None:
-        raise config.ConfigError(
-            "uv was not found; uninstall the uv-managed Agent Relay installation "
-            "with uv available on PATH"
-        )
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _run_uv_uninstall(uv_path: Path) -> None:
     try:
         result = subprocess.run(
             [str(uv_path), "tool", "uninstall", "agent-relay"],
@@ -64,6 +63,86 @@ def uninstall_tool() -> None:
         raise config.ConfigError(
             f"uv tool uninstall agent-relay failed with exit code {result.returncode}"
         )
+
+
+def _find_powershell() -> Path | None:
+    for name in ("powershell.exe", "pwsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    return None
+
+
+def _powershell_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _schedule_windows_uninstall(uv_path: Path) -> Path:
+    """Delegate uv removal until this process has released its own exe lock."""
+    powershell = _find_powershell()
+    if powershell is None:
+        raise config.ConfigError(
+            "PowerShell was not found; stop Agent Relay processes and run "
+            "uv tool uninstall agent-relay from a separate PowerShell window"
+        )
+    try:
+        descriptor, log_name = tempfile.mkstemp(
+            prefix="agent-relay-uninstall-", suffix=".log"
+        )
+        os.close(descriptor)
+    except OSError as exc:
+        raise config.ConfigError("could not prepare the Windows uninstall handoff") from exc
+    log_path = Path(log_name)
+    script = (
+        "$ErrorActionPreference = 'Continue'; "
+        "Start-Sleep -Milliseconds 750; "
+        f"& {_powershell_literal(str(uv_path))} tool uninstall agent-relay "
+        f"> {_powershell_literal(str(log_path))} 2>&1; "
+        "$exitCode = $LASTEXITCODE; "
+        "if ($exitCode -ne 0) { "
+        f"Add-Content -LiteralPath {_powershell_literal(str(log_path))} "
+        "-Value 'Agent Relay is still in use. Stop other Agent Relay server or agent processes and retry.' "
+        "}"
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    try:
+        subprocess.Popen(
+            [
+                str(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                encoded,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            ),
+        )
+    except OSError as exc:
+        log_path.unlink(missing_ok=True)
+        raise config.ConfigError("could not schedule Windows uninstallation") from exc
+    return log_path
+
+
+def uninstall_tool() -> Path | None:
+    """Remove or safely delegate removal of the user-scoped uv tool install."""
+    uv_path = find_uv()
+    if uv_path is None:
+        raise config.ConfigError(
+            "uv was not found; uninstall the uv-managed Agent Relay installation "
+            "with uv available on PATH"
+        )
+    if _is_windows():
+        return _schedule_windows_uninstall(uv_path)
+    _run_uv_uninstall(uv_path)
+    return None
 
 
 def validate_purge_target(data_dir: Path) -> None:

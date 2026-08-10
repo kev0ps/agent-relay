@@ -9,10 +9,17 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import agent, config, server, uninstall
+from . import agent, config, onboarding, server, uninstall
 from .catalog import CatalogError, CatalogSnapshot
 
 _HELP = """usage: agent-relay [--config PATH] <command>\n\nAgent Relay\n\nCommands:\n  --help                         show this help and exit\n  --version                      show the program version and exit\n  config init server             create Server YAML and secret files\n  config init agent              create Agent YAML and secret file\n  config get server              print the Server YAML section\n  config get agent               print the Agent YAML section\n  config set server KEY VALUE    update a Server setting\n  config set agent KEY VALUE     update an Agent setting\n  config unset server KEY        restore a Server setting default\n  config unset agent KEY         restore an Agent setting default\n  config validate server         validate the Server configuration\n  config validate agent          validate the Agent configuration\n  tools list                     list the complete public tool inventory\n  tools enable TOOL              enable an Agent tool\n  tools disable TOOL              disable an Agent tool\n  doctor                         run the offline combined configuration audit\n  server                        start the Relay Server\n  agent                         start the outbound Agent\n\nGlobal options:\n  --config PATH                  use a specific YAML configuration file\n\nSecret values must be provided with --prompt, --stdin, or --file.\n"""
+
+
+_HELP = _HELP.replace(
+    "  config validate agent          validate the Agent configuration\n",
+    "  config validate agent          validate the Agent configuration\n"
+    "  onboard                       guided Server/Agent first-run setup\n",
+)
 
 
 _HELP = _HELP.replace(
@@ -100,6 +107,39 @@ def _parser() -> _Parser:
         tool_parser.add_argument("tool")
 
     commands.add_parser("doctor", add_help=False)
+    onboard_parser = commands.add_parser("onboard", add_help=False)
+    onboard_parser.add_argument("--role", choices=("local", "server", "agent"))
+    onboard_parser.add_argument("--non-interactive", action="store_true")
+    onboard_parser.add_argument("--force", action="store_true")
+    onboard_parser.add_argument("--host")
+    onboard_parser.add_argument("--port")
+    onboard_parser.add_argument(
+        "--policy", choices=("loopback", "lan", "secure")
+    )
+    onboard_parser.add_argument("--relay-url")
+    onboard_parser.add_argument("--workspace")
+    onboard_tools = onboard_parser.add_mutually_exclusive_group()
+    onboard_tools.add_argument("--tools")
+    onboard_tools.add_argument("--no-tools", action="store_true")
+    onboard_tokens = onboard_parser.add_mutually_exclusive_group()
+    onboard_tokens.add_argument("--token-file", type=Path)
+    onboard_tokens.add_argument("--token-stdin", action="store_true")
+    onboard_transport = onboard_parser.add_mutually_exclusive_group()
+    onboard_transport.add_argument(
+        "--allow-insecure-ws",
+        dest="allow_insecure_ws",
+        action="store_true",
+    )
+    onboard_transport.add_argument(
+        "--deny-insecure-ws",
+        dest="allow_insecure_ws",
+        action="store_false",
+    )
+    onboard_parser.set_defaults(allow_insecure_ws=None)
+    onboard_check = onboard_parser.add_mutually_exclusive_group()
+    onboard_check.add_argument("--check", dest="check", action="store_true")
+    onboard_check.add_argument("--no-check", dest="check", action="store_false")
+    onboard_parser.set_defaults(check=None)
     commands.add_parser("server", add_help=False)
     commands.add_parser("agent", add_help=False)
     uninstall_parser = commands.add_parser("uninstall", add_help=False)
@@ -239,6 +279,8 @@ def _run_config(
 def _catalog_required(args: argparse.Namespace) -> bool:
     if args.command in {"tools", "doctor", "agent"}:
         return True
+    if args.command == "onboard":
+        return args.role != "server"
     return args.command == "config" and (
         args.config_command == "validate"
         or (args.config_command == "init" and args.scope == "agent")
@@ -282,8 +324,15 @@ def _run_uninstall(args: argparse.Namespace, path: Path) -> int:
         print("uninstall cancelled")
         return 0
 
-    uninstall.uninstall_tool()
-    print("uninstalled agent-relay")
+    uninstall_log = uninstall.uninstall_tool()
+    if uninstall_log is None:
+        print("uninstalled agent-relay")
+    else:
+        print(
+            "scheduled Agent Relay uninstallation after this process exits; "
+            "stop other Agent Relay processes first if it remains installed"
+        )
+        print(f"uninstall status log: {uninstall_log}")
 
     if args.purge:
         if uninstall.purge_data(data_dir):
@@ -356,6 +405,12 @@ def main(
             output, valid = config.doctor(path, catalog=effective_catalog)
             print(output)
             return 0 if valid else 1
+        if args.command == "onboard":
+            return onboarding.run(
+                path,
+                onboarding.OnboardingOptions.from_namespace(args),
+                catalog=effective_catalog,
+            )
         if args.command == "server":
             config.load_server_runtime(path)
             server.main(["--config", str(path)])

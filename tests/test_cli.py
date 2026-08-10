@@ -12,6 +12,7 @@ def test_no_arguments_prints_help_and_succeeds(capsys: pytest.CaptureFixture[str
     output = capsys.readouterr().out
     assert "usage: agent-relay" in output
     assert "config init server" in output
+    assert "onboard" in output
     assert "tools list" in output
     assert "doctor" in output
 

@@ -257,16 +257,27 @@ try {
     } else {
         $env:AGENT_RELAY_SETUP.ToLowerInvariant()
     }
-    if ($setupMode -notin @("prompt", "local", "skip")) {
-        throw "AGENT_RELAY_SETUP must be 'prompt', 'local', or 'skip'."
+    if ($setupMode -notin @("prompt", "local", "server", "agent", "skip")) {
+        throw "AGENT_RELAY_SETUP must be 'prompt', 'local', 'server', 'agent', or 'skip'."
     }
     if ($setupMode -eq "prompt") {
-        $answer = Read-Host "Configure a local Server and Agent now? [Y/n]"
-        if ($answer.Trim() -match "^[Nn]") {
-            $setupMode = "skip"
-        } else {
-            $setupMode = "local"
+        $answer = Read-Host "Choose onboarding: [L]ocal, [S]erver, [A]gent, [N]one (default Local)"
+        switch -Regex ($answer.Trim()) {
+            "^[Ss]" { $setupMode = "server"; break }
+            "^[Aa]" { $setupMode = "agent"; break }
+            "^[Nn]" { $setupMode = "skip"; break }
+            default { $setupMode = "local" }
         }
+    }
+
+    if ($setupMode -eq "server") {
+        Invoke-AgentRelay @("onboard", "--role", "server", "--non-interactive")
+    } elseif ($setupMode -eq "agent") {
+        Invoke-AgentRelay @("onboard", "--role", "agent")
+    }
+
+    if ($setupMode -eq "skip") {
+        Write-Host "Skipping Agent Relay onboarding."
     }
 
     if ($setupMode -eq "local") {
@@ -292,7 +303,7 @@ try {
     Write-Host "  agent-relay server"
     Write-Host "  agent-relay agent"
     Write-Host ""
-    Write-Host "For a remote Server, set AGENT_RELAY_SETUP=skip and configure the Agent URL and token file separately."
+    Write-Host "For a remote Server, choose AGENT_RELAY_SETUP=agent or run agent-relay onboard --role agent."
 } finally {
     if (Test-Path -LiteralPath $script:temporaryRoot) {
         Remove-Item -LiteralPath $script:temporaryRoot -Recurse -Force

@@ -155,9 +155,9 @@ invoke_agent_relay() {
 
 setup_mode="${AGENT_RELAY_SETUP:-prompt}"
 case "$setup_mode" in
-    prompt|local|skip) ;;
+    prompt|local|server|agent|skip) ;;
     *)
-        printf "AGENT_RELAY_SETUP must be 'prompt', 'local', or 'skip'.\n" >&2
+        printf "AGENT_RELAY_SETUP must be 'prompt', 'local', 'server', 'agent', or 'skip'.\n" >&2
         exit 1
         ;;
 esac
@@ -165,15 +165,24 @@ esac
 if [[ "$setup_mode" == "prompt" ]]; then
     if [[ -r /dev/tty ]]; then
         answer=''
-        read -r -p 'Configure a local Server and Agent now? [Y/n] ' answer </dev/tty
-        if [[ "$answer" =~ ^[Nn] ]]; then
-            setup_mode='skip'
-        else
-            setup_mode='local'
-        fi
+        read -r -p 'Choose onboarding: [L]ocal, [S]erver, [A]gent, [N]one (default Local) ' answer </dev/tty
+        case "$answer" in
+            [Ss]*) setup_mode='server' ;;
+            [Aa]*) setup_mode='agent' ;;
+            [Nn]*) setup_mode='skip' ;;
+            *) setup_mode='local' ;;
+        esac
     else
         setup_mode='skip'
     fi
+fi
+
+if [[ "$setup_mode" == "server" ]]; then
+    invoke_agent_relay onboard --role server --non-interactive
+elif [[ "$setup_mode" == "agent" ]]; then
+    invoke_agent_relay onboard --role agent
+elif [[ "$setup_mode" == "skip" ]]; then
+    printf 'Skipping Agent Relay onboarding.\n'
 fi
 
 if [[ "$setup_mode" == "local" ]]; then
@@ -206,4 +215,4 @@ printf '\nAgent Relay installed for the current user.\n'
 printf 'Start the local deployment in two shell windows:\n'
 printf '  agent-relay server\n'
 printf '  agent-relay agent\n'
-printf '\nFor a remote Server, set AGENT_RELAY_SETUP=skip and configure the Agent URL and token file separately.\n'
+printf '\nFor a remote Server, choose AGENT_RELAY_SETUP=agent or run agent-relay onboard --role agent.\n'

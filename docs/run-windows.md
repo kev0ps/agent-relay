@@ -22,7 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/ins
 The installer downloads the source archive, installs `agent-relay` through
 `uv`, adds the user-level tool directory to `PATH`, and asks whether to create
 the local configuration. A newly initialized Agent starts with an empty
-allowlist, and the installer never prints token values.
+allowlist, and the installer never prints token values. The guided onboarding
+command offers Local Server + Agent, Server-only, and remote Agent setup; use
+`agent-relay onboard` after installation when you need one of those flows.
 
 For a release, host the script and source from the same reviewed release tag.
 Replace the placeholder only with a tag that actually exists:
@@ -67,8 +69,10 @@ The script:
   exists, then adds an Agent section only when one is missing;
 - enables no tools in a newly created Agent section.
 
-Set `AGENT_RELAY_SETUP=skip` for installation only, or
-`AGENT_RELAY_SETUP=local` to avoid the setup prompt. `AGENT_RELAY_REF` and
+Set `AGENT_RELAY_SETUP=local`, `server`, `agent`, or `skip` to select the
+installer onboarding mode. The `agent` mode asks for the remote URL and masked
+Agent credential; use a private token file or stdin for non-interactive setup.
+`AGENT_RELAY_REF` and
 `AGENT_RELAY_REF_KIND` select a branch or tag; `heads/main` is the default and
 is intended for development until a release process exists. Override the
 managed Python with `AGENT_RELAY_PYTHON_VERSION` when necessary.
@@ -95,6 +99,12 @@ its uv tool environment while keeping `%USERPROFILE%\.agent-relay`:
 ```powershell
 agent-relay uninstall
 ```
+
+On Windows, the command schedules uv removal after the current executable has
+exited. Stop other `agent-relay server` or `agent-relay agent` processes first;
+if the tool remains installed, the status log explains that another Agent Relay
+process still holds a file lock. The uninstall never terminates unrelated
+processes automatically.
 
 To also remove the default configuration, private secrets, and workspace, use
 an explicit purge:
