@@ -9,10 +9,17 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import agent, config, server
+from . import agent, config, server, uninstall
 from .catalog import CatalogError, CatalogSnapshot
 
 _HELP = """usage: agent-relay [--config PATH] <command>\n\nAgent Relay\n\nCommands:\n  --help                         show this help and exit\n  --version                      show the program version and exit\n  config init server             create Server YAML and secret files\n  config init agent              create Agent YAML and secret file\n  config get server              print the Server YAML section\n  config get agent               print the Agent YAML section\n  config set server KEY VALUE    update a Server setting\n  config set agent KEY VALUE     update an Agent setting\n  config unset server KEY        restore a Server setting default\n  config unset agent KEY         restore an Agent setting default\n  config validate server         validate the Server configuration\n  config validate agent          validate the Agent configuration\n  tools list                     list the complete public tool inventory\n  tools enable TOOL              enable an Agent tool\n  tools disable TOOL              disable an Agent tool\n  doctor                         run the offline combined configuration audit\n  server                        start the Relay Server\n  agent                         start the outbound Agent\n\nGlobal options:\n  --config PATH                  use a specific YAML configuration file\n\nSecret values must be provided with --prompt, --stdin, or --file.\n"""
+
+
+_HELP = _HELP.replace(
+    "  agent                         start the outbound Agent\n",
+    "  agent                         start the outbound Agent\n"
+    "  uninstall [--purge] [--yes]   remove the uv-managed Agent Relay command\n",
+)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -95,6 +102,17 @@ def _parser() -> _Parser:
     commands.add_parser("doctor", add_help=False)
     commands.add_parser("server", add_help=False)
     commands.add_parser("agent", add_help=False)
+    uninstall_parser = commands.add_parser("uninstall", add_help=False)
+    uninstall_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="also remove the default configuration, secrets, and workspace",
+    )
+    uninstall_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm a requested data purge without prompting",
+    )
     return parser
 
 
@@ -232,6 +250,51 @@ def _catalog_required(args: argparse.Namespace) -> bool:
     )
 
 
+def _confirm_uninstall_purge(data_dir: Path, *, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        raise config.ConfigError("--purge requires --yes when stdin is not interactive")
+    try:
+        answer = input(
+            f"Remove Agent Relay configuration, secrets, and workspace at {data_dir}? [y/N] "
+        )
+    except (EOFError, OSError) as exc:
+        raise config.ConfigError("could not read the purge confirmation") from exc
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _run_uninstall(args: argparse.Namespace, path: Path) -> int:
+    if args.yes and not args.purge:
+        raise config.ConfigError("--yes is only valid with --purge")
+
+    default_config = config.DEFAULT_CONFIG_PATH
+    data_dir = default_config.parent
+    if args.purge:
+        # Validate before invoking uv so an unsafe target cannot result in a
+        # partially completed uninstall.
+        uninstall.validate_purge_target(data_dir)
+
+    if path != default_config:
+        print(f"preserving custom configuration and referenced data: {path}")
+
+    if args.purge and not _confirm_uninstall_purge(data_dir, assume_yes=args.yes):
+        print("uninstall cancelled")
+        return 0
+
+    uninstall.uninstall_tool()
+    print("uninstalled agent-relay")
+
+    if args.purge:
+        if uninstall.purge_data(data_dir):
+            print(f"removed Agent Relay data: {data_dir}")
+        else:
+            print(f"Agent Relay data directory did not exist: {data_dir}")
+    else:
+        print(f"preserved Agent Relay data: {data_dir}")
+    return 0
+
+
 def _agent_environment_is_available(path: Path) -> bool:
     """Allow a clean installed Agent to start from its runtime environment."""
     return (
@@ -307,6 +370,8 @@ def main(
             else:
                 agent.main(["--config", str(path)], catalog=effective_catalog)
             return 0
+        if args.command == "uninstall":
+            return _run_uninstall(args, path)
         parser.error("unsupported command")
     except config.ConfigError as exc:
         print(f"agent-relay: error: {exc}", file=sys.stderr)

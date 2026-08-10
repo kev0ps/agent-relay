@@ -87,6 +87,27 @@ export AGENT_RELAY_REF_KIND=tags
 curl -fsSL "https://raw.githubusercontent.com/kev0ps/agent-relay/$release_tag/scripts/install.sh" | bash
 ```
 
+## Uninstall
+
+For a user-scoped bootstrapper installation, remove the Agent Relay command and
+its uv tool environment while keeping `%USERPROFILE%\.agent-relay`:
+
+```powershell
+agent-relay uninstall
+```
+
+To also remove the default configuration, private secrets, and workspace, use
+an explicit purge:
+
+```powershell
+agent-relay uninstall --purge
+```
+
+The purge asks for confirmation; pass `--yes` for non-interactive automation.
+Custom configurations and data outside `%USERPROFILE%\.agent-relay` are
+preserved. The command does not remove `uv`, managed Python, or the shared uv
+tool directory.
+
 After installation, run these commands in separate PowerShell windows:
 
 ```powershell

@@ -21,6 +21,27 @@ use an immutable tag for both the script and source. Inspect a downloaded script
 before executing it when the source is not trusted; a mutable `main` URL is not
 an integrity pin.
 
+## Uninstall
+
+For a user-scoped bootstrapper installation, remove the Agent Relay command and
+its uv tool environment while keeping the local configuration:
+
+```sh
+agent-relay uninstall
+```
+
+To also remove the default configuration, private secrets, and workspace under
+`~/.agent-relay`, request an explicit purge:
+
+```sh
+agent-relay uninstall --purge
+```
+
+The purge prompts for confirmation; use `--yes` only for non-interactive
+automation. Custom configurations and any secrets or workspaces outside
+`~/.agent-relay` are preserved. The command does not remove `uv`, managed
+Python, or the shared uv tool bin directory.
+
 ## Installation and initialization
 
 For a checkout-based development environment, run the following from the

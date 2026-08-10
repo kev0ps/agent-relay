@@ -144,6 +144,18 @@ variables override YAML values when both are present.
 Browser and Computer Use require separate local dependencies and configuration;
 they are not enabled by the base one-line installation.
 
+For a user-scoped installation created by the bootstrapper, remove only the
+`agent-relay` command and its uv tool environment with:
+
+```sh
+agent-relay uninstall
+```
+
+The default configuration, secrets, and workspace remain in `~/.agent-relay`.
+To remove that default data too, use `agent-relay uninstall --purge`; the
+command asks for confirmation (or accepts `--yes` in automation). Custom
+configurations and data outside `~/.agent-relay` are always preserved.
+
 For a Linux Server container with a native Windows Agent, see the
 **[Docker server deployment guide →](docs/run-server-docker.md)**.
 

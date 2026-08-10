@@ -286,3 +286,23 @@ exit 0
     invocations = calls.read_text(encoding="utf-8").splitlines()
     assert "config get agent" in invocations
     assert any(call.startswith("config init agent") for call in invocations) is initializes_agent
+
+
+def test_windows_install_guide_matches_the_hosted_script_flow() -> None:
+    guide = (ROOT / "docs" / "run-windows.md").read_text()
+
+    for phrase in (
+        "iex (irm https://raw.githubusercontent.com/kev0ps/agent-relay",
+        "scripts/install.ps1",
+        "AGENT_RELAY_REF",
+        "allowlist",
+        "Windows CUA remains experimental",
+    ):
+        assert phrase in guide
+
+
+def test_windows_install_guide_documents_the_linux_counterpart() -> None:
+    guide = (ROOT / "docs" / "run-windows.md").read_text()
+
+    assert "curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay" in guide
+    assert "scripts/install.sh" in guide
