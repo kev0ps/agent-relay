@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from ..diagnostics import debug as _debug_log
 from ..json_bounds import (
     MAX_JSON_COLLECTION_ITEMS,
     JsonBoundsError,
@@ -52,21 +51,13 @@ class McpTransport(Protocol):
 
 
 def _debug_cua_inventory_failure(provider_name: str, category: str) -> None:
-    if provider_name == "cua" and os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-        print(
-            f"cua provider inventory failure: category={category}",
-            file=sys.stderr,
-            flush=True,
-        )
+    if provider_name == "cua":
+        _debug_log(f"cua provider inventory failure: category={category}")
 
 
 def _debug_cua_descriptor_failure(provider_name: str, category: str) -> None:
-    if provider_name == "cua" and os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-        print(
-            f"cua provider descriptor failure: category={category}",
-            file=sys.stderr,
-            flush=True,
-        )
+    if provider_name == "cua":
+        _debug_log(f"cua provider descriptor failure: category={category}")
 
 
 def _normalize_cua_schema_bounds(value: object) -> object:

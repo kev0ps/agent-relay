@@ -10,7 +10,7 @@ import yaml
 from agent_relay import cli, config
 
 
-def test_init_server_creates_private_yaml_and_secret_files(
+def test_init_server_creates_private_yaml_and_dotenv(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config_path = tmp_path / ".agent-relay" / "config.yaml"
@@ -20,24 +20,29 @@ def test_init_server_creates_private_yaml_and_secret_files(
     assert config_path.is_file()
     if os.name != "nt":
         assert os.stat(config_path).st_mode & 0o777 == 0o600
-    assert (config_path.parent / "secrets/server/mcp_token").is_file()
-    assert (config_path.parent / "secrets/server/agent_token").is_file()
+    dotenv = config_path.parent / ".env"
+    assert dotenv.is_file()
+    assert "RELAY_MCP_TOKEN=" in dotenv.read_text(encoding="utf-8")
+    assert "RELAY_AGENT_TOKEN=" in dotenv.read_text(encoding="utf-8")
+    assert "secrets" not in config_path.read_text(encoding="utf-8")
+    if os.name != "nt":
+        assert os.stat(dotenv).st_mode & 0o777 == 0o600
     assert "token" not in capsys.readouterr().out.lower()
 
 
-def test_init_rejects_symlinked_secret_parent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_init_rejects_symlinked_dotenv(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     config_dir = tmp_path / "config-parent"
     outside = tmp_path / "outside"
     config_dir.mkdir()
     outside.mkdir()
     try:
-        os.symlink(outside, config_dir / "secrets", target_is_directory=True)
+        os.symlink(outside / ".env", config_dir / ".env")
     except OSError:
         pytest.skip("symbolic links are unavailable")
 
     config_path = config_dir / "config.yaml"
     assert cli.main(["--config", str(config_path), "config", "init", "server"]) == 1
-    assert not (outside / "server/mcp_token").exists()
+    assert not (outside / ".env").exists()
     assert "symlink" in capsys.readouterr().err.lower()
 
 
@@ -50,6 +55,88 @@ def test_empty_canonical_token_environment_override_is_rejected(
     assert not report.valid
     with pytest.raises(config.ConfigError):
         config.load_server_runtime(config_path, env={"RELAY_MCP_TOKEN": ""})
+
+
+def test_init_server_rejects_shared_process_tokens(tmp_path: Path) -> None:
+    with pytest.raises(config.ConfigError, match="must be distinct"):
+        config.init_config(
+            tmp_path / "config.yaml",
+            "server",
+            env={
+                "RELAY_MCP_TOKEN": "shared-token",
+                "RELAY_AGENT_TOKEN": "shared-token",
+            },
+        )
+
+
+def test_dotenv_values_are_used_without_mutating_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "server", env={})
+    dotenv = config_path.parent / ".env"
+    values = dotenv.read_text(encoding="utf-8").splitlines()
+    dotenv.write_text(
+        "\n".join(
+            "RELAY_MCP_TOKEN=dotenv-mcp" if line.startswith("RELAY_MCP_TOKEN=") else line
+            for line in values
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        dotenv.chmod(0o600)
+    monkeypatch.delenv("RELAY_MCP_TOKEN", raising=False)
+    runtime = config.load_server_runtime(config_path, env={})
+    assert runtime.settings.mcp_token == "dotenv-mcp"
+    assert "RELAY_MCP_TOKEN" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "contents, expected",
+    [
+        ("RELAY_UNKNOWN=value\n", "key is not allowed"),
+        ("RELAY_MCP_TOKEN=one\nRELAY_MCP_TOKEN=two\n", "duplicated"),
+        ("RELAY_MCP_TOKEN\n", "line 1 is invalid"),
+        ("x" * 4097, "too large"),
+    ],
+)
+def test_dotenv_rejects_unsupported_syntax(
+    tmp_path: Path, contents: str, expected: str
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "server", env={})
+    dotenv = config_path.parent / ".env"
+    dotenv.write_text(contents, encoding="utf-8")
+    if os.name != "nt":
+        dotenv.chmod(0o600)
+    with pytest.raises(config.ConfigError, match=expected):
+        config.load_server_runtime(config_path, env={})
+
+
+def test_legacy_secrets_and_token_file_environment_are_rejected(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "server:\n  secrets:\n    mcp_token_file: ./secrets/mcp\n",
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        config_path.chmod(0o600)
+    report = config.validate_document(config_path, "server", env={})
+    assert not report.valid
+    assert any("legacy secrets configuration" in issue.message for issue in report.errors)
+
+    with pytest.raises(config.ConfigError, match=r"create \.env next to the YAML"):
+        config.load_server_runtime(config_path, env={})
+
+    config.init_config(tmp_path / "agent.yaml", "agent", token="agent", tools=[], env={})
+    with pytest.raises(config.ConfigError, match="no longer supported"):
+        config.load_agent_settings(
+            tmp_path / "agent.yaml",
+            env={"RELAY_AGENT_TOKEN_FILE": str(tmp_path / "old-token")},
+        )
 
 
 def test_server_runtime_reports_sanitized_validation_errors(tmp_path: Path) -> None:
@@ -103,10 +190,10 @@ def test_init_agent_explicitly_starts_with_empty_allowlist(
     document = safe_load(config_path.read_text(encoding="utf-8"))
     assert document["agent"]["tools"]["allowlist"] == []
     assert document["agent"]["identity"]["id"]
-    token_path = config_path.parent / "secrets/agent/agent_token"
-    assert token_path.read_text(encoding="utf-8") == "agent-secret\n"
+    dotenv = config_path.parent / ".env"
+    assert "RELAY_AGENT_TOKEN=agent-secret\n" in dotenv.read_text(encoding="utf-8")
     if os.name != "nt":
-        assert os.stat(token_path).st_mode & 0o777 == 0o600
+        assert os.stat(dotenv).st_mode & 0o777 == 0o600
 
 
 def test_reinit_in_tty_preserves_existing_allowlist(
@@ -182,35 +269,31 @@ def test_init_agent_supports_explicit_no_tools_and_stdin_token(
         )
         == 0
     )
-    assert "agent-from-stdin" in (
-        config_path.parent / "secrets/agent/agent_token"
+    assert "RELAY_AGENT_TOKEN=agent-from-stdin\n" in (
+        config_path.parent / ".env"
     ).read_text(encoding="utf-8")
 
 
-def test_init_agent_from_server_uses_the_effective_custom_token_source(
+def test_init_agent_from_server_uses_the_effective_dotenv_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config.init_config(config_path, "server", env={})
-    default_server_token = config_path.parent / "secrets/server/agent_token"
-    stale_token = default_server_token.read_text(encoding="utf-8")
-
-    custom_dir = config_path.parent / "custom"
-    custom_dir.mkdir(mode=0o700)
-    custom_dir.chmod(0o700)
-    custom_server_token = custom_dir / "server-agent-token"
-    custom_server_token.write_text("custom-server-token\n", encoding="utf-8")
-    custom_server_token.chmod(0o600)
-    config.set_value(
-        config_path,
-        "server",
-        "secrets.agent_token_file",
-        "./custom/server-agent-token",
+    dotenv = config_path.parent / ".env"
+    values = dotenv.read_text(encoding="utf-8").splitlines()
+    dotenv.write_text(
+        "\n".join(
+            "RELAY_AGENT_TOKEN=custom-server-token" if line.startswith("RELAY_AGENT_TOKEN=") else line
+            for line in values
+        )
+        + "\n",
+        encoding="utf-8",
     )
+    if os.name != "nt":
+        dotenv.chmod(0o600)
     monkeypatch.delenv("RELAY_AGENT_TOKEN", raising=False)
-    monkeypatch.delenv("RELAY_AGENT_TOKEN_FILE", raising=False)
 
     assert (
         cli.main(
@@ -227,11 +310,8 @@ def test_init_agent_from_server_uses_the_effective_custom_token_source(
         == 0
     )
 
-    agent_token = (config_path.parent / "secrets/agent/agent_token").read_text(
-        encoding="utf-8"
-    )
-    assert agent_token == "custom-server-token\n"
-    assert agent_token != stale_token
+    agent_token = dotenv.read_text(encoding="utf-8")
+    assert "RELAY_AGENT_TOKEN=custom-server-token\n" in agent_token
     output = capsys.readouterr()
     assert "custom-server-token" not in output.out
     assert "custom-server-token" not in output.err
@@ -257,7 +337,8 @@ def test_get_outputs_yaml_without_secret_values(
 
     assert cli.main(["--config", str(config_path), "config", "get", "server"]) == 0
     output = capsys.readouterr().out
-    assert "mcp_token_file:" in output
+    assert "secrets" not in output
+    assert "mcp_token_file" not in output
     assert "must-not-appear" not in output
     assert "mcp_token:" not in output
 
@@ -334,21 +415,20 @@ def test_config_set_secret_reads_stdin_and_never_prints_value(
     )
     output = capsys.readouterr().out
     assert "replacement-secret" not in output
-    secret_path = config_path.parent / "secrets/server/mcp_token"
-    assert secret_path.read_text(encoding="utf-8") == "replacement-secret\n"
+    dotenv = config_path.parent / ".env"
+    assert "RELAY_MCP_TOKEN=replacement-secret\n" in dotenv.read_text(encoding="utf-8")
 
 
-def test_unset_secret_clears_content_but_preserves_private_file(
+def test_unset_secret_removes_dotenv_key(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config_path = tmp_path / "config.yaml"
     assert cli.main(["--config", str(config_path), "config", "init", "server"]) == 0
     capsys.readouterr()
-    secret_path = config_path.parent / "secrets/server/mcp_token"
-    assert secret_path.read_text(encoding="utf-8").strip()
+    dotenv = config_path.parent / ".env"
+    assert "RELAY_MCP_TOKEN=" in dotenv.read_text(encoding="utf-8")
     assert cli.main(["--config", str(config_path), "config", "unset", "server", "mcp_token"]) == 0
-    assert secret_path.is_file()
-    assert secret_path.read_text(encoding="utf-8").strip() == ""
+    assert "RELAY_MCP_TOKEN=" not in dotenv.read_text(encoding="utf-8")
     assert cli.main(["--config", str(config_path), "config", "validate", "server"]) == 1
 
 
@@ -495,10 +575,8 @@ def test_repeated_agent_init_preserves_identity_tools_and_secret(
     assert second["agent"]["identity"]["id"] == first["agent"]["identity"]["id"]
     assert second["agent"]["tools"]["allowlist"] == ["relay_system_ping"]
     assert (
-        (config_path.parent / "secrets" / "agent" / "agent_token")
-        .read_text(encoding="utf-8")
-        .strip()
-        == "agent-secret"
+        "RELAY_AGENT_TOKEN=agent-secret\n"
+        in (config_path.parent / ".env").read_text(encoding="utf-8")
     )
 
 

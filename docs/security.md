@@ -34,15 +34,14 @@ The authenticated direct control endpoint is the generic v2 route documented in
 [`protocol.md`](protocol.md). It accepts only a strict `InvokeMessage`
 contract and never bypasses registry policy or provider validation.
 
-The default YAML configuration stores the Server secrets at
-`~/.agent-relay/secrets/server/mcp_token` and
-`~/.agent-relay/secrets/server/agent_token`, and the Agent secret at
-`~/.agent-relay/secrets/agent/agent_token`. These token files must remain regular,
-non-symlink files with mode `0600`. The MCP token is distinct and is used by the
-local MCP client at `/mcp`. Canonical `RELAY_*` environment values override YAML
-and secret files when explicitly provided. Configuration output redacts sensitive
-values, and legacy `AGENT_RELAY_*` variables are not supported. The code offers
-no arbitrary shell.
+The default YAML configuration stores no credentials. The adjacent
+`~/.agent-relay/.env` contains only `RELAY_MCP_TOKEN` and
+`RELAY_AGENT_TOKEN`; it must remain a regular, non-symlink file with mode `0600`
+and is parsed directly without shell expansion or injection into the Agent's
+child-process environment. The MCP token is distinct and is used by the local
+MCP client at `/mcp`. Explicit process environment values override `.env`.
+Configuration output redacts sensitive values, and legacy `AGENT_RELAY_*`
+variables are not supported. The code offers no arbitrary shell.
 
 ## Honest limitations
 
@@ -97,9 +96,8 @@ external TLS boundary.
 ## Manual rotation
 
 Stop the Agent and Server, generate distinct new MCP and Agent tokens, replace
-the corresponding private secret files (or the explicit `RELAY_*` environment
-overrides), then restart both. For the YAML-first layout, rotate
-`secrets/server/mcp_token`, `secrets/server/agent_token`, and the matching Agent
-token file while preserving mode `0600` and the shared Agent token value.
+the corresponding keys in the adjacent `.env` (or use explicit `RELAY_*`
+environment overrides), then restart both. Preserve mode `0600` and the shared
+Agent token value.
 Invalidate or delete old values according to your local policy. Rotation
 necessarily terminates the current session.

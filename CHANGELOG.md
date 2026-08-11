@@ -12,7 +12,7 @@ The project is currently pre-1.0 and has no formal release tag.
 
 - MIT license.
 - Contributor guide and security-reporting policy.
-- YAML-first Server and Agent configuration with private secret files and
+- YAML-first Server and Agent configuration with a private `.env` store and
   copyable tool profiles.
 - Linux and Windows Terminal and Browser E2E gates.
 - Linux CUA E2E and an experimental Windows CUA candidate gate.
@@ -20,6 +20,15 @@ The project is currently pre-1.0 and has no formal release tag.
 
 ### Changed
 
+- Credentials now live in a private `.env` beside the selected YAML file and
+  are read directly without dotenv environment injection. The former
+  `secrets/` YAML layout and `*_TOKEN_FILE` runtime overrides are intentionally
+  unsupported; existing installations must create `.env` manually before
+  removing their old secret files.
+- Windows uninstall retries `uv tool uninstall agent-relay` every 500 ms for
+  up to 15 seconds and records each attempt in its status log.
+- Runtime diagnostics use `[INFO]`, `[WARNING]`, and `[DEBUG]` prefixes, and
+  validated tool calls emit only their internal tool name.
 - Browser, CUA, Terminal and System invocations now share the generic v2
   provider route and bounded descriptor/result validation.
 - Browser exposes structured locators instead of Relay-generated element IDs;

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..catalog import CUA_REFERENCE_TOOL_NAMES
+from ..diagnostics import debug as _debug_log
 from ..json_bounds import JsonValue
 from ..output_models import ProviderTextContent, ProviderToolResult
 from ..protocol import (
@@ -447,19 +448,14 @@ class ComputerCapability:
             except Exception as error:
                 startup_phase = self._startup_phase
                 await self._finish_driver_diagnostics()
-                if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-                    driver_category = self._driver_diagnostic_category
-                    driver_hint = (
-                        f" driver={driver_category}" if driver_category else ""
-                    )
-                    print(
-                        "computer startup failed: "
-                        f"phase={startup_phase or 'unknown'} "
-                        f"category={_startup_failure_category(error)}"
-                        f"{driver_hint}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                driver_category = self._driver_diagnostic_category
+                driver_hint = f" driver={driver_category}" if driver_category else ""
+                _debug_log(
+                    "computer startup failed: "
+                    f"phase={startup_phase or 'unknown'} "
+                    f"category={_startup_failure_category(error)}"
+                    f"{driver_hint}"
+                )
                 await self._reset()
                 raise ComputerUnavailableError(startup_phase) from None
             finally:
@@ -512,11 +508,7 @@ class ComputerCapability:
         while True:
             phase = self._startup_phase
             if phase != observed:
-                print(
-                    f"computer startup phase: {phase or 'unknown'}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                _debug_log(f"computer startup phase: {phase or 'unknown'}")
                 observed = phase
             await asyncio.sleep(0.25)
 
@@ -634,15 +626,12 @@ class ComputerCapability:
             await self._kill_process(process)
             raise
         if process.returncode != 0:
-            if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-                print(
-                    "computer privacy command failed: "
-                    f"phase={self._startup_phase or 'unknown'} "
-                    f"exit={process.returncode} "
-                    f"driver_home={'present' if self._env.get('CUA_DRIVER_RS_HOME') else 'absent'}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            _debug_log(
+                "computer privacy command failed: "
+                f"phase={self._startup_phase or 'unknown'} "
+                f"exit={process.returncode} "
+                f"driver_home={'present' if self._env.get('CUA_DRIVER_RS_HOME') else 'absent'}"
+            )
             raise ValueError
         return stdout.decode("utf-8")
 
@@ -1163,15 +1152,9 @@ def _debug_cua_scope_rejection(
     **counts: int,
 ) -> None:
     """Emit only bounded CUA scope failure metadata in native debug mode."""
-    if os.environ.get("RELAY_NATIVE_DEBUG") != "1":
-        return
     details = " ".join(f"{key}={value}" for key, value in counts.items())
     suffix = f" {details}" if details else ""
-    print(
-        f"computer CUA list_windows rejected: reason={reason}{suffix}",
-        file=sys.stderr,
-        flush=True,
-    )
+    _debug_log(f"computer CUA list_windows rejected: reason={reason}{suffix}")
 
 
 __all__ = [

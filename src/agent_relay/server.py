@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import os
-import sys
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -29,6 +28,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .auth import credentials_match
 from .config import load_server_runtime
+from .diagnostics import debug as _debug_log
 from .json_bounds import JsonObject, validate_json_bounds
 from .mcp_facade import create_mcp_facade
 from .output_models import ProviderToolResult
@@ -62,12 +62,7 @@ from .registry import (
 
 
 def _debug_agent_frame(category: str) -> None:
-    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-        print(
-            f"server agent frame diagnostic: category={category}",
-            file=sys.stderr,
-            flush=True,
-        )
+    _debug_log(f"server agent frame diagnostic: category={category}")
 
 
 class _SerializedWebSocket:
@@ -302,6 +297,8 @@ class RelaySettings(BaseModel):
         """Load canonical server settings without requiring an Agent identity."""
         env = os.environ if environ is None else environ
         try:
+            if "RELAY_MCP_TOKEN_FILE" in env or "RELAY_AGENT_TOKEN_FILE" in env:
+                raise ValueError
             values: dict[str, object] = {
                 "agent_token": env["RELAY_AGENT_TOKEN"],
                 "mcp_token": env["RELAY_MCP_TOKEN"],

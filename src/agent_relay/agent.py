@@ -11,7 +11,6 @@ import re
 import secrets
 import signal
 import stat
-import sys
 import time
 from collections.abc import Coroutine, Mapping, Sequence
 from ipaddress import ip_address
@@ -36,9 +35,13 @@ from .capabilities.base import (
     CommandFailedError,
     LocalCapability,
 )
-from .capabilities.browser import BrowserStartupError
-from .capabilities.system import SystemCapability
-from .capabilities.terminal import CommandRunnerProtocol, TerminalCapability
+from .capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS, BrowserStartupError
+from .capabilities.system import SYSTEM_PROVIDER_DESCRIPTORS, SystemCapability
+from .capabilities.terminal import (
+    TERMINAL_PROVIDER_DESCRIPTORS,
+    CommandRunnerProtocol,
+    TerminalCapability,
+)
 from .catalog import (
     CUA_REFERENCE_TOOL_NAMES,
     CatalogError,
@@ -47,6 +50,8 @@ from .catalog import (
     local_provider_registrations,
 )
 from .config import PUBLIC_TO_INTERNAL, load_agent_settings
+from .diagnostics import debug as _debug_log
+from .diagnostics import info as _info_log
 from .protocol import (
     MAX_RESULT_JSON_BYTES,
     TOOL_ORDER,
@@ -84,11 +89,7 @@ def _debug_configuration_validation(error: ValidationError) -> None:
         ".".join(str(part) for part in item.get("loc", ())) or "<root>"
         for item in error.errors()
     )
-    print(
-        "agent configuration rejected fields: " + ", ".join(locations),
-        file=sys.stderr,
-        flush=True,
-    )
+    _debug_log("agent configuration rejected fields: " + ", ".join(locations))
 
 
 class ProviderUnavailableError(ConnectionError):
@@ -96,13 +97,12 @@ class ProviderUnavailableError(ConnectionError):
 
 
 def _debug_agent_phase(phase: str) -> None:
-    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-        print(f"agent lifecycle phase: {phase}", file=sys.stderr, flush=True)
+    _debug_log(f"agent lifecycle phase: {phase}")
 
 
 def _operator_agent_info(message: str) -> None:
     """Emit concise lifecycle information without enabling native diagnostics."""
-    print(f"INFO agent: {message}", file=sys.stderr, flush=True)
+    _info_log(message)
 
 
 def safe_server_target(value: str) -> str:
@@ -374,11 +374,10 @@ def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
     return normalized == "true"
 
 
-def _token_from_environment(
-    env: Mapping[str, str], *, token_file_key: str, token_key: str
-) -> str:
-    token_file = env.get(token_file_key)
-    token = _read_token_file(Path(token_file)) if token_file else env.get(token_key)
+def _token_from_environment(env: Mapping[str, str], *, token_key: str) -> str:
+    if "RELAY_MCP_TOKEN_FILE" in env or "RELAY_AGENT_TOKEN_FILE" in env:
+        raise ConfigurationError()
+    token = env.get(token_key)
     if not token:
         raise ConfigurationError()
     return token
@@ -438,7 +437,6 @@ def _canonical_agent_values(
         raise ConfigurationError()
     token = _token_from_environment(
         env,
-        token_file_key="RELAY_AGENT_TOKEN_FILE",
         token_key="RELAY_AGENT_TOKEN",
     )
     workspace = _validated_workspace(Path(workspace_value))
@@ -594,52 +592,6 @@ def _is_explicit_loopback(hostname: str) -> bool:
         return ip_address(hostname).is_loopback
     except ValueError:
         return False
-
-
-def _read_token_file(path: Path) -> str:
-    if os.name == "nt":
-        try:
-            if stat.S_ISLNK(path.lstat().st_mode):
-                raise OSError("agent token file must not be a symlink")
-        except FileNotFoundError:
-            pass
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
-    fd = os.open(path, flags)
-    try:
-        info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or (
-                os.name != "nt"
-                and (
-                    stat.S_IMODE(info.st_mode) != 0o600
-                    or (hasattr(os, "getuid") and info.st_uid != os.getuid())
-                )
-            )
-            or info.st_size > 4096
-        ):
-            raise ValueError("agent token file is not a private regular file")
-        chunks: list[bytes] = []
-        remaining = 4097
-        while remaining:
-            chunk = os.read(fd, remaining)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        if remaining == 0:
-            raise ValueError("agent token file is too large")
-        token = b"".join(chunks).decode("utf-8").strip()
-    finally:
-        os.close(fd)
-    if not token:
-        raise ValueError("agent token file is empty")
-    return token
 
 
 class TextSocket(Protocol):
@@ -896,8 +848,7 @@ class RelayAgent:
                         _debug_agent_phase("connected")
                         await self.run_session(socket)
                 except BrowserStartupError:
-                    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-                        print("agent browser startup failed", file=sys.stderr, flush=True)
+                    _debug_log("agent browser startup failed")
                     raise
                 except asyncio.CancelledError:
                     raise
@@ -915,18 +866,9 @@ class RelayAgent:
                         _operator_agent_info(
                             "connection or authentication failed; retrying"
                         )
-                    if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-                        phase = getattr(error, "startup_phase", None)
-                        detail = (
-                            f" phase-{phase}"
-                            if isinstance(phase, str)
-                            else ""
-                        )
-                        print(
-                            f"agent reconnect: {type(error).__name__}{detail}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                    phase = getattr(error, "startup_phase", None)
+                    detail = f" phase-{phase}" if isinstance(phase, str) else ""
+                    _debug_log(f"agent reconnect: {type(error).__name__}{detail}")
                     pass
                 else:
                     if self._session_registered and not self._stop_event.is_set():
@@ -979,11 +921,37 @@ class RelayAgent:
             if provider_clients:
                 raise ConfigurationError() from None
             wrappers: dict[int, CapabilityProviderClient] = {}
-            for wire_name, capability in capabilities.items():
-                wrapper = wrappers.setdefault(
-                    id(capability), CapabilityProviderClient(capability)
+            builtin_descriptors = {
+                f"{descriptor.provider_name}.{descriptor.tool_name}": descriptor
+                for descriptor in (
+                    *SYSTEM_PROVIDER_DESCRIPTORS,
+                    *TERMINAL_PROVIDER_DESCRIPTORS,
+                    *BROWSER_PROVIDER_DESCRIPTORS,
                 )
-                routes[wire_name] = (wrapper, None)
+            }
+            wrapper_descriptors: dict[int, tuple[ProviderToolDescriptor, ...]] = {}
+            for wire_name, capability in capabilities.items():
+                capability_id = id(capability)
+                if capability_id not in wrapper_descriptors:
+                    wrapper_descriptors[capability_id] = tuple(
+                        descriptor
+                        for descriptor in builtin_descriptors.values()
+                        if f"{descriptor.provider_name}.{descriptor.tool_name}"
+                        in capability.tools
+                    )
+                wrapper = wrappers.setdefault(
+                    capability_id,
+                    CapabilityProviderClient(
+                        capability, wrapper_descriptors[capability_id]
+                    ),
+                )
+                descriptor = (
+                    builtin_descriptors.get(wire_name)
+                    if wire_name in builtin_descriptors
+                    and wrapper_descriptors[capability_id]
+                    else None
+                )
+                routes[wire_name] = (wrapper, descriptor)
             return routes
 
         wrapper_descriptors: dict[int, list[ProviderToolDescriptor]] = {}
@@ -1237,6 +1205,7 @@ class RelayAgent:
                 provider_tool_name = descriptor.tool_name
             else:
                 provider_tool_name = message.tool_name
+            _operator_agent_info(f"Executing tool: {message.tool_name}")
             if isinstance(provider, CapabilityProviderClient):
                 result = await provider.call_message(
                     provider_tool_name,
@@ -1325,8 +1294,7 @@ async def _run_with_runtime_catalog(
 ) -> None:
     """Discover and run with one shared CUA provider lifecycle."""
     def report(phase: str) -> None:
-        if os.environ.get("RELAY_NATIVE_DEBUG") == "1":
-            print(f"agent runtime phase: {phase}", file=sys.stderr, flush=True)
+        _debug_log(f"agent runtime phase: {phase}")
 
     provider = None if catalog is not None else _configured_computer_provider(settings)
     provider_clients: dict[str, ProviderToolClient] = {}
@@ -1379,8 +1347,8 @@ def main(
     args = parser.parse_args(argv)
     if args.agent_token is not None:
         parser.error(
-            "--agent-token is unsafe; use RELAY_AGENT_TOKEN_FILE, "
-            "RELAY_AGENT_TOKEN, or the YAML secret file"
+            "--agent-token is unsafe; use RELAY_AGENT_TOKEN, .env, "
+            "or the secure onboarding input options"
         )
     try:
         if args.config is not None:

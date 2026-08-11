@@ -111,7 +111,7 @@ def test_cua_catalog_construction_debug_is_bounded(tmp_path, capsys) -> None:
 
     assert result is None
     assert capsys.readouterr().err == (
-        "cua catalog construction failed: "
+        "[DEBUG] cua catalog construction failed: "
         "stage=capability-init category=value-error\n"
     )
 

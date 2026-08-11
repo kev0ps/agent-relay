@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import agent, config, onboarding, server, uninstall
 from .catalog import CatalogError, CatalogSnapshot
+from .diagnostics import warning as _warning_log
 
 _HELP = """usage: agent-relay [--config PATH] <command>\n\nAgent Relay\n\nCommands:\n  --help                         show this help and exit\n  --version                      show the program version and exit\n  config init server             create Server YAML and secret files\n  config init agent              create Agent YAML and secret file\n  config get server              print the Server YAML section\n  config get agent               print the Agent YAML section\n  config set server KEY VALUE    update a Server setting\n  config set agent KEY VALUE     update an Agent setting\n  config unset server KEY        restore a Server setting default\n  config unset agent KEY         restore an Agent setting default\n  config validate server         validate the Server configuration\n  config validate agent          validate the Agent configuration\n  tools list                     list the complete public tool inventory\n  tools enable TOOL              enable an Agent tool\n  tools disable TOOL              disable an Agent tool\n  doctor                         run the offline combined configuration audit\n  server                        start the Relay Server\n  agent                         start the outbound Agent\n\nGlobal options:\n  --config PATH                  use a specific YAML configuration file\n\nSecret values must be provided with --prompt, --stdin, or --file.\n"""
 
@@ -21,6 +22,9 @@ _HELP = _HELP.replace(
     "  onboard                       guided Server/Agent first-run setup\n",
 )
 
+_HELP = _HELP.replace(
+    "create Server YAML and secret files", "create Server YAML and private .env"
+).replace("create Agent YAML and secret file", "create Agent YAML and private .env")
 
 _HELP = _HELP.replace(
     "  agent                         start the outbound Agent\n",
@@ -146,7 +150,7 @@ def _parser() -> _Parser:
     uninstall_parser.add_argument(
         "--purge",
         action="store_true",
-        help="also remove the default configuration, secrets, and workspace",
+        help="also remove the default configuration, .env, and workspace",
     )
     uninstall_parser.add_argument(
         "--yes",
@@ -165,11 +169,7 @@ def _secret_from_args(args: argparse.Namespace) -> str:
         except OSError as exc:
             raise config.ConfigError("secret cannot be read from stdin") from exc
     if args.file is not None:
-        try:
-            content = args.file.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise config.ConfigError("secret source file could not be read") from exc
-        return content.strip()
+        return config.read_private_secret(args.file)
     raise config.ConfigError("secret values require --prompt, --stdin, or --file")
 
 
@@ -264,7 +264,7 @@ def _run_config(
                 raise config.ConfigError("a scalar value is required for this setting")
             config.set_value(path, args.scope, args.key, args.value, catalog=catalog)
             if args.scope == "agent" and args.key in {"browser.origin_policy", "browser.policy"} and args.value.strip().lower() in {"any", "'any'", '"any"'}:
-                print("WARNING: browser origin policy any allows all supported HTTP(S) origins", file=sys.stderr)
+                _warning_log("browser origin policy any allows all supported HTTP(S) origins")
         print(f"updated {args.scope}.{args.key}")
         return 0
     if args.config_command == "unset":
@@ -299,7 +299,7 @@ def _confirm_uninstall_purge(data_dir: Path, *, assume_yes: bool) -> bool:
         raise config.ConfigError("--purge requires --yes when stdin is not interactive")
     try:
         answer = input(
-            f"Remove Agent Relay configuration, secrets, and workspace at {data_dir}? [y/N] "
+            f"Remove Agent Relay configuration, .env, and workspace at {data_dir}? [y/N] "
         )
     except (EOFError, OSError) as exc:
         raise config.ConfigError("could not read the purge confirmation") from exc
@@ -330,7 +330,7 @@ def _run_uninstall(args: argparse.Namespace, path: Path) -> int:
     else:
         print(
             "scheduled Agent Relay uninstallation after this process exits; "
-            "stop other Agent Relay processes first if it remains installed"
+            "it retries for up to 15 seconds if Windows still holds a lock"
         )
         print(f"uninstall status log: {uninstall_log}")
 
@@ -351,7 +351,7 @@ def _agent_environment_is_available(path: Path) -> bool:
         and not path.exists()
         and bool(os.environ.get("RELAY_URL"))
         and bool(os.environ.get("RELAY_AGENT_WORKSPACE"))
-        and bool(os.environ.get("RELAY_AGENT_TOKEN") or os.environ.get("RELAY_AGENT_TOKEN_FILE"))
+        and bool(os.environ.get("RELAY_AGENT_TOKEN"))
     )
 
 

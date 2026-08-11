@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/kev0ps/agent-relay/main/scripts/ins
 It installs or verifies `uv` and managed Python, installs the Agent Relay
 runtime dependencies through `uv tool install`, and asks whether to initialize
 a local Server and Agent. A new Agent starts with an empty allowlist; an
-existing Agent section keeps its custom token path and allowlist. For a release,
+existing Agent section keeps its identity and allowlist. For a release,
 use an immutable tag for both the script and source. Inspect a downloaded script
 before executing it when the source is not trusted; a mutable `main` URL is not
 an integrity pin.
@@ -30,7 +30,7 @@ its uv tool environment while keeping the local configuration:
 agent-relay uninstall
 ```
 
-To also remove the default configuration, private secrets, and workspace under
+To also remove the default configuration, private `.env`, and workspace under
 `~/.agent-relay`, request an explicit purge:
 
 ```sh
@@ -38,7 +38,7 @@ agent-relay uninstall --purge
 ```
 
 The purge prompts for confirmation; use `--yes` only for non-interactive
-automation. Custom configurations and any secrets or workspaces outside
+automation. Custom configurations and any `.env` files or workspaces outside
 `~/.agent-relay` are preserved. The command does not remove `uv`, managed
 Python, or the shared uv tool bin directory.
 
@@ -58,11 +58,10 @@ uv run --frozen agent-relay config set server host 127.0.0.1
 uv run --frozen agent-relay config init agent --from-server --no-tools
 ```
 
-`config init server` creates the shared YAML file and two private Server secret
-files. `config init agent` creates or reuses the persistent Agent identity, creates
+`config init server` creates the shared YAML file and a private `.env` beside it.
+`config init agent` creates or reuses the persistent Agent identity, creates
 `./workspace` relative to the configuration file, and reads the effective
-Server Agent token without echoing it. This honors a configured relative or
-absolute token path and supported environment overrides. To select tools
+Server Agent token without echoing it. To select tools
 interactively, omit `--no-tools`; submitting an empty selection is valid.
 
 The same setup can be guided by the onboarding command:
@@ -74,7 +73,8 @@ uv run --frozen agent-relay onboard
 It offers Local Server + Agent, Server-only, and Agent connected to a remote
 Server. `--role server`, `--role agent`, and `--role local` select a flow for
 automation or installer integration. Use `--non-interactive` with an explicit
-role and secret-file/stdin options; it never prints a credential. Validation is
+role and one-time secret-file/stdin import options; values are copied into `.env`
+and never printed. Validation is
 offline unless `--check` is explicitly selected for the remote Agent flow.
 
 The initial Agent tool allowlist is empty. Select tools interactively during
@@ -91,10 +91,10 @@ uv run --frozen agent-relay doctor
 For complete copyable Terminal, Browser, CUA, and combined allowlists, see
 [`tools.md`](tools.md).
 
-Tokens are neither displayed nor placed in the repository. They are separate
-files with mode `0600`, owned by the current user, and rejected if they are
-symlinks. The Server's `agent_token` and the Agent's `agent_token` files contain
-the same value but are physically distinct files.
+Tokens are neither displayed nor placed in the repository. They are stored in a
+private `.env` beside `config.yaml`, with mode `0600` and no shell expansion.
+The Server's `RELAY_AGENT_TOKEN` and the Agent's `RELAY_AGENT_TOKEN` use the
+same value. Process environment variables override `.env` when explicitly set.
 
 Use `--config PATH` when the default path is not appropriate:
 
@@ -137,9 +137,6 @@ server:
   host: 127.0.0.1
   port: 8000
   allow_insecure_ws: true
-  secrets:
-    mcp_token_file: ./secrets/server/mcp_token
-    agent_token_file: ./secrets/server/agent_token
 
 agent:
   identity:
@@ -148,17 +145,16 @@ agent:
   workspace: ./workspace
   tools:
     allowlist: []
-  secrets:
-    agent_token_file: ./secrets/agent/agent_token
   browser:
     origin_policy: allowlist
     allowed_origins: []
 ```
 
 Relative paths are resolved from the directory containing `config.yaml`. Token
-values never belong in this file. For Docker, canonical `RELAY_*` environment
-variables override YAML values, including `RELAY_MCP_TOKEN` and
-`RELAY_AGENT_TOKEN`; legacy `AGENT_RELAY_*` variables are not supported.
+values never belong in this file; they belong in the adjacent `.env`, using
+only `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN`. For Docker, canonical
+`RELAY_*` environment variables override `.env`; legacy `AGENT_RELAY_*`
+variables are not supported.
 
 The Browser `origin_policy` defaults to `allowlist`; `any` is an explicit,
 warning-producing choice during configuration and permits only HTTP(S) pages.

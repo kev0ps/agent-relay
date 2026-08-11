@@ -1,4 +1,4 @@
-"""Canonical YAML configuration, secret-file handling, and CLI-facing policy helpers."""
+"""Canonical YAML configuration, private dotenv credentials, and CLI policy helpers."""
 
 from __future__ import annotations
 
@@ -27,6 +27,9 @@ from .catalog import discover_local_catalog as _discover_local_catalog
 from .protocol import TOOL_ORDER
 
 CONFIG_DIR_NAME = ".agent-relay"
+DOTENV_FILENAME = ".env"
+DOTENV_MAX_BYTES = 4096
+DOTENV_KEYS = frozenset({"RELAY_MCP_TOKEN", "RELAY_AGENT_TOKEN"})
 DEFAULT_CONFIG_PATH = Path.home() / CONFIG_DIR_NAME / "config.yaml"
 PUBLIC_VERSION = "0.1.0"
 SERVER_LOCAL_TOOL = "relay_device_status"
@@ -99,10 +102,6 @@ _SERVER_DEFAULTS: dict[str, Any] = {
     "host": "0.0.0.0",
     "port": 8000,
     "allow_insecure_ws": True,
-    "secrets": {
-        "mcp_token_file": "./secrets/server/mcp_token",
-        "agent_token_file": "./secrets/server/agent_token",
-    },
     "mcp": {"allowed_hosts": [], "allowed_origins": []},
     "runtime": {
         "min_timeout_seconds": 0.1,
@@ -116,7 +115,6 @@ _AGENT_DEFAULTS: dict[str, Any] = {
     "relay_url": "ws://127.0.0.1:8000/ws/agent",
     "workspace": "./workspace",
     "tools": {"allowlist": []},
-    "secrets": {"agent_token_file": "./secrets/agent/agent_token"},
     "browser": {
         "user_data_dir": None,
         "origin_policy": "allowlist",
@@ -152,8 +150,6 @@ _CONFIG_KEYS: dict[str, frozenset[str]] = {
             "host",
             "port",
             "allow_insecure_ws",
-            "secrets.mcp_token_file",
-            "secrets.agent_token_file",
             "mcp.allowed_hosts",
             "mcp.allowed_origins",
             "runtime.min_timeout_seconds",
@@ -169,7 +165,6 @@ _CONFIG_KEYS: dict[str, frozenset[str]] = {
             "allow_insecure_ws",
             "workspace",
             "tools.allowlist",
-            "secrets.agent_token_file",
             "browser.user_data_dir",
             "browser.origin_policy",
             "browser.allowed_origins",
@@ -335,7 +330,12 @@ def _write_private_text(path: Path, content: str, *, overwrite: bool = True) -> 
 
 
 def _read_private_text(path: Path) -> str:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         fd = os.open(path, flags)
     except OSError as exc:
@@ -357,6 +357,132 @@ def _read_private_text(path: Path) -> str:
     if not value:
         raise ConfigError("required secret file is empty")
     return value
+
+
+def dotenv_path(path: str | Path | None) -> Path:
+    """Return the private credential file next to the selected YAML file."""
+    return _config_path(path).parent / DOTENV_FILENAME
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    """Read the deliberately small, non-expanding Agent Relay credential file."""
+    if not path.exists() and not path.is_symlink():
+        return {}
+    _assert_no_symlink(path)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ConfigError(".env file is unavailable") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigError(".env file is not a private regular file")
+        if info.st_size > DOTENV_MAX_BYTES:
+            raise ConfigError(".env file is too large")
+        if os.name != "nt" and (
+            stat.S_IMODE(info.st_mode) != 0o600
+            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        ):
+            raise ConfigError(".env file is not private")
+        raw = os.read(fd, DOTENV_MAX_BYTES + 1)
+    except OSError as exc:
+        raise ConfigError(".env file could not be read") from exc
+    finally:
+        os.close(fd)
+    if len(raw) > DOTENV_MAX_BYTES:
+        raise ConfigError(".env file is too large")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(".env file is not valid UTF-8") from exc
+    values: dict[str, str] = {}
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "\x00" in line or "=" not in line:
+            raise ConfigError(f".env line {line_number} is invalid")
+        raw_key, raw_value = line.split("=", 1)
+        key = raw_key.strip()
+        value = raw_value.strip()
+        if raw_key != key or key not in DOTENV_KEYS:
+            raise ConfigError(f".env key is not allowed: {key or '<empty>'}")
+        if key in values:
+            raise ConfigError(f".env key is duplicated: {key}")
+        if not value:
+            raise ConfigError(f".env value is empty: {key}")
+        values[key] = value
+    return values
+
+
+def _reject_legacy_secret_sections(document: Mapping[str, Any]) -> None:
+    for scope in ("server", "agent"):
+        section = document.get(scope)
+        if isinstance(section, Mapping) and "secrets" in section:
+            raise ConfigError(
+                "legacy secrets configuration is unsupported; create .env next to the YAML file"
+            )
+
+
+def _write_dotenv(path: Path, values: Mapping[str, str]) -> None:
+    unknown = set(values) - DOTENV_KEYS
+    if unknown:
+        raise ConfigError(".env contains an unsupported secret key")
+    for key, value in values.items():
+        if not isinstance(value, str) or not value or any(
+            character in value for character in "\r\n\x00"
+        ):
+            raise ConfigError(f".env value is invalid: {key}")
+    content = "".join(
+        f"{key}={values[key]}\n"
+        for key in ("RELAY_MCP_TOKEN", "RELAY_AGENT_TOKEN")
+        if key in values
+    )
+    _write_private_text(path, content)
+
+
+def _update_dotenv(path: Path, key: str, value: str | None) -> None:
+    if key not in DOTENV_KEYS:
+        raise ConfigError("unsupported .env secret key")
+    values = _read_dotenv(path)
+    if value is None:
+        values.pop(key, None)
+    else:
+        if not value:
+            raise ConfigError("secret cannot be empty")
+        values[key] = value
+    _write_dotenv(path, values)
+
+
+def has_token_source(
+    path: str | Path | None, key: Literal["RELAY_MCP_TOKEN", "RELAY_AGENT_TOKEN"],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Report whether a non-empty process or dotenv token is available."""
+    effective_env = os.environ if env is None else env
+    if key in effective_env:
+        return bool(effective_env[key])
+    try:
+        return key in _read_dotenv(dotenv_path(path))
+    except ConfigError:
+        return False
+
+
+def _token_source_present(
+    path: str | Path | None,
+    key: Literal["RELAY_MCP_TOKEN", "RELAY_AGENT_TOKEN"],
+    *,
+    env: Mapping[str, str],
+) -> bool:
+    """Report whether a source exists, including an explicitly empty env value."""
+    return key in env or has_token_source(path, key, env=env)
 
 
 def _write_config(path: Path, document: Mapping[str, Any]) -> None:
@@ -477,6 +603,11 @@ def _env_bool(env: Mapping[str, str], key: str, default: bool | str) -> bool | s
     except ConfigError:
         return value
 
+
+def _reject_token_file_environment(env: Mapping[str, str]) -> None:
+    if "RELAY_MCP_TOKEN_FILE" in env or "RELAY_AGENT_TOKEN_FILE" in env:
+        raise ConfigError("*_TOKEN_FILE is no longer supported; use .env")
+
 def _effective_server(document: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     section = _deep_merge(_default_document("server"), document.get("server", {}))
     if (value := _env_value(env, "RELAY_SERVER_HOST")) is not None:
@@ -593,7 +724,9 @@ def discover_local_catalog(
     """Discover local providers using the canonical Agent config overlay."""
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     document = _load_yaml(config_path, required=False)
+    _reject_legacy_secret_sections(document)
     agent = _effective_agent(document, effective_env)
     catalog_env = dict(effective_env)
 
@@ -643,17 +776,6 @@ def discover_local_catalog(
     return _discover_local_catalog(env=catalog_env, allowlist=allowlist)
 
 
-def _secret_path(document: Mapping[str, Any], scope: Literal["server", "agent"], name: str, path: Path) -> Path:
-    section = document.get(scope)
-    if not isinstance(section, Mapping):
-        section = {}
-    secrets_section = section.get("secrets", {})
-    if not isinstance(secrets_section, Mapping):
-        raise ConfigError("secrets configuration must be a mapping")
-    key = f"{name}_token_file"
-    return _relative_path(secrets_section.get(key), path)
-
-
 def _secret_value(
     document: Mapping[str, Any],
     scope: Literal["server", "agent"],
@@ -662,20 +784,23 @@ def _secret_value(
     env: Mapping[str, str],
 ) -> str:
     env_key = "RELAY_MCP_TOKEN" if name == "mcp" else "RELAY_AGENT_TOKEN"
-    env_file_key = "RELAY_MCP_TOKEN_FILE" if name == "mcp" else "RELAY_AGENT_TOKEN_FILE"
+    env_file_key = (
+        "RELAY_MCP_TOKEN_FILE" if name == "mcp" else "RELAY_AGENT_TOKEN_FILE"
+    )
+    if env_file_key in env:
+        raise ConfigError(f"{env_file_key} is no longer supported; use .env")
     if env_key in env:
         value = env[env_key]
         if not value:
             raise ConfigError("required token is empty")
         return value
-    if env_file_key in env:
-        if not env[env_file_key]:
-            raise ConfigError("required token file path is empty")
-        token_path = Path(env[env_file_key]).expanduser()
-        _assert_no_symlink(token_path)
-    else:
-        token_path = _secret_path(document, scope, name, path)
-    return _read_private_text(token_path)
+    values = _read_dotenv(path.parent / DOTENV_FILENAME)
+    try:
+        return values[env_key]
+    except KeyError as exc:
+        raise ConfigError(
+            f"required token is unavailable; set {env_key} or create {DOTENV_FILENAME}"
+        ) from exc
 
 
 def read_private_secret(path: str | Path) -> str:
@@ -693,11 +818,13 @@ def read_server_agent_token(
     """Read the effective Server-to-Agent credential without exposing its path."""
     config_path = _config_path(path)
     document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
     if "server" not in document:
         raise ConfigError("server configuration is not initialized")
     if not isinstance(document["server"], Mapping):
         raise ConfigError("server configuration must be a mapping")
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     return _secret_value(document, "server", "agent", config_path, effective_env)
 
 
@@ -770,7 +897,19 @@ def _validate_known_keys(
         for key, child in value.items():
             path = f"{prefix}.{key}" if prefix else str(key)
             if path not in allowed and not any(item.startswith(path + ".") for item in allowed):
-                issues.append(ValidationIssue("ERROR", f"unknown {scope} configuration key: {path}"))
+                if path == "secrets" or path.startswith("secrets."):
+                    issues.append(
+                        ValidationIssue(
+                            "ERROR",
+                            "legacy secrets configuration is unsupported; create .env next to the YAML file",
+                        )
+                    )
+                else:
+                    issues.append(
+                        ValidationIssue(
+                            "ERROR", f"unknown {scope} configuration key: {path}"
+                        )
+                    )
                 continue
             if isinstance(child, Mapping):
                 walk(child, path)
@@ -809,35 +948,50 @@ def _validate_server(
         issues.append(ValidationIssue("ERROR", "allow_insecure_ws must be boolean"))
     if insecure and isinstance(host, str) and host not in {"127.0.0.1", "::1", "localhost"}:
         issues.append(ValidationIssue("WARNING", "allow_insecure_ws is enabled on a non-loopback bind"))
-    secrets_section = section.get("secrets")
-    if not isinstance(secrets_section, Mapping):
-        issues.append(ValidationIssue("ERROR", "server secrets section is missing"))
-    else:
-        token_values: dict[str, str] = {}
-        for name in ("mcp", "agent"):
-            env_key = "RELAY_MCP_TOKEN" if name == "mcp" else "RELAY_AGENT_TOKEN"
-            env_file_key = "RELAY_MCP_TOKEN_FILE" if name == "mcp" else "RELAY_AGENT_TOKEN_FILE"
-            if env_key in env:
-                if not env[env_key]:
-                    issues.append(ValidationIssue("ERROR", f"{name} token is empty"))
-                else:
-                    issues.append(ValidationIssue("INFO", f"{name}_token source=environment"))
-                    token_values[name] = env[env_key]
-                continue
-            try:
-                if env_file_key in env:
-                    if not env[env_file_key]:
-                        raise ConfigError("required token file path is empty")
-                    token_path = Path(env[env_file_key]).expanduser()
-                    _assert_no_symlink(token_path)
-                else:
-                    token_path = _secret_path(document, "server", name, path)
-                token_values[name] = _read_private_text(token_path)
-                issues.append(ValidationIssue("INFO", f"{name}_token_file={token_path}"))
-            except ConfigError as exc:
-                issues.append(ValidationIssue("ERROR", f"{name} token file is unavailable ({exc})"))
-        if len(token_values) == 2 and token_values["mcp"] == token_values["agent"]:
-            issues.append(ValidationIssue("ERROR", "mcp and agent tokens must be distinct"))
+    token_values: dict[str, str] = {}
+    dotenv_error: str | None = None
+    try:
+        dotenv_values = _read_dotenv(path.parent / DOTENV_FILENAME)
+    except ConfigError as exc:
+        dotenv_values = {}
+        dotenv_error = str(exc)
+    for name in ("mcp", "agent"):
+        env_key = "RELAY_MCP_TOKEN" if name == "mcp" else "RELAY_AGENT_TOKEN"
+        env_file_key = (
+            "RELAY_MCP_TOKEN_FILE" if name == "mcp" else "RELAY_AGENT_TOKEN_FILE"
+        )
+        if env_file_key in env:
+            issues.append(
+                ValidationIssue(
+                    "ERROR", f"{env_file_key} is no longer supported; use .env"
+                )
+            )
+        elif env_key in env:
+            if not env[env_key]:
+                issues.append(ValidationIssue("ERROR", f"{name} token is empty"))
+            else:
+                issues.append(
+                    ValidationIssue("INFO", f"{name}_token source=environment")
+                )
+                token_values[name] = env[env_key]
+        elif dotenv_error is not None:
+            issues.append(
+                ValidationIssue(
+                    "ERROR", f"{name} token is unavailable ({dotenv_error})"
+                )
+            )
+        elif env_key in dotenv_values:
+            issues.append(ValidationIssue("INFO", f"{name}_token source=.env"))
+            token_values[name] = dotenv_values[env_key]
+        else:
+            issues.append(
+                ValidationIssue(
+                    "ERROR",
+                    f"{name} token is unavailable; set {env_key} or create .env",
+                )
+            )
+    if len(token_values) == 2 and token_values["mcp"] == token_values["agent"]:
+        issues.append(ValidationIssue("ERROR", "mcp and agent tokens must be distinct"))
     try:
         _validate_runtime(section.get("runtime"), server=True)
     except ConfigError:
@@ -921,8 +1075,10 @@ def _validate_agent(
     except ConfigError as exc:
         issues.append(ValidationIssue("ERROR", f"workspace is invalid ({exc})"))
     try:
+        _reject_token_file_environment(env)
         _secret_value(document, "agent", "agent", path, env)
-        issues.append(ValidationIssue("INFO", "agent_token source=secret-file-or-environment"))
+        source = "environment" if "RELAY_AGENT_TOKEN" in env else ".env"
+        issues.append(ValidationIssue("INFO", f"agent_token source={source}"))
     except ConfigError as exc:
         issues.append(ValidationIssue("ERROR", f"agent token is unavailable ({exc})"))
     tools = section.get("tools")
@@ -1020,14 +1176,15 @@ def validate_document(
 ) -> ValidationReport:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     try:
         document = _load_yaml(config_path)
     except ConfigError as exc:
         if require:
             raise
-        if scope == "server" and effective_env.get("RELAY_MCP_TOKEN") and effective_env.get("RELAY_AGENT_TOKEN"):
+        if scope == "server" and _token_source_present(path, "RELAY_MCP_TOKEN", env=effective_env) and _token_source_present(path, "RELAY_AGENT_TOKEN", env=effective_env):
             document = {"server": _default_document("server")}
-        elif scope == "agent" and effective_env.get("RELAY_URL") and effective_env.get("RELAY_AGENT_WORKSPACE"):
+        elif scope == "agent" and effective_env.get("RELAY_URL") and effective_env.get("RELAY_AGENT_WORKSPACE") and _token_source_present(path, "RELAY_AGENT_TOKEN", env=effective_env):
             document = {"agent": _default_document("agent")}
         else:
             return ValidationReport(scope, (ValidationIssue("ERROR", str(exc)),))
@@ -1114,16 +1271,18 @@ def init_config(
 ) -> Path:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     document = _load_yaml(config_path, required=False)
+    _reject_legacy_secret_sections(document)
+    dotenv_file = config_path.parent / DOTENV_FILENAME
+    dotenv_values = _read_dotenv(dotenv_file)
     defaults = _default_document(scope)
     existing = document.get(scope)
     if force and isinstance(existing, Mapping):
         preserved = {
             key: copy.deepcopy(existing[key])
             for key in (
-                ("secrets",)
-                if scope == "server"
-                else ("identity", "tools", "secrets")
+                () if scope == "server" else ("identity", "tools")
             )
             if key in existing
         }
@@ -1131,17 +1290,37 @@ def init_config(
     else:
         section = _deep_merge(defaults, existing if isinstance(existing, Mapping) else {})
     if scope == "server":
-        document["server"] = section
-        _write_config(config_path, document)
         for name in ("mcp", "agent"):
             env_token = "RELAY_MCP_TOKEN" if name == "mcp" else "RELAY_AGENT_TOKEN"
-            if env_token in effective_env:
-                if not effective_env[env_token]:
-                    raise ConfigError(f"{name} token is empty")
-                continue
-            token_path = _secret_path(document, "server", name, config_path)
-            if not token_path.exists():
-                _write_private_text(token_path, secrets.token_urlsafe(32), overwrite=False)
+            env_file_key = (
+                "RELAY_MCP_TOKEN_FILE"
+                if name == "mcp"
+                else "RELAY_AGENT_TOKEN_FILE"
+            )
+            if env_file_key in effective_env:
+                raise ConfigError(f"{env_file_key} is no longer supported; use .env")
+            if env_token in effective_env and not effective_env[env_token]:
+                raise ConfigError(f"{name} token is empty")
+        generated: dict[str, str] = {}
+        for name in ("mcp", "agent"):
+            env_token = "RELAY_MCP_TOKEN" if name == "mcp" else "RELAY_AGENT_TOKEN"
+            if env_token not in effective_env and env_token not in dotenv_values:
+                generated[env_token] = secrets.token_urlsafe(32)
+        effective_tokens = {
+            key: effective_env.get(key, dotenv_values.get(key, generated.get(key)))
+            for key in DOTENV_KEYS
+        }
+        if (
+            effective_tokens["RELAY_MCP_TOKEN"] is not None
+            and effective_tokens["RELAY_MCP_TOKEN"]
+            == effective_tokens["RELAY_AGENT_TOKEN"]
+        ):
+            raise ConfigError("mcp and agent tokens must be distinct")
+        document["server"] = section
+        _write_config(config_path, document)
+        if generated:
+            dotenv_values.update(generated)
+            _write_dotenv(dotenv_file, dotenv_values)
     else:
         if relay_url is not None:
             section["relay_url"] = relay_url
@@ -1149,10 +1328,9 @@ def init_config(
             section["workspace"] = str(workspace)
         if allow_insecure_ws is not None:
             section["allow_insecure_ws"] = allow_insecure_ws
+        _reject_token_file_environment(effective_env)
         if "RELAY_AGENT_TOKEN" in effective_env and not effective_env["RELAY_AGENT_TOKEN"]:
             raise ConfigError("agent token is empty")
-        if "RELAY_AGENT_TOKEN_FILE" in effective_env and not effective_env["RELAY_AGENT_TOKEN_FILE"]:
-            raise ConfigError("agent token file path is empty")
         if tools is not None:
             if catalog is not None:
                 try:
@@ -1193,18 +1371,18 @@ def init_config(
         _write_config(config_path, document)
         if token is None and use_stdin:
             token = sys.stdin.readline().strip()
-        if token is None and "RELAY_AGENT_TOKEN" not in effective_env:
-            secret_path = _secret_path(document, "agent", "agent", config_path)
-            try:
-                token = _read_private_text(secret_path)
-            except ConfigError:
-                token = None
+        if (
+            token is None
+            and existing is not None
+            and "RELAY_AGENT_TOKEN" not in effective_env
+        ):
+            token = dotenv_values.get("RELAY_AGENT_TOKEN")
         if token is None:
             token = getpass.getpass("Agent token: ").strip()
         if not token:
             raise ConfigError("agent token cannot be empty")
         if "RELAY_AGENT_TOKEN" not in effective_env:
-            _write_private_text(_secret_path(document, "agent", "agent", config_path), token)
+            _update_dotenv(dotenv_file, "RELAY_AGENT_TOKEN", token)
     return config_path
 
 
@@ -1301,12 +1479,14 @@ def tool_statuses(
 ) -> list[tuple[ToolSpec, str]]:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     try:
         document = _load_yaml(config_path)
     except ConfigError:
         if not (effective_env.get("RELAY_URL") and effective_env.get("RELAY_AGENT_WORKSPACE")):
             raise
         document = {"agent": _default_document("agent")}
+    _reject_legacy_secret_sections(document)
     agent = _effective_agent(document, effective_env)
     tools = agent.get("tools", {})
     allowlist = list(tools.get("allowlist", []) if isinstance(tools, Mapping) else [])
@@ -1370,6 +1550,7 @@ def update_tool(
         raise ConfigError(f"unknown Agent tool: {name}")
     config_path = _config_path(path)
     document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
     if "agent" not in document or not isinstance(document["agent"], Mapping):
         raise ConfigError("agent configuration is not initialized")
     if catalog is None and not _tool_is_available(
@@ -1395,6 +1576,7 @@ PUBLIC_TOOLS = frozenset(PUBLIC_TO_INTERNAL) | {SERVER_LOCAL_TOOL}
 def get_section(path: str | Path | None, scope: Literal["server", "agent"]) -> dict[str, Any]:
     config_path = _config_path(path)
     document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
     if scope not in document:
         raise ConfigError(f"{scope} configuration is not initialized")
     section = document[scope]
@@ -1435,9 +1617,6 @@ def _delete_nested(section: dict[str, Any], key: str) -> None:
 
 def _canonical_key(scope: str, key: str) -> str:
     aliases = {
-        ("server", "mcp_token"): "secrets.mcp_token_file",
-        ("server", "agent_token"): "secrets.agent_token_file",
-        ("agent", "agent_token"): "secrets.agent_token_file",
         ("agent", "agent_id"): "identity.id",
         ("agent", "server_url"): "relay_url",
         ("agent", "workspace_dir"): "workspace",
@@ -1455,14 +1634,13 @@ def set_value(
 ) -> None:
     config_path = _config_path(path)
     document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
     if not isinstance(document.get(scope), Mapping):
         raise ConfigError(f"{scope} configuration is not initialized")
     section = copy.deepcopy(dict(document[scope]))
     canonical = _canonical_key(scope, key)
     if canonical not in _CONFIG_KEYS[scope]:
         raise ConfigError(f"unknown {scope} configuration key: {key}")
-    if canonical.endswith("_token_file") and key in {"mcp_token", "agent_token"}:
-        raise ConfigError("secret values must be supplied with --prompt, --stdin, or --file")
     parsed_value: Any = _parse_value(value)
     if canonical in {"tools.allowlist", "browser.allowed_origins"} and isinstance(parsed_value, str):
         parsed_value = [item.strip() for item in parsed_value.split(",") if item.strip()]
@@ -1507,10 +1685,13 @@ def set_secret(
         raise ConfigError("unknown Server secret")
     config_path = _config_path(path)
     document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
     if not isinstance(document.get(scope), Mapping):
         raise ConfigError(f"{scope} configuration is not initialized")
-    secret_name = "mcp" if name == "mcp_token" else "agent"
-    _write_private_text(_secret_path(document, scope, secret_name, config_path), value)
+    if scope == "agent" and name != "agent_token":
+        raise ConfigError("Agent configuration only accepts agent_token")
+    key = "RELAY_MCP_TOKEN" if name == "mcp_token" else "RELAY_AGENT_TOKEN"
+    _update_dotenv(dotenv_path(config_path), key, value)
 
 
 def unset_value(path: str | Path | None, scope: Literal["server", "agent"], key: str) -> None:
@@ -1518,17 +1699,20 @@ def unset_value(path: str | Path | None, scope: Literal["server", "agent"], key:
         raise ConfigError("Agent configuration only accepts agent_token")
     config_path = _config_path(path)
     document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
     if not isinstance(document.get(scope), Mapping):
         raise ConfigError(f"{scope} configuration is not initialized")
+    if key in {"mcp_token", "agent_token"}:
+        if scope == "agent" and key == "mcp_token":
+            raise ConfigError("Agent configuration only accepts agent_token")
+        if scope == "server" and key not in {"mcp_token", "agent_token"}:
+            raise ConfigError("unknown Server secret")
+        dotenv_key = "RELAY_MCP_TOKEN" if key == "mcp_token" else "RELAY_AGENT_TOKEN"
+        _update_dotenv(dotenv_path(config_path), dotenv_key, None)
+        return
     canonical = _canonical_key(scope, key)
     if canonical not in _CONFIG_KEYS[scope]:
         raise ConfigError(f"unknown {scope} configuration key: {key}")
-    if canonical.endswith("_token_file") and key in {"mcp_token", "agent_token"}:
-        name = "mcp" if key == "mcp_token" else "agent"
-        secret_path = _secret_path(document, scope, name, config_path)
-        if secret_path.exists():
-            _write_private_text(secret_path, "")
-        return
     section = copy.deepcopy(dict(document[scope]))
     _delete_nested(section, canonical)
     defaults = _default_document(scope)
@@ -1545,13 +1729,14 @@ def load_agent_settings(
 ) -> Any:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     try:
         document = _load_yaml(config_path)
     except ConfigError:
         if not (
             effective_env.get("RELAY_URL")
             and effective_env.get("RELAY_AGENT_WORKSPACE")
-            and (effective_env.get("RELAY_AGENT_TOKEN") or effective_env.get("RELAY_AGENT_TOKEN_FILE"))
+            and _token_source_present(path, "RELAY_AGENT_TOKEN", env=effective_env)
         ):
             raise
         document = {"agent": _default_document("agent")}
@@ -1565,7 +1750,7 @@ def load_agent_settings(
         defer_tool_validation=defer_tool_validation,
     )
     if not report.valid:
-        raise ConfigError("invalid agent configuration")
+        raise ConfigError(_invalid_configuration_message("agent", report))
     section = _effective_agent(document, effective_env)
     identity = section["identity"]["id"]
     browser = section["browser"]
@@ -1623,12 +1808,13 @@ def load_agent_settings(
 def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | None = None) -> ServerRuntime:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
+    _reject_token_file_environment(effective_env)
     try:
         document = _load_yaml(config_path)
     except ConfigError:
         if not (
-            (effective_env.get("RELAY_MCP_TOKEN") or effective_env.get("RELAY_MCP_TOKEN_FILE"))
-            and (effective_env.get("RELAY_AGENT_TOKEN") or effective_env.get("RELAY_AGENT_TOKEN_FILE"))
+            _token_source_present(path, "RELAY_MCP_TOKEN", env=effective_env)
+            and _token_source_present(path, "RELAY_AGENT_TOKEN", env=effective_env)
         ):
             raise
         document = {"server": _default_document("server")}

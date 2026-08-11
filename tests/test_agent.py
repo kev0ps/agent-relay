@@ -17,7 +17,6 @@ from agent_relay.agent import (
     RelayAgent,
     _private_local_path,
     _read_agent_id_file,
-    _read_token_file,
     _run_with_runtime_catalog,
     _run_with_signal_handlers,
     check_connection,
@@ -38,13 +37,13 @@ def _canonical_agent_environment(
 ) -> tuple[dict[str, str], Path]:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
-    token_file = tmp_path / "agent.token"
-    token_file.write_text("canonical-agent-secret\n", encoding="utf-8")
+    token_file = tmp_path / ".env"
+    token_file.write_text("RELAY_AGENT_TOKEN=canonical-agent-secret\n", encoding="utf-8")
     token_file.chmod(0o600)
     return (
         {
             "RELAY_URL": url,
-            "RELAY_AGENT_TOKEN_FILE": str(token_file),
+            "RELAY_AGENT_TOKEN": "canonical-agent-secret",
             "RELAY_AGENT_WORKSPACE": str(workspace),
         },
         token_file,
@@ -489,7 +488,7 @@ def test_agent_configuration_debug_diagnostics_redact_values(
     assert "secret-value" not in diagnostic
 
 
-def test_canonical_agent_environment_uses_private_token_file_and_redacts_secret(
+def test_canonical_agent_environment_uses_token_and_redacts_secret(
     tmp_path: Path,
 ) -> None:
     environment, token_file = _canonical_agent_environment(tmp_path)
@@ -1010,6 +1009,170 @@ def test_agent_reports_operator_lifecycle_at_info_without_secrets(
     assert "secret-token" not in output
     assert "token=secret" not in output
     assert "wss://relay.example.test" in output
+
+
+def test_agent_reports_executed_tool_at_info_without_request_data(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def scenario() -> None:
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "sensitive-request-id",
+                        "tool_name": "system.ping",
+                        "arguments": {},
+                    }
+                ),
+            ]
+        )
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[_Capability("system.ping", result={"pong": True})],
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if any(message.get("type") == "result" for message in socket.sent):
+                break
+            await asyncio.sleep(0.001)
+        agent.stop()
+        await task
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().err
+    assert "[INFO] Executing tool: system.ping" in output
+    assert "sensitive-request-id" not in output
+
+
+def test_agent_does_not_log_rejected_tool_arguments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def scenario() -> None:
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "rejected-request",
+                        "tool_name": "system.ping",
+                        "arguments": {"secret": "rejected-secret"},
+                    }
+                ),
+            ]
+        )
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[_Capability("system.ping", result={"pong": True})],
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if any(message.get("type") == "error" for message in socket.sent):
+                break
+            await asyncio.sleep(0.001)
+        agent.stop()
+        await task
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().err
+    assert "Executing tool: system.ping" not in output
+    assert "rejected-request" not in output
+    assert "rejected-secret" not in output
+
+
+def test_agent_logs_dynamic_tool_after_validation_without_payload(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    descriptor = ProviderToolDescriptor(
+        provider_name="custom",
+        tool_name="echo",
+        public_name="relay_custom_echo",
+        description="echo",
+        input_schema={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        risk="read_only",
+    )
+
+    class Provider:
+        async def list_tools(self) -> list[ProviderToolDescriptor]:
+            return [descriptor]
+
+        async def call_tool(
+            self, tool_name: str, arguments: Mapping[str, JsonValue]
+        ) -> ProviderToolResult:
+            assert tool_name == "echo"
+            assert arguments == {"value": "dynamic-secret"}
+            return ProviderToolResult(content=[], structuredContent={"ok": True})
+
+        async def close(self) -> None:
+            return None
+
+    async def scenario() -> None:
+        provider = Provider()
+        catalog = await CatalogService(
+            [ProviderRegistration("custom", provider)]
+        ).discover(("relay_custom_echo",))
+        agent = RelayAgent(
+            AgentSettings(
+                server_url="ws://localhost/ws/agent",
+                device_id="d",
+                agent_token="token",
+                workspace=tmp_path,
+                tools_allowlist=("relay_custom_echo",),
+                heartbeat_interval_seconds=60,
+            ),
+            capabilities=[],
+            catalog=catalog,
+            provider_clients={"custom": provider},
+        )
+        socket = _Socket(
+            [
+                json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "type": "invoke",
+                        "request_id": "dynamic-sensitive-request",
+                        "tool_name": "custom.echo",
+                        "arguments": {"value": "dynamic-secret"},
+                    }
+                ),
+            ]
+        )
+        task = asyncio.create_task(agent.run_session(socket))
+        for _ in range(100):
+            if any(message.get("type") == "result" for message in socket.sent):
+                break
+            await asyncio.sleep(0.001)
+        agent.stop()
+        await task
+        await agent.aclose()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().err
+    assert "[INFO] Executing tool: custom.echo" in output
+    assert "dynamic-sensitive-request" not in output
+    assert "dynamic-secret" not in output
 
 
 def test_backoff_does_not_reset_after_registered_session_disconnects(tmp_path: Path) -> None:
@@ -2285,11 +2448,10 @@ def test_agent_suppresses_result_from_provider_that_swallows_cancellation(
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not available")
-def test_token_file_must_be_private(tmp_path: Path) -> None:
+def test_token_file_environment_is_rejected(tmp_path: Path) -> None:
     token_file = tmp_path / "token"
     token_file.write_text("secret")
-    token_file.chmod(0o644)
+    token_file.chmod(0o600)
     env = {
         "RELAY_URL": "ws://127.0.0.1:9999/future-path",
         "RELAY_AGENT_ID": "device-a",
@@ -2298,29 +2460,6 @@ def test_token_file_must_be_private(tmp_path: Path) -> None:
     }
     with pytest.raises(ConfigurationError, match="invalid agent configuration"):
         AgentSettings.from_environment(env)
-    token_file.chmod(0o600)
-    assert "secret" not in repr(AgentSettings.from_environment(env))
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX special-file contract")
-def test_token_file_refuses_symlink_fifo_and_oversize(tmp_path: Path) -> None:
-    target = tmp_path / "target"
-    target.write_text("secret")
-    target.chmod(0o600)
-    link = tmp_path / "link"
-    link.symlink_to(target)
-    with pytest.raises(OSError):
-        _read_token_file(link)
-    fifo = tmp_path / "fifo"
-    os.mkfifo(fifo, 0o600)
-    with pytest.raises(ValueError):
-        _read_token_file(fifo)
-    large = tmp_path / "large"
-    large.write_text("x" * 4097)
-    large.chmod(0o600)
-    with pytest.raises(ValueError):
-        _read_token_file(large)
-    assert _read_token_file(target) == "secret"
 
 
 def test_signal_handlers_stop_agent_and_wait_for_run(
