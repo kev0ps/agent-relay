@@ -300,6 +300,44 @@ def _x11_has_client_window(environment: dict[str, str]) -> bool:
     )
 
 
+def _x11_search_ids(
+    environment: dict[str, str], option: str, value: str
+) -> set[str]:
+    try:
+        completed = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", option, value],
+            env=environment,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+            shell=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if completed.returncode != 0:
+        return set()
+    return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+
+
+def _x11_has_expected_window(environment: dict[str, str]) -> bool:
+    """Wait for the browser's final X11 class and HTML title, not just its frame."""
+    titles = _x11_search_ids(
+        environment,
+        "--name",
+        f"^{re.escape(COMPUTER_WINDOW_TITLE)}$",
+    )
+    classes = _x11_search_ids(
+        environment,
+        "--class",
+        f"^{re.escape(COMPUTER_APP_NAME)}$",
+    )
+    return bool(titles & classes)
+
+
 def _resolve_chromium() -> Path:
     """Resolve the browser supplied by the Linux E2E environment."""
     for name in ("chromium", "chromium-browser", "google-chrome"):
@@ -632,6 +670,11 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         native._wait_for(
             "Linux CUA Chromium window",
             chromium_window_ready,
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
+        native._wait_for(
+            "Linux CUA Chromium identity",
+            lambda: _x11_has_expected_window(graphical_environment),
             timeout=DESKTOP_READY_TIMEOUT_SECONDS,
         )
 

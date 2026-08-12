@@ -4,6 +4,7 @@ import importlib.util
 import socket
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "linux_computer_e2e.py"
@@ -132,6 +133,30 @@ def test_enable_chromium_accessibility_sets_both_session_flags(monkeypatch) -> N
     assert [call[0][-2] for call in calls] == ["ScreenReaderEnabled", "IsEnabled"]
     assert all(call[0][-1] == "<true>" for call in calls)
     assert all(call[0][0:3] == ["gdbus", "call", "--session"] for call in calls)
+
+
+def test_linux_cua_waits_for_matching_x11_title_and_class(monkeypatch) -> None:
+    harness = _load_harness()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[-2:] == [
+            "--class",
+            f"^{harness.re.escape(harness.COMPUTER_APP_NAME)}$",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="0x42\n")
+        if command[-2:] == [
+            "--name",
+            f"^{harness.re.escape(harness.COMPUTER_WINDOW_TITLE)}$",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="0x42\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+
+    assert harness._x11_has_expected_window({"DISPLAY": ":91"})
+    assert [command[-2] for command in calls] == ["--name", "--class"]
 
 
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
