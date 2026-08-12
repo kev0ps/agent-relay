@@ -288,6 +288,9 @@ def test_windows_uninstall_retries_real_locked_executable(
     running_executable = tool_root / "Scripts" / "agent-relay.exe"
     running_executable.parent.mkdir()
     shutil.copy2(sys.executable, running_executable)
+    pyvenv_cfg = Path(sys.executable).parent.parent / "pyvenv.cfg"
+    if pyvenv_cfg.is_file():
+        shutil.copy2(pyvenv_cfg, tool_root / "pyvenv.cfg")
     ready = tmp_path / "ready"
     code = (
         "from pathlib import Path; import time; "
@@ -383,6 +386,9 @@ def test_windows_uninstall_real_process_lock_boundary(tmp_path: Path) -> None:
     running_executable = tool_root / "Scripts" / "agent-relay.exe"
     running_executable.parent.mkdir()
     shutil.copy2(sys.executable, running_executable)
+    pyvenv_cfg = Path(sys.executable).parent.parent / "pyvenv.cfg"
+    if pyvenv_cfg.is_file():
+        shutil.copy2(pyvenv_cfg, tool_root / "pyvenv.cfg")
     ready = tmp_path / "ready"
     code = (
         "from pathlib import Path; import time; "
