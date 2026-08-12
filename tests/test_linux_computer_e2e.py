@@ -33,6 +33,23 @@ def test_resolve_chromium_preserves_symlinked_launcher(tmp_path, monkeypatch) ->
     assert harness._resolve_chromium() == launcher
 
 
+def test_resolve_chromium_prefers_non_snap_google_chrome(tmp_path, monkeypatch) -> None:
+    harness = _load_harness()
+    chrome = tmp_path / "google-chrome-stable"
+    snap = tmp_path / "chromium"
+    for path in (chrome, snap):
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(
+        harness.shutil,
+        "which",
+        lambda name: str(chrome if name == "google-chrome-stable" else snap),
+    )
+
+    assert harness._resolve_chromium() == chrome
+
+
 def test_snap_chromium_uses_host_user_bus_for_snapd_scope(
     tmp_path,
 ) -> None:
@@ -221,7 +238,7 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "xvfb" in job.lower()
     assert "at-spi" in job.lower()
     assert "uv run --frozen python scripts/linux_computer_e2e.py" in job
-    assert "chromium --version" in job
+    assert "google-chrome-stable --version" in job
     assert "include_browser=True" in SCRIPT.read_text(encoding="utf-8")
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile linux-cua" in job

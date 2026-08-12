@@ -379,7 +379,12 @@ def _x11_has_expected_window(environment: dict[str, str]) -> bool:
 
 def _resolve_chromium() -> Path:
     """Resolve the browser supplied by the Linux E2E environment."""
-    for name in ("chromium", "chromium-browser", "google-chrome"):
+    for name in (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+    ):
         raw_path = shutil.which(name)
         if raw_path is None:
             continue
