@@ -360,6 +360,7 @@ def _stderr_hint(path: Path) -> str | None:
                 "cua catalog construction failed:",
                 "computer privacy command failed:",
                 "computer startup failed:",
+                "computer cua get_window_state rejected:",
                 "computer cua list_windows rejected:",
             )
         )

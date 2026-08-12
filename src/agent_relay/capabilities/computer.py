@@ -906,14 +906,23 @@ class ComputerCapability:
             raise ValueError
         safe_elements: list[JsonValue] = []
         tokens: set[str] = set()
+        field_role_count = 0
+        button_role_count = 0
+        name_label_count = 0
+        apply_label_count = 0
         for public_index, item in enumerate(elements):
             if not isinstance(item, dict):
+                _debug_cua_scope_rejection(
+                    "element-not-object",
+                    tool_name="get_window_state",
+                    element=public_index,
+                )
                 raise ValueError
             index = item.get("element_index")
             role = item.get("role")
             token = item.get("element_token")
             label = item.get("label", item.get("name", ""))
-            if (
+            invalid_element = (
                 type(index) is not int
                 or index < 0
                 or type(role) is not str
@@ -925,8 +934,47 @@ class ComputerCapability:
                 or token in tokens
                 or type(label) is not str
                 or len(label) > 512
-            ):
+            )
+            if invalid_element:
+                reasons: list[str] = []
+                if type(index) is not int:
+                    reasons.append("index-type")
+                elif index < 0:
+                    reasons.append("index-negative")
+                if type(role) is not str:
+                    reasons.append("role-type")
+                elif not role:
+                    reasons.append("role-empty")
+                elif len(role) > 128:
+                    reasons.append("role-too-long")
+                if type(token) is not str:
+                    reasons.append("token-type")
+                elif not token:
+                    reasons.append("token-empty")
+                elif len(token) > 256:
+                    reasons.append("token-too-long")
+                elif token in tokens:
+                    reasons.append("token-duplicate")
+                if type(label) is not str:
+                    reasons.append("label-type")
+                elif len(label) > 512:
+                    reasons.append("label-too-long")
+                _debug_cua_scope_rejection(
+                    "element-invalid-" + ("+".join(reasons) or "unknown"),
+                    tool_name="get_window_state",
+                    element=public_index,
+                )
                 raise ValueError
+            normalized_role = role.casefold()
+            normalized_label = label.casefold()
+            if normalized_role in {"textbox", "entry", "text", "edit", "editable"}:
+                field_role_count += 1
+            if normalized_role in {"button", "push button"}:
+                button_role_count += 1
+            if normalized_label == "name":
+                name_label_count += 1
+            if normalized_label == "apply":
+                apply_label_count += 1
             safe_item: dict[str, JsonValue] = {
                 "element_index": public_index,
                 "role": role,
@@ -938,6 +986,15 @@ class ComputerCapability:
                 safe_item["value"] = value
             safe_elements.append(safe_item)
             tokens.add(token)
+        _debug_cua_scope_rejection(
+            "window-state-shape",
+            tool_name="get_window_state",
+            elements=len(safe_elements),
+            field_roles=field_role_count,
+            button_roles=button_role_count,
+            name_labels=name_label_count,
+            apply_labels=apply_label_count,
+        )
         self._element_tokens = frozenset(tokens)
         self._used_actions.clear()
         return ProviderToolResult(

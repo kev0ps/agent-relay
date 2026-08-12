@@ -87,6 +87,23 @@ def test_snap_chromium_detection_follows_launcher_symlink(tmp_path, monkeypatch)
     assert harness._is_snap_chromium_launcher(launcher)
 
 
+def test_cua_snapshot_diagnostic_is_preserved_in_stderr_hint(tmp_path) -> None:
+    harness = _load_harness()
+    diagnostic = tmp_path / "agent.stderr.log"
+    diagnostic.write_text(
+        "[DEBUG] computer CUA get_window_state rejected: "
+        "reason=window-state-shape elements=4 field_roles=0 "
+        "button_roles=0 name_labels=0 apply_labels=0\n",
+        encoding="utf-8",
+    )
+
+    hint = harness._stderr_hint(diagnostic)
+
+    assert hint is not None
+    assert "get_window_state rejected" in hint
+    assert "elements=4" in hint
+
+
 def test_non_snap_chromium_keeps_private_bus(tmp_path) -> None:
     harness = _load_harness()
     environment = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/private/bus"}
