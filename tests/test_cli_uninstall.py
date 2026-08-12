@@ -266,7 +266,10 @@ def test_windows_uninstall_script_has_bounded_retry_and_final_status(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows file locking")
-@pytest.mark.parametrize(("lock_seconds", "timeout_seconds", "expected"), [(1.2, 5, "success"), (30, 1, "failure")])
+@pytest.mark.parametrize(
+    ("lock_seconds", "timeout_seconds", "expected"),
+    [(4.0, 8, "success"), (30, 3, "failure")],
+)
 def test_windows_uninstall_retries_real_locked_executable(
     tmp_path: Path,
     lock_seconds: float,
@@ -291,6 +294,24 @@ def test_windows_uninstall_retries_real_locked_executable(
         f"Path({str(ready)!r}).write_text('ready'); time.sleep({lock_seconds})"
     )
     process = subprocess.Popen([str(running_executable), "-c", code])
+    lock_ready = tmp_path / "lock-ready"
+    lock_code = (
+        "import ctypes, sys, time; "
+        "from pathlib import Path; "
+        "path, ready, seconds = sys.argv[1], Path(sys.argv[2]), float(sys.argv[3]); "
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True); "
+        "create = kernel32.CreateFileW; "
+        "create.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, "
+        "ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]; "
+        "create.restype = ctypes.c_void_p; "
+        "handle = create(path, 0x80000000, 0, None, 3, 0x80, None); "
+        "invalid = ctypes.c_void_p(-1).value; "
+        "assert handle not in (None, invalid), ctypes.get_last_error(); "
+        "ready.write_text('ready'); time.sleep(seconds); kernel32.CloseHandle(handle)"
+    )
+    lock_process = subprocess.Popen(
+        [sys.executable, "-c", lock_code, str(running_executable), str(lock_ready), str(lock_seconds)]
+    )
     log_path = tmp_path / "uninstall.log"
     fake_uv = tmp_path / "uv.cmd"
     target_literal = str(running_executable).replace("'", "''")
@@ -306,6 +327,11 @@ def test_windows_uninstall_retries_real_locked_executable(
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert ready.exists(), "the copied executable did not start"
+        deadline = time.monotonic() + 10
+        while not lock_ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert lock_ready.exists(), "the executable lock helper did not start"
+        assert lock_process.poll() is None, "the temporary executable lock was released early"
         script = cli.uninstall._windows_uninstall_script(
             fake_uv,
             log_path,
@@ -332,15 +358,18 @@ def test_windows_uninstall_retries_real_locked_executable(
         assert completed.returncode == (0 if expected == "success" else 1)
         log = log_path.read_text(encoding="utf-8")
         assert f"Final result: {expected}" in log
-        assert "Attempt 2" in log
+        assert "Attempt 1" in log
+        if expected == "success":
+            assert "Attempt 2" in log
         if expected == "failure":
             assert "Stop other Agent Relay" in log
             assert running_executable.exists()
         else:
             assert not running_executable.exists()
     finally:
-        process.terminate()
-        process.wait(timeout=10)
+        for child in (lock_process, process):
+            child.terminate()
+            child.wait(timeout=10)
         shutil.rmtree(tool_root, ignore_errors=True)
 
 
