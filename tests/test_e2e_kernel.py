@@ -79,7 +79,7 @@ class _CuaScenarioSession:
         return None
 
     async def list_tools(self) -> tuple[str, ...]:
-        return _scenarios().CUA_MCP_TOOLS
+        return _scenarios().CUA_DESKTOP_MCP_TOOLS
 
     async def call(self, tool_name: str, arguments: dict[str, object]) -> _CuaScenarioResult:
         if tool_name == "relay_cua_list_windows":
@@ -173,7 +173,7 @@ def _install_cua_scenario_fakes(
     monkeypatch.setattr(scenarios._oracles, "validate_cua_window_state", validate_state)
     monkeypatch.setattr(scenarios._oracles, "validate_cua_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scenarios._oracles, "validate_cua_event", lambda *_args, **_kwargs: b"stable-event")
-    monkeypatch.setattr(scenarios._oracles, "assert_no_fixture_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scenarios._oracles, "assert_no_cua_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
     return observed
 
@@ -282,32 +282,17 @@ def test_expected_mcp_tools_inventory_is_closed() -> None:
         assert name.startswith("relay_"), name
 
 
-def test_portable_kernel_exposes_shared_core_browser_and_computer_scenarios() -> None:
+def test_portable_kernel_exposes_shared_core_and_cua_scenarios() -> None:
     """The portable kernel owns actions, not platform orchestration."""
     scenarios = _scenarios()
 
     for name in (
         "run_core_scenario",
-        "run_browser_scenario",
         "run_cua_scenario",
     ):
         assert callable(getattr(scenarios, name, None)), (
             f"tests/e2e/scenarios.py must expose {name} for every harness"
         )
-
-
-@pytest.mark.parametrize(
-    "script_name",
-    ["linux_browser_e2e.py", "windows_browser_e2e.py"],
-)
-def test_browser_adapters_delegate_launch_to_playwright_persistent_context(script_name: str) -> None:
-    source = (E2E_DIR.parents[1] / "scripts" / script_name).read_text(encoding="utf-8")
-
-    assert "RELAY_AGENT_BROWSER_USER_DATA_DIR" in source
-    assert "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS" in source
-    assert "connect_over_cdp" not in source
-    assert "remote-debugging" not in source
-    assert "portable_browser_cdp" not in source
 
 
 def test_computer_scenario_requires_harness_fixture_identity() -> None:
@@ -384,7 +369,7 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A CUA-only Agent must not be validated as a Browser-capable Agent."""
+    """A CUA-only Agent must not be validated as browser-capable."""
     scenarios = _scenarios()
     observed: list[tuple[str, ...] | None] = []
 
@@ -469,7 +454,7 @@ def test_computer_scenario_checks_tools_before_device_status(
     class InventorySession(_CuaScenarioSession):
         async def list_tools(self) -> tuple[str, ...]:
             operations.append("tools-list")
-            return scenarios.CUA_MCP_TOOLS
+            return scenarios.CUA_DESKTOP_MCP_TOOLS
 
         async def call(
             self,
@@ -499,6 +484,87 @@ def test_computer_scenario_checks_tools_before_device_status(
     )
 
     assert operations[:2] == ["tools-list", "relay_device_status"]
+
+
+def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scenarios = _scenarios()
+
+    class BrowserSession(_CuaScenarioSession):
+        async def list_tools(self) -> tuple[str, ...]:
+            return scenarios.CUA_MCP_TOOLS
+
+        async def call(
+            self,
+            tool_name: str,
+            arguments: dict[str, object],
+        ) -> _CuaScenarioResult:
+            if tool_name == "relay_cua_launch_app":
+                return _CuaScenarioResult(
+                    structured={
+                        "pid": 5000,
+                        "name": "chromium",
+                        "active": False,
+                        "windows": [],
+                    }
+                )
+            if tool_name == "relay_cua_start_session":
+                return _CuaScenarioResult()
+            if tool_name == "relay_cua_browser_prepare":
+                return _CuaScenarioResult(
+                    structured={
+                        "status": "ok",
+                        "prepared": True,
+                        "prepared_pid": 5001,
+                    }
+                )
+            if tool_name == "relay_cua_get_browser_state":
+                if "target_id" in arguments:
+                    return _CuaScenarioResult(
+                        structured={
+                            "target_id": "target-1",
+                            "tabs": [{"tab_id": "tab-1", "active": True}],
+                            "url": "http://127.0.0.1:1/",
+                            "text": "Relay Desktop Fixture",
+                        }
+                    )
+                return _CuaScenarioResult(
+                    structured={
+                        "pid": 5001,
+                        "window_id": 77,
+                        "target_id": "target-1",
+                        "tabs": [{"tab_id": "tab-1", "active": True}],
+                    }
+                )
+            if tool_name in {
+                "relay_cua_browser_navigate",
+                "relay_cua_end_session",
+                "relay_cua_kill_app",
+            }:
+                return _CuaScenarioResult()
+            return await super().call(tool_name, arguments)
+
+    _install_cua_scenario_fakes(
+        monkeypatch,
+        scenarios,
+        session_type=BrowserSession,
+    )
+    runtime = _cua_runtime(
+        scenarios,
+        tmp_path,
+        device_id="portable-cua-browser-test",
+        run_id="portable-cua-browser-run",
+    )
+
+    scenarios.run_cua_scenario(
+        runtime,
+        "relay-value",
+        expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+        expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+        include_browser=True,
+    )
 
 
 @pytest.mark.parametrize("inventory_kind", ["missing", "extra", "reordered"])

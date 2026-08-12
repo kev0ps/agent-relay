@@ -120,23 +120,10 @@ function Sync-Project([string] $uvPath) {
         throw "AGENT_RELAY_SYNC_ROOT is not a locked Agent Relay project: $syncRootValue"
     }
 
-    $syncProfile = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_SYNC_PROFILE)) {
-        "base"
-    } else {
-        $env:AGENT_RELAY_SYNC_PROFILE.ToLowerInvariant()
-    }
-    if ($syncProfile -notin @("base", "browser", "computer")) {
-        throw "AGENT_RELAY_SYNC_PROFILE must be 'base', 'browser', or 'computer'."
-    }
     $syncArguments = @("sync", "--locked")
-    if ($syncProfile -eq "browser") {
-        $syncArguments += @("--extra", "browser")
-    } elseif ($syncProfile -eq "computer") {
-        $syncArguments += @("--extra", "browser", "--extra", "computer")
-    }
 
     $resolvedRoot = (Resolve-Path -LiteralPath $syncRootValue).Path
-    Write-Host "Installing locked $syncProfile dependencies with uv..."
+    Write-Host "Installing locked Agent Relay dependencies with uv..."
     Push-Location -LiteralPath $resolvedRoot
     try {
         & $uvPath @syncArguments

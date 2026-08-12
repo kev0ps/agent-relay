@@ -73,22 +73,6 @@ def _current_session_id() -> int:
     return int(session_id.value)
 
 
-def _resolve_driver() -> Path:
-    raw = os.environ.get("RELAY_AGENT_COMPUTER_DRIVER_PATH")
-    if not raw:
-        raise WindowsCuaE2EError("cua-driver path is unavailable")
-    path = Path(raw)
-    if (
-        not path.is_absolute()
-        or path.suffix.casefold() != ".exe"
-        or not path.is_file()
-        or path.is_symlink()
-        or not os.access(path, os.X_OK)
-    ):
-        raise WindowsCuaE2EError("cua-driver executable is invalid")
-    return path
-
-
 def _powershell_executable() -> Path:
     root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
     if not root:
@@ -159,7 +143,7 @@ def _fixture_ready(path: Path) -> bool:
 
 def _driver_environment(values: dict[str, str]) -> dict[str, str]:
     environment = windows.minimal_environment(Path(values["HOME"]), values)
-    for name in ("CUA_DRIVER_RS_HOME", "CUA_DRIVER_RS_INSTALL_DIR"):
+    for name in ("CUA_DRIVER_RS_HOME",):
         value = os.environ.get(name)
         if value:
             environment[name] = value
@@ -235,7 +219,6 @@ def run_scenario(
             raise WindowsCuaE2EError("computer oracle exists before the scenario")
         lifecycle.job = windows.WindowsJob()
         repository = ROOT
-        driver = _resolve_driver()
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
         server_environment = _driver_environment(
             {
@@ -257,7 +240,6 @@ def run_scenario(
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
                 "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text",
-                "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
                 "RELAY_NATIVE_DEBUG": "1",

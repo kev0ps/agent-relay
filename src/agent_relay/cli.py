@@ -11,7 +11,6 @@ from pathlib import Path
 
 from . import agent, config, onboarding, server, uninstall
 from .catalog import CatalogError, CatalogSnapshot
-from .diagnostics import warning as _warning_log
 
 _HELP = """usage: agent-relay [--config PATH] <command>\n\nAgent Relay\n\nCommands:\n  --help                         show this help and exit\n  --version                      show the program version and exit\n  config init server             create Server YAML and secret files\n  config init agent              create Agent YAML and secret file\n  config get server              print the Server YAML section\n  config get agent               print the Agent YAML section\n  config set server KEY VALUE    update a Server setting\n  config set agent KEY VALUE     update an Agent setting\n  config unset server KEY        restore a Server setting default\n  config unset agent KEY         restore an Agent setting default\n  config validate server         validate the Server configuration\n  config validate agent          validate the Agent configuration\n  tools list                     list the complete public tool inventory\n  tools enable TOOL              enable an Agent tool\n  tools disable TOOL              disable an Agent tool\n  doctor                         run the offline combined configuration audit\n  server                        start the Relay Server\n  agent                         start the outbound Agent\n\nGlobal options:\n  --config PATH                  use a specific YAML configuration file\n\nSecret values must be provided with --prompt, --stdin, or --file.\n"""
 
@@ -25,6 +24,12 @@ _HELP = _HELP.replace(
 _HELP = _HELP.replace(
     "create Server YAML and secret files", "create Server YAML and private .env"
 ).replace("create Agent YAML and secret file", "create Agent YAML and private .env")
+
+_HELP = _HELP.replace(
+    "  tools list                     list the complete public tool inventory\n",
+    "  tools list [--all]             list the public tool inventory\n"
+    "  tools cua-access LEVEL [--yes] set CUA access: none, standard, or full\n",
+)
 
 _HELP = _HELP.replace(
     "  agent                         start the outbound Agent\n",
@@ -83,6 +88,12 @@ def _parser() -> _Parser:
     )
     init_parser.add_argument("--tools", help="comma-separated Agent tool names")
     init_parser.add_argument("--no-tools", action="store_true")
+    init_parser.add_argument(
+        "--cua-access", choices=("none", "standard", "full")
+    )
+    init_parser.add_argument(
+        "--yes", action="store_true", help="confirm Full CUA access"
+    )
 
     get_parser = config_commands.add_parser("get", add_help=False)
     get_parser.add_argument("scope", choices=("server", "agent"))
@@ -105,10 +116,14 @@ def _parser() -> _Parser:
 
     tools_parser = commands.add_parser("tools", add_help=False)
     tool_commands = tools_parser.add_subparsers(dest="tool_command", required=True)
-    tool_commands.add_parser("list", add_help=False)
+    list_parser = tool_commands.add_parser("list", add_help=False)
+    list_parser.add_argument("--all", action="store_true")
     for action in ("enable", "disable"):
         tool_parser = tool_commands.add_parser(action, add_help=False)
         tool_parser.add_argument("tool")
+    cua_access_parser = tool_commands.add_parser("cua-access", add_help=False)
+    cua_access_parser.add_argument("level", choices=("none", "standard", "full"))
+    cua_access_parser.add_argument("--yes", action="store_true")
 
     commands.add_parser("doctor", add_help=False)
     onboard_parser = commands.add_parser("onboard", add_help=False)
@@ -125,6 +140,12 @@ def _parser() -> _Parser:
     onboard_tools = onboard_parser.add_mutually_exclusive_group()
     onboard_tools.add_argument("--tools")
     onboard_tools.add_argument("--no-tools", action="store_true")
+    onboard_parser.add_argument(
+        "--cua-access", choices=("none", "standard", "full")
+    )
+    onboard_parser.add_argument(
+        "--yes", action="store_true", help="confirm Full CUA access"
+    )
     onboard_tokens = onboard_parser.add_mutually_exclusive_group()
     onboard_tokens.add_argument("--token-file", type=Path)
     onboard_tokens.add_argument("--token-stdin", action="store_true")
@@ -179,10 +200,22 @@ def _init_tools(
     *,
     catalog: CatalogSnapshot | None = None,
 ) -> list[str] | None:
+    cua_access = getattr(args, "cua_access", None)
+    assume_yes = bool(getattr(args, "yes", False))
+    if assume_yes and cua_access != "full":
+        raise config.ConfigError("--yes is only valid with --cua-access full")
     if args.tools is not None and args.no_tools:
         raise config.ConfigError("--tools and --no-tools are mutually exclusive")
+    if args.no_tools and cua_access is not None:
+        raise config.ConfigError("--no-tools is exclusive with --cua-access")
     if args.tools is not None:
         selected = [item.strip() for item in args.tools.split(",") if item.strip()]
+        if cua_access is not None and any(
+            config.is_cua_public_name(item) for item in selected
+        ):
+            raise config.ConfigError(
+                "--tools cannot include relay_cua_* when --cua-access is used"
+            )
         if catalog is not None:
             try:
                 catalog.validate_allowlist(selected)
@@ -211,9 +244,7 @@ def _init_tools(
     if args.scope == "agent" and sys.stdin.isatty():
         return config.select_tools_interactively({}, path, catalog=catalog)
     if args.scope == "agent":
-        raise config.ConfigError(
-            "non-interactive Agent init requires --tools or --no-tools"
-        )
+        return []
     return None
 
 
@@ -225,7 +256,12 @@ def _run_config(
 ) -> int:
     if args.config_command == "init":
         if args.scope == "server" and (
-            args.stdin or args.from_server or args.tools is not None or args.no_tools
+            args.stdin
+            or args.from_server
+            or args.tools is not None
+            or args.no_tools
+            or args.cua_access is not None
+            or args.yes
         ):
             raise config.ConfigError("server init does not accept Agent-only options")
         tools = _init_tools(args, path, catalog=catalog) if args.scope == "agent" else None
@@ -245,10 +281,13 @@ def _run_config(
             tools=tools,
             use_stdin=False,
             catalog=catalog,
+            cua_access=args.cua_access,
+            assume_yes=args.yes,
         )
         print(f"initialized {args.scope} configuration: {path}")
-        if args.scope == "agent" and tools is not None:
-            print(f"enabled tools: {', '.join(tools) if tools else 'none'}")
+        if args.scope == "agent":
+            allowlist = config.get_section(path, "agent")["tools"]["allowlist"]
+            print(f"enabled tools: {', '.join(allowlist) if allowlist else 'none'}")
         return 0
     if args.config_command == "get":
         print(config.render_section(path, args.scope), end="")
@@ -263,8 +302,6 @@ def _run_config(
             if args.value is None or args.prompt or args.stdin or args.file is not None:
                 raise config.ConfigError("a scalar value is required for this setting")
             config.set_value(path, args.scope, args.key, args.value, catalog=catalog)
-            if args.scope == "agent" and args.key in {"browser.origin_policy", "browser.policy"} and args.value.strip().lower() in {"any", "'any'", '"any"'}:
-                _warning_log("browser origin policy any allows all supported HTTP(S) origins")
         print(f"updated {args.scope}.{args.key}")
         return 0
     if args.config_command == "unset":
@@ -391,7 +428,20 @@ def main(
             return _run_config(args, path, catalog=effective_catalog)
         if args.command == "tools":
             if args.tool_command == "list":
-                print(config.render_tools(path, catalog=effective_catalog))
+                print(
+                    config.render_tools(
+                        path, catalog=effective_catalog, show_all=args.all
+                    )
+                )
+                return 0
+            if args.tool_command == "cua-access":
+                config.update_cua_access(
+                    path,
+                    args.level,
+                    catalog=effective_catalog,
+                    assume_yes=args.yes,
+                )
+                print(f"CUA access: {args.level}")
                 return 0
             config.update_tool(
                 path,
@@ -428,6 +478,9 @@ def main(
         if args.command == "uninstall":
             return _run_uninstall(args, path)
         parser.error("unsupported command")
+    except config.CuaAccessCancelled:
+        print("CUA access update cancelled")
+        return 0
     except config.ConfigError as exc:
         print(f"agent-relay: error: {exc}", file=sys.stderr)
         return 1

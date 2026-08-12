@@ -75,18 +75,16 @@ def test_native_commands_can_use_the_installed_relay_command(
     assert "PYTHONPATH" not in environment
 
 
-def test_minimal_environment_preserves_only_cua_driver_runtime_paths(
+def test_minimal_environment_preserves_only_cua_driver_runtime_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     harness = _load_harness()
     monkeypatch.setenv("CUA_DRIVER_RS_HOME", str(tmp_path / "driver-home"))
-    monkeypatch.setenv("CUA_DRIVER_RS_INSTALL_DIR", str(tmp_path / "driver-bin"))
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross-boundary")
 
     environment = harness._minimal_environment(tmp_path / "child-home", {})
 
     assert environment["CUA_DRIVER_RS_HOME"] == str(tmp_path / "driver-home")
-    assert environment["CUA_DRIVER_RS_INSTALL_DIR"] == str(tmp_path / "driver-bin")
     assert "OPENAI_API_KEY" not in environment
 
 

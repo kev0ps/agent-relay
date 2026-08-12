@@ -19,20 +19,6 @@ def _load_harness():
     return module
 
 
-def test_linux_cua_chromium_command_is_accessible_and_loopback() -> None:
-    harness = _load_harness()
-    command = harness.chromium_command(
-        Path("/opt/chromium/chromium"),
-        Path("/tmp/relay-cua-profile"),
-        "http://127.0.0.1:23456/",
-    )
-    assert "--force-renderer-accessibility" in command
-    assert "--no-sandbox" in command
-    assert "--disable-dev-shm-usage" in command
-    assert "--user-data-dir=/tmp/relay-cua-profile" in command
-    assert all("0.0.0.0" not in item for item in command)
-
-
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     harness = _load_harness()
     source = SCRIPT.read_text(encoding="utf-8")
@@ -40,7 +26,6 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     assert harness.COMPUTER_WINDOW_TITLE == "Relay Desktop Fixture"
     assert 'DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"' in source
     for key in (
-        "RELAY_AGENT_COMPUTER_DRIVER_PATH",
         "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME",
         "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE",
     ):
@@ -58,10 +43,12 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "name: Linux CUA end-to-end" in job
     assert "runs-on: ubuntu-24.04" in job
     assert "uses: ./.github/actions/setup-python" in job
-    assert "profile: computer" in job
+    assert ("profile: " + "cua") not in job
     assert "xvfb" in job.lower()
     assert "at-spi" in job.lower()
     assert "uv run --frozen python scripts/linux_computer_e2e.py" in job
+    assert "chromium --version" in job
+    assert "include_browser=True" in SCRIPT.read_text(encoding="utf-8")
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile linux-cua" in job
     assert "docker" not in job.lower()

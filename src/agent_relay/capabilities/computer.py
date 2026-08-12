@@ -9,19 +9,14 @@ import os
 import signal
 import stat
 import subprocess
-import sys
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..catalog import CUA_REFERENCE_TOOL_NAMES
 from ..diagnostics import debug as _debug_log
 from ..json_bounds import JsonValue
 from ..output_models import ProviderTextContent, ProviderToolResult
-from ..protocol import (
-    InvokeMessage,
-    ToolName,
-)
+from ..protocol import InvokeMessage
 from ..provider_tools import ProviderToolDescriptor
 from ..providers.base import (
     ProviderConnectionError,
@@ -36,9 +31,7 @@ MAX_DRIVER_DIAGNOSTIC_LINE_BYTES = 4096
 MAX_COMPUTER_APP_LENGTH = 128
 MAX_COMPUTER_WINDOW_TITLE_LENGTH = 256
 WINDOWS_CUA_DRIVER_PIPE = r"\\.\pipe\cua-driver"
-_SCOPED_CUA_TOOLS = frozenset(
-    {"list_windows", "get_window_state", "click", "type_text"}
-)
+_SCOPED_CUA_TOOLS = frozenset({"list_windows", "get_window_state", "click", "type_text"})
 _CUA_ACTION_RESULT_KEYS = frozenset(
     {"path", "verified", "effect", "characters", "escalation", "scope"}
 )
@@ -162,7 +155,7 @@ _SAFE_ENV = {
     "DBUS_SESSION_BUS_ADDRESS",
     "CUA_DRIVER_TELEMETRY_HOME",
     "CUA_DRIVER_RS_HOME",
-    "CUA_DRIVER_RS_INSTALL_DIR",
+    "CUA_E2E_BROWSER_NO_SANDBOX",
     "PATH",
     "HOME",
     "HOMEDRIVE",
@@ -330,6 +323,19 @@ def validate_driver_executable(path: Path) -> Path:
     return path
 
 
+def get_cua_driver_path() -> Path:
+    """Resolve the bundled driver owned by the installed cua-driver package."""
+    try:
+        import cua_driver
+
+        raw_path = cua_driver.get_binary_path()
+    except (AttributeError, ImportError, OSError, TypeError, ValueError):
+        raise ValueError("cua-driver is unavailable") from None
+    if not isinstance(raw_path, (str, Path)):
+        raise ValueError("cua-driver returned an invalid binary path")
+    return validate_driver_executable(Path(raw_path))
+
+
 class _ComputerMcpTransport(McpTransport):
     """Translate generic provider-client operations to the owned JSON-RPC process."""
 
@@ -356,31 +362,35 @@ class _ComputerMcpTransport(McpTransport):
 
 
 class ComputerCapability:
-    """One persistent provider with generic tools and scoped core CUA actions."""
+    """One persistent CUA provider with a runtime-discovered MCP inventory."""
 
     provider_name = "cua"
     requires_catalog = True
-    tools: frozenset[ToolName] = frozenset(
-        f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES
-    )
+    # CUA is intentionally dynamic.  The catalog returned by the driver is
+    # authoritative and can grow without a Relay release.
+    tools: frozenset[str] = frozenset()
 
     def __init__(
         self,
-        driver_path: Path,
-        app_name: str,
-        window_title: str,
+        app_name: str | None = None,
+        window_title: str | None = None,
         *,
         startup_timeout_seconds: float = 15,
         action_timeout_seconds: float = 10,
         shutdown_timeout_seconds: float = 3,
         max_elements: int = 300,
         environ: dict[str, str] | None = None,
-        allowed_tool_names: Collection[str] | None = None,
     ) -> None:
-        self._path = validate_driver_executable(driver_path)
-        if not app_name or len(app_name) > MAX_COMPUTER_APP_LENGTH:
+        self._path = get_cua_driver_path()
+        if (app_name is None) != (window_title is None):
             raise ValueError("invalid computer configuration")
-        if not window_title or len(window_title) > MAX_COMPUTER_WINDOW_TITLE_LENGTH:
+        if app_name is not None and (
+            not app_name or len(app_name) > MAX_COMPUTER_APP_LENGTH
+        ):
+            raise ValueError("invalid computer configuration")
+        if window_title is not None and (
+            not window_title or len(window_title) > MAX_COMPUTER_WINDOW_TITLE_LENGTH
+        ):
             raise ValueError("invalid computer configuration")
         if not (
             0 < startup_timeout_seconds <= 30
@@ -395,13 +405,6 @@ class ComputerCapability:
         self._action_timeout = float(action_timeout_seconds)
         self._shutdown_timeout = float(shutdown_timeout_seconds)
         self._max_elements = max_elements
-        if allowed_tool_names is not None and any(
-            not isinstance(name, str) or not name for name in allowed_tool_names
-        ):
-            raise ValueError("allowed_tool_names must contain non-empty strings")
-        self._allowed_tool_names = (
-            None if allowed_tool_names is None else frozenset(allowed_tool_names)
-        )
         self._env = safe_driver_environment(
             dict(os.environ if environ is None else environ)
         )
@@ -425,6 +428,11 @@ class ComputerCapability:
         self._driver_diagnostic_category: str | None = None
         self._pid: int | None = None
         self._window_id: int | None = None
+        # Browser processes are admitted only after an explicit CUA launch or
+        # isolated browser preparation call. This lets the same bounded
+        # list_windows tool locate the driver's new browser window without
+        # widening the configured desktop app/window scope.
+        self._browser_pids: set[int] = set()
         self._element_tokens: frozenset[str] = frozenset()
         self._used_actions: set[tuple[str, str]] = set()
 
@@ -528,8 +536,6 @@ class ComputerCapability:
 
         self._startup_phase = "process-spawn"
         driver_args = ["mcp", "--no-overlay"]
-        if not self._windows:
-            driver_args.append("--no-daemon-relaunch")
         self._process = await asyncio.create_subprocess_exec(
             str(self._path),
             *driver_args,
@@ -570,7 +576,6 @@ class ComputerCapability:
             risk="interaction",
             timeout_seconds=self._action_timeout,
             close_timeout_seconds=self._shutdown_timeout,
-            allowed_tool_names=self._allowed_tool_names,
         )
         await self._client.list_tools()
 
@@ -647,7 +652,10 @@ class ComputerCapability:
             async with self._scope_lock:
                 return await self._call_scoped_tool(client, tool_name, arguments)
         try:
-            return await client.call_tool(tool_name, arguments)
+            result = await client.call_tool(tool_name, arguments)
+            if tool_name in {"launch_app", "browser_prepare"}:
+                self._record_browser_processes(tool_name, result)
+            return result
         except asyncio.CancelledError:
             await asyncio.shield(self._reset())
             raise
@@ -664,6 +672,7 @@ class ComputerCapability:
         try:
             scoped_arguments = self._scope_arguments(tool_name, arguments)
         except (TypeError, ValueError):
+            _debug_cua_scope_rejection(f"{tool_name}-arguments")
             return _safe_cua_rejection()
         try:
             result = await client.call_tool(tool_name, scoped_arguments)
@@ -673,15 +682,26 @@ class ComputerCapability:
         except (ProviderConnectionError, ProviderTimeoutError):
             await self._reset()
             raise
+        if result.is_error and tool_name in {"click", "type_text"}:
+            if _is_background_unavailable(result):
+                foreground_arguments = dict(scoped_arguments)
+                foreground_arguments["delivery_mode"] = "foreground"
+                result = await client.call_tool(tool_name, foreground_arguments)
         if result.is_error:
+            _debug_cua_scope_rejection(f"{tool_name}-provider-error")
             return _safe_cua_rejection()
         try:
             if tool_name == "list_windows":
-                return self._scope_window_list(result)
+                browser_pid = scoped_arguments.get("pid")
+                return self._scope_window_list(
+                    result,
+                    browser_pid=browser_pid if type(browser_pid) is int else None,
+                )
             if tool_name == "get_window_state":
                 return self._scope_window_state(result)
             return self._scope_action_result(result)
         except (TypeError, ValueError):
+            _debug_cua_scope_rejection(f"{tool_name}-result")
             return _safe_cua_rejection()
 
     def _scope_arguments(
@@ -691,13 +711,20 @@ class ComputerCapability:
     ) -> dict[str, JsonValue]:
         scoped = dict(arguments)
         if tool_name == "list_windows":
-            if set(scoped) - {"on_screen_only"}:
+            if set(scoped) - {"on_screen_only", "pid"}:
+                raise ValueError
+            browser_pid = scoped.get("pid")
+            if browser_pid is not None and (
+                type(browser_pid) is not int
+                or browser_pid <= 0
+                or browser_pid not in self._browser_pids
+            ):
                 raise ValueError
             # The Linux X11 driver reports MapState inconsistently for mapped
             # Chromium windows under Xvfb/Openbox. Exact configured app/title
             # matching below still provides the target scope; keep the native
             # visibility filter for Windows where the daemon reports it reliably.
-            scoped["on_screen_only"] = self._windows
+            scoped["on_screen_only"] = self._windows if browser_pid is None else False
             return scoped
         if self._pid is None or self._window_id is None:
             raise ValueError
@@ -723,18 +750,16 @@ class ComputerCapability:
             scoped["include_screenshot"] = False
             scoped["max_elements"] = maximum
             return scoped
-        allowed = {"pid", "window_id", "element_token"}
+        allowed = {"pid", "window_id", "element_token", "delivery_mode"}
+        required = {"pid", "window_id", "element_token"}
         if tool_name == "type_text":
             allowed.add("text")
-        if set(scoped) != allowed:
+            required.add("text")
+        if set(scoped) - allowed or not required.issubset(scoped):
             raise ValueError
-        if tool_name == "type_text" and sys.platform.startswith("linux"):
-            # Chromium's Linux driver rejects background typing because X11
-            # synthetic events can be silently dropped by an unfocused
-            # renderer. The target is already restricted to the configured
-            # window and fresh provider token, so use the driver's explicit
-            # foreground escalation without exposing arbitrary passthrough.
-            scoped["delivery_mode"] = "foreground"
+        delivery_mode = scoped.get("delivery_mode")
+        if delivery_mode is not None and delivery_mode not in {"background", "foreground"}:
+            raise ValueError
         token = scoped.get("element_token")
         if type(token) is not str or token not in self._element_tokens:
             raise ValueError
@@ -744,7 +769,12 @@ class ComputerCapability:
         self._used_actions.add(action_key)
         return scoped
 
-    def _scope_window_list(self, result: ProviderToolResult) -> ProviderToolResult:
+    def _scope_window_list(
+        self,
+        result: ProviderToolResult,
+        *,
+        browser_pid: int | None = None,
+    ) -> ProviderToolResult:
         structured = result.structured_content
         if not isinstance(structured, dict):
             _debug_cua_scope_rejection("structured-content")
@@ -757,18 +787,35 @@ class ComputerCapability:
             window
             for window in windows
             if isinstance(window, dict)
-            and self._app_matches(window.get("app_name"))
-            and window.get("title") == self._title
+            and (
+                (
+                    window.get("pid") == browser_pid
+                    if browser_pid is not None
+                    else self._app_matches(window.get("app_name"))
+                    and window.get("title") == self._title
+                )
+            )
         ]
         if len(matches) != 1:
-            app_matches = sum(
-                isinstance(window, dict)
-                and self._app_matches(window.get("app_name"))
-                for window in windows
+            app_matches = (
+                sum(
+                    isinstance(window, dict)
+                    and self._app_matches(window.get("app_name"))
+                    for window in windows
+                )
+                if browser_pid is None
+                else sum(
+                    isinstance(window, dict) and window.get("pid") == browser_pid
+                    for window in windows
+                )
             )
-            title_matches = sum(
-                isinstance(window, dict) and window.get("title") == self._title
-                for window in windows
+            title_matches = (
+                sum(
+                    isinstance(window, dict) and window.get("title") == self._title
+                    for window in windows
+                )
+                if browser_pid is None
+                else 0
             )
             _debug_cua_scope_rejection(
                 "identity",
@@ -799,6 +846,21 @@ class ComputerCapability:
                 _debug_cua_scope_rejection("bounds-fields")
                 raise ValueError
             safe_bounds[key] = value
+        if browser_pid is not None:
+            app_name = window.get("app_name")
+            title = window.get("title")
+            if (
+                type(app_name) is not str
+                or not app_name
+                or len(app_name) > MAX_COMPUTER_APP_LENGTH
+                or type(title) is not str
+                or len(title) > MAX_COMPUTER_WINDOW_TITLE_LENGTH
+            ):
+                _debug_cua_scope_rejection("browser-window-identity")
+                raise ValueError
+        else:
+            app_name = self._app
+            title = self._title
         self._pid = pid
         self._window_id = window_id
         self._element_tokens = frozenset()
@@ -806,8 +868,8 @@ class ComputerCapability:
         safe_window: dict[str, JsonValue] = {
             "pid": pid,
             "window_id": window_id,
-            "app_name": self._app,
-            "title": self._title,
+            "app_name": app_name,
+            "title": title,
             "is_on_screen": window["is_on_screen"],
             "bounds": safe_bounds,
         }
@@ -884,6 +946,8 @@ class ComputerCapability:
         structured = result.structured_content
         if not isinstance(structured, dict):
             raise ValueError
+        if "path" not in structured:
+            return self._normalize_native_action_result(structured)
         safe = {
             key: value
             for key, value in structured.items()
@@ -909,10 +973,65 @@ class ComputerCapability:
             isError=False,
         )
 
+    @staticmethod
+    def _normalize_native_action_result(
+        structured: Mapping[str, JsonValue],
+    ) -> ProviderToolResult:
+        """Map cua-driver 0.19 ActionResult to Relay's stable action envelope."""
+        raw_effect = structured.get("effect")
+        effect = (
+            raw_effect
+            if raw_effect in {"confirmed", "unverifiable", "suspected_noop"}
+            else "unverifiable"
+            if raw_effect == "partial"
+            else None
+        )
+        route = structured.get("route")
+        if not isinstance(route, str) or not route or len(route) > 64:
+            route = "cua"
+        if effect is None:
+            raise ValueError
+        safe: dict[str, JsonValue] = {
+            "path": route,
+            "verified": effect == "confirmed",
+            "effect": effect,
+        }
+        delivery = structured.get("delivery")
+        if isinstance(delivery, dict):
+            mode = delivery.get("mode")
+            if isinstance(mode, str) and len(mode) <= 32:
+                safe["scope"] = mode
+            delivered_count = delivery.get("delivered_count")
+            if type(delivered_count) is int and delivered_count >= 0:
+                safe["characters"] = delivered_count
+        return ProviderToolResult(
+            content=[],
+            structuredContent=safe,
+            isError=False,
+        )
+
     def _app_matches(self, value: object) -> bool:
         if value == self._app:
             return True
         return self._windows and value == self._app + ".exe"
+
+    def _record_browser_processes(
+        self,
+        tool_name: str,
+        result: ProviderToolResult,
+    ) -> None:
+        """Remember only PIDs explicitly returned by CUA browser lifecycle calls."""
+        structured = result.structured_content
+        if not isinstance(structured, dict):
+            return
+        candidates: list[object] = []
+        if tool_name == "launch_app":
+            candidates.append(structured.get("pid"))
+        else:
+            candidates.append(structured.get("prepared_pid"))
+        for candidate in candidates:
+            if type(candidate) is int and 0 < candidate <= 2**31:
+                self._browser_pids.add(candidate)
 
     async def invoke(self, message: InvokeMessage) -> ProviderToolResult:
         prefix = "cua."
@@ -1091,6 +1210,7 @@ class ComputerCapability:
             self._client = None
             self._pid = None
             self._window_id = None
+            self._browser_pids.clear()
             self._element_tokens = frozenset()
             self._used_actions.clear()
             for task in (reader, stderr_reader, exit_task):
@@ -1147,6 +1267,20 @@ def _safe_cua_rejection() -> ProviderToolResult:
     )
 
 
+def _is_background_unavailable(result: ProviderToolResult) -> bool:
+    """Recognize only CUA's bounded background-delivery escalation signal."""
+    structured = result.structured_content
+    if isinstance(structured, dict):
+        for key in ("code", "error", "reason", "status"):
+            if structured.get(key) == "background_unavailable":
+                return True
+    for item in result.content:
+        text = getattr(item, "text", None)
+        if isinstance(text, str) and "background_unavailable" in text.casefold():
+            return True
+    return False
+
+
 def _debug_cua_scope_rejection(
     reason: str,
     **counts: int,
@@ -1161,6 +1295,7 @@ __all__ = [
     "ComputerCapability",
     "ComputerUnavailableError",
     "COMPUTER_STARTUP_PHASES",
+    "get_cua_driver_path",
     "safe_driver_environment",
     "validate_driver_executable",
     "validate_windows_health",

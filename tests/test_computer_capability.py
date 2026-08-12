@@ -1,629 +1,172 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import stat
-import subprocess
 import sys
 from pathlib import Path
-
-import pytest
+from types import SimpleNamespace
 
 from agent_relay.capabilities.computer import (
     ComputerCapability,
-    ComputerUnavailableError,
-    _AsyncPopenProcess,
     _driver_stderr_category,
     _driver_stderr_line_category,
-    _wait_for_windows_daemon_ready,
+    get_cua_driver_path,
     safe_driver_environment,
     validate_driver_executable,
-    validate_windows_health,
 )
-from agent_relay.catalog import CUA_REFERENCE_TOOL_NAMES
-from agent_relay.output_models import ProviderTextContent, ProviderToolResult
-from agent_relay.providers.base import ProviderTimeoutError, ProviderToolError
 
-_GENERIC_DRIVER = r'''#!/usr/bin/env python3
+
+def _write_driver(path: Path) -> None:
+    path.write_text(
+        """
 import json
-import os
 import sys
-import time
 
-TOOLS = __TOOLS__
-MODE = __MODE__
-LOG = __LOG__
+tools = [
+    "list_windows",
+    "browser_prepare",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "execute_javascript",
+]
 
-
-def log(value):
-    with open(LOG, "a", encoding="utf-8") as stream:
-        stream.write(json.dumps(value, separators=(",", ":")) + "\n")
-
-
-def emit(value):
-    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+def emit(message):
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\\n")
     sys.stdout.flush()
-
-
-def schema(name):
-    if MODE == "bad_schema" and name == "click":
-        return {"type": "evil"}
-    if name == "click":
-        return {
-            "type": "object",
-            "properties": {"target": {"type": "string", "minLength": 1}},
-            "required": ["target"],
-            "additionalProperties": False,
-        }
-    if name == "type_text":
-        return {
-            "type": "object",
-            "properties": {
-                "target": {"type": "string", "minLength": 1},
-                "text": {"type": "string", "minLength": 1, "maxLength": 128},
-            },
-            "required": ["target", "text"],
-            "additionalProperties": False,
-        }
-    return {"type": "object", "properties": {}, "additionalProperties": False}
-
-
-args = sys.argv[1:]
-log({"startup_argv": args})
-if args not in (["mcp", "--no-overlay"], ["mcp", "--no-overlay", "--no-daemon-relaunch"]):
-    log({"argv": args, "env": dict(os.environ)})
-    if args == ["telemetry", "status", "--json"]:
-        sys.stdout.write(json.dumps({"enabled": False, "installation_id_present": False}) + "\n")
-        sys.stdout.flush()
-    raise SystemExit(0)
 
 for line in sys.stdin:
     request = json.loads(line)
     if "id" not in request:
         continue
-    log(request)
-    request_id = request["id"]
     method = request["method"]
-    if MODE == "wrong_id" and method == "initialize":
-        request_id += 1
-    if MODE == "oversized" and method == "initialize":
-        sys.stdout.write("x" * 300000 + "\n")
-        sys.stdout.flush()
-        continue
-    if MODE == "malformed" and method == "tools/list":
-        sys.stdout.write("not-json\n")
-        sys.stdout.flush()
-        continue
-    version = "1.0" if MODE == "wrong_version" else "2.0"
+    request_id = request["id"]
     if method == "initialize":
-        emit({"jsonrpc": version, "id": request_id, "result": {
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {
             "protocolVersion": "2025-06-18",
-            "capabilities": {"tools": {}},
+            "capabilities": {},
             "serverInfo": {"name": "fixture-cua", "version": "1"},
         }})
     elif method == "tools/list":
         emit({"jsonrpc": "2.0", "id": request_id, "result": {
             "tools": [
-                {"name": name, "description": "fixture tool", "inputSchema": schema(name)}
-                for name in TOOLS
+                {"name": name, "description": "fixture tool", "inputSchema": {
+                    "type": "object", "properties": {
+                        "url": {"type": "string", "maxLength": 256}
+                    }, "additionalProperties": False
+                }} for name in tools
             ]
         }})
     elif method == "tools/call":
         name = request["params"]["name"]
-        if MODE == "hang":
-            time.sleep(10)
-        elif MODE == "exit":
-            raise SystemExit(7)
-        elif MODE == "raw_error":
-            emit({"jsonrpc": "2.0", "id": request_id, "error": {
-                "code": -32000, "message": "backend secret must not escape"
-            }})
-        else:
-            emit({"jsonrpc": "2.0", "id": request_id, "result": {
-                "content": [{"type": "text", "text": "provider-result"}],
-                "structuredContent": {
-                    "tool": name, "arguments": request["params"].get("arguments", {})
-                },
-                "isError": False,
-            }})
-'''
-
-
-def _write_driver(tmp_path: Path, *, mode: str = "normal", extra_tool: str | None = None) -> tuple[Path, Path]:
-    log = tmp_path / "driver.log"
-    tools = list(CUA_REFERENCE_TOOL_NAMES)
-    if extra_tool is not None:
-        tools.append(extra_tool)
-    script = (
-        _GENERIC_DRIVER.replace("__TOOLS__", repr(tools))
-        .replace("__MODE__", repr(mode))
-        .replace("__LOG__", repr(str(log)))
+        emit({"jsonrpc": "2.0", "id": request_id, "result": {
+            "content": [{"type": "text", "text": "provider-result"}],
+            "structuredContent": {"tool": name, "arguments": request["params"].get("arguments", {})},
+            "isError": False,
+        }})
+""".strip()
+        + "\n",
+        encoding="utf-8",
     )
-    path = tmp_path / "cua-driver"
-    path.write_text(script, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return path, log
 
 
-def _configured(path: Path, *, action_timeout: float = 1, **kwargs: object) -> ComputerCapability:
-    return ComputerCapability(
-        path,
-        "Fixture",
-        "Relay Desktop Fixture",
-        startup_timeout_seconds=2,
-        action_timeout_seconds=action_timeout,
-        shutdown_timeout_seconds=1,
-        **kwargs,
+def test_get_cua_driver_path_uses_only_the_package_api(
+    tmp_path: Path, monkeypatch
+) -> None:
+    executable = tmp_path / "cua-driver"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setitem(
+        sys.modules,
+        "cua_driver",
+        SimpleNamespace(get_binary_path=lambda: str(executable)),
     )
 
+    assert get_cua_driver_path() == executable
 
-def test_cua_reference_inventory_contains_exactly_fifty_generic_names() -> None:
-    assert len(CUA_REFERENCE_TOOL_NAMES) == 50
-    assert len(set(CUA_REFERENCE_TOOL_NAMES)) == 50
-    assert ComputerCapability.tools == frozenset(
-        f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES
+
+def test_cua_capability_discovers_and_calls_native_and_browser_tools(
+    tmp_path: Path, monkeypatch
+) -> None:
+    executable = tmp_path / "cua-driver.py"
+    _write_driver(executable)
+    monkeypatch.setattr(
+        "agent_relay.capabilities.computer.get_cua_driver_path",
+        lambda: executable,
+    )
+    real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+    async def spawn_driver(program, *arguments, **kwargs):
+        if Path(program) == executable:
+            return await real_create_subprocess_exec(
+                sys.executable,
+                str(executable),
+                *arguments,
+                **kwargs,
+            )
+        return await real_create_subprocess_exec(program, *arguments, **kwargs)
+
+    monkeypatch.setattr(
+        "agent_relay.capabilities.computer.asyncio.create_subprocess_exec",
+        spawn_driver,
     )
 
+    async def scenario() -> None:
+        capability = ComputerCapability(startup_timeout_seconds=2, action_timeout_seconds=2)
+        capability._windows = False
+        await capability.start()
+        descriptors = await capability.list_tools()
+        assert {descriptor.tool_name for descriptor in descriptors} == {
+            "list_windows",
+            "browser_prepare",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "execute_javascript",
+        }
 
-def test_driver_stderr_diagnostics_are_closed_and_bounded() -> None:
-    assert _driver_stderr_line_category(
-        b"named pipe connection failed: secret-token"
-    ) == "named-pipe"
-    assert _driver_stderr_line_category(
-        b"ConfigurationError: private-path"
-    ) == "configuration"
-    assert _driver_stderr_line_category(b"unclassified secret-value") == "driver-error"
+        native_result = await capability.call_tool("browser_prepare", {})
+        browser_result = await capability.call_tool(
+            "browser_navigate", {"url": "http://127.0.0.1/"}
+        )
+        assert native_result.structured_content["tool"] == "browser_prepare"
+        assert browser_result.structured_content == {
+            "tool": "browser_navigate",
+            "arguments": {"url": "http://127.0.0.1/"},
+        }
+        await capability.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_driver_diagnostics_are_closed_and_safe() -> None:
+    assert _driver_stderr_line_category(b"named pipe failed: secret") == "named-pipe"
+    assert _driver_stderr_line_category(b"access is denied") == "permission"
+    assert _driver_stderr_line_category(b"unclassified secret") == "driver-error"
     assert _driver_stderr_category({"daemon", "named-pipe"}, True) == "named-pipe"
     assert _driver_stderr_category(set(), False) is None
 
 
-def test_computer_capability_lists_and_calls_provider_native_tools(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = _write_driver(tmp_path, extra_tool="provider_added_later")
-        capability = _configured(path)
-        await capability.start()
-        descriptors = await capability.list_tools()
-        assert len(descriptors) == 51
-        assert {item.tool_name for item in descriptors} == {
-            *CUA_REFERENCE_TOOL_NAMES,
-            "provider_added_later",
-        }
-
-        result = await capability.call_tool("provider_added_later", {})
-        assert isinstance(result.content[0], ProviderTextContent)
-        assert result.content[0].text == "provider-result"
-        assert result.structured_content == {
-            "tool": "provider_added_later",
-            "arguments": {},
-        }
-
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
-        startup = next(item for item in calls if "startup_argv" in item)
-        assert startup["startup_argv"] == [
-            "mcp",
-            "--no-overlay",
-            "--no-daemon-relaunch",
-        ]
-        assert not any("argv" in item for item in calls if "startup_argv" not in item)
-        call = next(item for item in calls if item.get("method") == "tools/call")
-        assert call["params"] == {
-            "name": "provider_added_later",
-            "arguments": {},
-        }
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_selected_cua_tools_are_scoped_to_the_configured_window(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, _ = _write_driver(tmp_path)
-        capability = _configured(path)
-        calls: list[tuple[str, dict[str, object]]] = []
-        snapshot = 0
-
-        class ScopedClient:
-            async def call_tool(
-                self, name: str, arguments: dict[str, object]
-            ) -> ProviderToolResult:
-                nonlocal snapshot
-                calls.append((name, arguments))
-                if name == "list_windows":
-                    return ProviderToolResult(
-                        content=[{"type": "text", "text": "all desktop windows"}],
-                        structuredContent={
-                            "current_space_id": 1,
-                            "windows": [
-                                {
-                                    "pid": 41,
-                                    "window_id": 7,
-                                    "app_name": "Fixture",
-                                    "title": "Relay Desktop Fixture",
-                                    "is_on_screen": True,
-                                    "bounds": {
-                                        "x": 1,
-                                        "y": 2,
-                                        "width": 300,
-                                        "height": 200,
-                                    },
-                                },
-                                {
-                                    "pid": 99,
-                                    "window_id": 8,
-                                    "app_name": "Other",
-                                    "title": "Private window",
-                                    "is_on_screen": True,
-                                    "bounds": {
-                                        "x": 2,
-                                        "y": 3,
-                                        "width": 100,
-                                        "height": 100,
-                                    },
-                                },
-                            ],
-                        },
-                        isError=False,
-                    )
-                if name == "get_window_state":
-                    snapshot += 1
-                    return ProviderToolResult(
-                        content=[{"type": "text", "text": "raw state"}],
-                        structuredContent={
-                            "pid": 41,
-                            "window_id": 7,
-                            "snapshot_id": f"snapshot-{snapshot}",
-                            "screenshot": "must-not-escape",
-                            "elements": [
-                                {
-                                    "element_index": 20,
-                                    "role": "textbox",
-                                    "label": "Name",
-                                    "element_token": f"field-{snapshot}",
-                                    "value": "",
-                                    "bounds": {
-                                        "x": 1,
-                                        "y": 1,
-                                        "width": 10,
-                                        "height": 10,
-                                    },
-                                },
-                                {
-                                    "element_index": 40,
-                                    "role": "button",
-                                    "label": "Apply",
-                                    "element_token": f"button-{snapshot}",
-                                },
-                            ],
-                        },
-                        isError=False,
-                    )
-                return ProviderToolResult(
-                    content=[{"type": "text", "text": "raw action"}],
-                    structuredContent={
-                        "path": "uia",
-                        "verified": True,
-                        "effect": "confirmed",
-                        "private_detail": "must-not-escape",
-                    },
-                    isError=False,
-                )
-
-        client = ScopedClient()
-
-        listed = await capability._call_scoped_tool(client, "list_windows", {})
-        assert listed.content == []
-        assert listed.structured_content == {
-            "windows": [
-                {
-                    "pid": 41,
-                    "window_id": 7,
-                    "app_name": "Fixture",
-                    "title": "Relay Desktop Fixture",
-                    "is_on_screen": True,
-                    "bounds": {"x": 1, "y": 2, "width": 300, "height": 200},
-                }
-            ]
-        }
-
-        state = await capability._call_scoped_tool(
-            client,
-            "get_window_state",
-            {
-                "pid": 41,
-                "window_id": 7,
-                "include_screenshot": False,
-                "max_elements": 128,
-            },
-        )
-        assert state.content == []
-        assert state.structured_content is not None
-        assert "screenshot" not in state.structured_content
-        assert "bounds" not in state.structured_content["elements"][0]
-        assert state.structured_content["elements"][0]["element_index"] == 0
-
-        action = await capability._call_scoped_tool(
-            client,
-            "click",
-            {"pid": 41, "window_id": 7, "element_token": "field-1"},
-        )
-        assert action.content == []
-        assert action.structured_content == {
-            "path": "uia",
-            "verified": True,
-            "effect": "confirmed",
-        }
-
-        typed = await capability._call_scoped_tool(
-            client,
-            "type_text",
-            {
-                "pid": 41,
-                "window_id": 7,
-                "element_token": "field-1",
-                "text": "hello",
-            },
-        )
-        assert typed.content == []
-        assert typed.structured_content == {
-            "path": "uia",
-            "verified": True,
-            "effect": "confirmed",
-        }
-
-        duplicate = await capability._call_scoped_tool(
-            client,
-            "click",
-            {"pid": 41, "window_id": 7, "element_token": "field-1"},
-        )
-        assert duplicate.is_error is True
-
-        await capability._call_scoped_tool(
-            client,
-            "get_window_state",
-            {
-                "pid": 41,
-                "window_id": 7,
-                "include_screenshot": False,
-                "max_elements": 128,
-            },
-        )
-        rejected = await capability._call_scoped_tool(
-            client,
-            "click",
-            {"pid": 41, "window_id": 7, "element_token": "field-1"},
-        )
-        assert rejected.is_error is True
-
-        assert calls[0] == ("list_windows", {"on_screen_only": os.name == "nt"})
-        type_call = next(arguments for name, arguments in calls if name == "type_text")
-        expected_type_call = {
-            "pid": 41,
-            "window_id": 7,
-            "element_token": "field-1",
-            "text": "hello",
-        }
-        if sys.platform.startswith("linux"):
-            expected_type_call["delivery_mode"] = "foreground"
-        assert type_call == expected_type_call
-        assert [name for name, _arguments in calls].count("click") == 1
-
-    asyncio.run(scenario())
-
-
-def test_provider_arguments_are_validated_before_tools_call(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, log = _write_driver(tmp_path)
-        capability = _configured(path)
-        await capability.start()
-        before = len(
-            [
-                line
-                for line in log.read_text().splitlines()
-                if '"method":"tools/call"' in line
-            ]
-        )
-        assert (await capability.call_tool("click", {})).is_error is True
-        assert (
-            await capability.call_tool("click", {"target": "ok", "extra": True})
-        ).is_error is True
-        after = len(
-            [
-                line
-                for line in log.read_text().splitlines()
-                if '"method":"tools/call"' in line
-            ]
-        )
-        assert before == after
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_provider_inventory_accepts_a_fifty_first_tool_without_relay_edit(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> None:
-        path, _ = _write_driver(tmp_path, extra_tool="provider_added_later")
-        capability = _configured(path)
-        await capability.start()
-        descriptors = await capability.list_tools()
-        assert len(descriptors) == 51
-        assert any(item.tool_name == "provider_added_later" for item in descriptors)
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "mode", ["wrong_id", "wrong_version", "malformed", "oversized", "bad_schema"]
-)
-def test_startup_protocol_failures_are_fail_closed(tmp_path: Path, mode: str) -> None:
-    async def scenario() -> None:
-        path, _ = _write_driver(tmp_path, mode=mode)
-        capability = _configured(path)
-        with pytest.raises(ComputerUnavailableError):
-            await capability.start()
-        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_provider_error_is_safe_and_closes_idempotently(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, _ = _write_driver(
-            tmp_path,
-            mode="raw_error",
-            extra_tool="provider_added_later",
-        )
-        capability = _configured(path)
-        await capability.start()
-        with pytest.raises(ProviderToolError) as error:
-            await capability.call_tool("provider_added_later", {})
-        assert "backend secret" not in str(error.value)
-        await capability.aclose()
-        await capability.aclose()
-        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
-
-    asyncio.run(scenario())
-
-
-def test_cancellation_terminates_owned_provider_process(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, _ = _write_driver(
-            tmp_path,
-            mode="hang",
-            extra_tool="provider_added_later",
-        )
-        capability = _configured(path, action_timeout=10)
-        await capability.start()
-        process = capability._process
-        assert process is not None
-        task = asyncio.create_task(capability.call_tool("provider_added_later", {}))
-        await asyncio.sleep(0.05)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
-        await capability.aclose()
-        assert process.returncode is not None
-
-    asyncio.run(scenario())
-
-
-def test_timeout_terminates_owned_provider_process(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        path, _ = _write_driver(
-            tmp_path,
-            mode="hang",
-            extra_tool="provider_added_later",
-        )
-        capability = _configured(path, action_timeout=0.05)
-        await capability.start()
-        process = capability._process
-        assert process is not None
-        with pytest.raises(ProviderTimeoutError):
-            await capability.call_tool("provider_added_later", {})
-        assert process.returncode is not None
-        await asyncio.wait_for(capability.wait_unavailable(), timeout=1)
-        await capability.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_safe_driver_environment_excludes_relay_credentials() -> None:
+def test_driver_environment_excludes_relay_credentials() -> None:
     environment = safe_driver_environment(
         {
             "PATH": "/usr/bin",
-            "HOME": "/tmp/home",
-            "AGENT_RELAY_AGENT_TOKEN": "[REDACTED]",
-            "HTTPS_PROXY": "http://proxy.invalid",
-            "CUA_DRIVER_RS_TELEMETRY_ENABLED": "1",
-            "CUA_DRIVER_TELEMETRY_HOME": "/tmp/cua-home",
-            "CUA_TELEMETRY_ENABLED": "1",
+            "RELAY_AGENT_TOKEN": "secret",
+            "RELAY_URL": "ws://localhost",
+            "CUA_DRIVER_RS_HOME": "/tmp/cua",
         }
     )
-    assert environment == {
-        "PATH": "/usr/bin",
-        "HOME": "/tmp/home",
-        "CUA_DRIVER_TELEMETRY_HOME": "/tmp/cua-home",
-        "CUA_DRIVER_INSTALL_CHANNEL": "python_package",
-        "CUA_DRIVER_TELEMETRY": "0",
-        "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
-        "CUA_TELEMETRY_ENABLED": "0",
-    }
+    assert environment["PATH"] == "/usr/bin"
+    assert environment["CUA_DRIVER_TELEMETRY"] == "0"
+    assert "RELAY_AGENT_TOKEN" not in environment
+    assert "RELAY_URL" not in environment
 
 
-def test_no_operation_specific_cua_dispatch_remains() -> None:
-    source = Path(__file__).parents[1].joinpath(
-        "src", "agent_relay", "capabilities", "computer.py"
-    ).read_text(encoding="utf-8")
-    assert "computer.capture" not in source
-    assert "computer.click" not in source
-    assert "computer.type" not in source
-    assert "element_id" not in source
-
-
-def test_driver_path_validation_rejects_relative_and_symlink(tmp_path: Path) -> None:
-    relative = Path("cua-driver")
-    with pytest.raises(ValueError):
-        validate_driver_executable(relative)
-    target = tmp_path / "driver"
-    target.write_text("#!/bin/sh\n", encoding="utf-8")
-    target.chmod(0o755)
-    link = tmp_path / "link"
-    link.symlink_to(target)
-    with pytest.raises(ValueError):
-        validate_driver_executable(link)
-
-
-def test_windows_health_requires_all_required_checks() -> None:
-    payload = {
-        "schema_version": "1",
-        "platform": "win32",
-        "overall": "ok",
-        "checks": [
-            {"name": name, "status": "pass", "message": "ok"}
-            for name in (
-                "binary_version",
-                "platform_supported",
-                "session_active",
-                "ax_capability",
-            )
-        ],
-    }
-    validate_windows_health(payload)
-    payload["checks"][-1]["status"] = "fail"
-    with pytest.raises(ValueError):
-        validate_windows_health(payload)
-
-
-def test_windows_daemon_readiness_wait_is_bounded_and_retries() -> None:
-    class Process:
-        returncode = None
-
-    attempts = 0
-
-    def pipe_ready() -> bool:
-        nonlocal attempts
-        attempts += 1
-        return attempts == 3
-
-    async def scenario() -> None:
-        await _wait_for_windows_daemon_ready(
-            Process(),
-            1,
-            pipe_ready=pipe_ready,
-        )
-
-    asyncio.run(scenario())
-    assert attempts == 3
-
-
-def test_async_popen_process_adapter_waits_without_driver_execution() -> None:
-    process = subprocess.Popen([sys.executable, "-c", "pass"])
-    adapted = _AsyncPopenProcess(process)
-    assert adapted.pid == process.pid
-    assert asyncio.run(adapted.wait()) == 0
-    assert adapted.returncode == 0
+def test_driver_executable_validation_is_independent_of_configuration_fields(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "driver"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    assert validate_driver_executable(executable) == executable

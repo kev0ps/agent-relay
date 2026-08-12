@@ -22,16 +22,13 @@ CUA_NAMES = (
     "list_apps",
     "list_windows",
     "get_window_state",
-    "get_accessibility_tree",
-    "get_desktop_state",
-    "get_screen_size",
-    "get_cursor_position",
-    "get_config",
-    "get_recording_state",
-    "get_agent_cursor_state",
+    "verify_state",
     "launch_app",
     "kill_app",
     "bring_to_front",
+    "set_window_frame",
+    "invoke_menu",
+    "debug_window_info",
     "click",
     "double_click",
     "right_click",
@@ -41,7 +38,21 @@ CUA_NAMES = (
     "hotkey",
     "set_value",
     "scroll",
+    "clipboard_read",
+    "clipboard_write",
+    "get_screen_size",
+    "get_desktop_state",
+    "get_cursor_position",
     "move_cursor",
+    "set_agent_cursor_enabled",
+    "set_agent_cursor_motion",
+    "get_agent_cursor_state",
+    "set_agent_cursor_theme",
+    "check_permissions",
+    "health_report",
+    "get_config",
+    "set_config",
+    "get_accessibility_tree",
     "zoom",
     "page",
     "get_browser_state",
@@ -55,20 +66,14 @@ CUA_NAMES = (
     "browser_pointer",
     "start_recording",
     "stop_recording",
+    "get_recording_state",
     "replay_trajectory",
-    "set_config",
-    "start_session",
-    "end_session",
-    "set_agent_cursor_enabled",
-    "set_agent_cursor_motion",
-    "check_permissions",
-    "health_report",
-    "check_for_update",
     "install_ffmpeg",
-    "verify_state",
-    "set_agent_cursor_theme",
+    "start_session",
     "escalate_session",
     "get_session_state",
+    "end_session",
+    "check_for_update",
 )
 
 
@@ -146,7 +151,7 @@ def test_all_fifty_runtime_cua_tools_are_candidates_but_not_selected() -> None:
     snapshot = discover(FakeCuaProvider())
 
     cua_entries = tuple(entry for entry in snapshot.entries if entry.provider_name == "cua")
-    assert len(cua_entries) == 50
+    assert len(cua_entries) == 55
     assert snapshot.selected_public_names == ()
     assert {entry.public_name for entry in cua_entries} == {
         f"relay_cua_{name}" for name in CUA_NAMES
@@ -184,7 +189,7 @@ def test_cua_inventory_accepts_a_new_tool_without_protocol_changes() -> None:
     snapshot = discover(provider)
 
     cua_entries = tuple(entry for entry in snapshot.entries if entry.provider_name == "cua")
-    assert len(cua_entries) == 51
+    assert len(cua_entries) == 56
     assert snapshot.entry("relay_cua_future_tool").status == "disabled"
     assert snapshot.selected_public_names == ()
 
@@ -265,7 +270,6 @@ def test_configured_cua_driver_is_used_for_ephemeral_catalog_discovery(
     )
     registrations = local_provider_registrations(
         env={
-            "RELAY_AGENT_COMPUTER_DRIVER_PATH": "/opt/cua-driver",
             "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": "Fixture",
             "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": "Fixture Window",
         }

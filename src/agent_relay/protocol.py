@@ -28,15 +28,6 @@ MAX_PROGRESS_MESSAGE_LENGTH = 512
 MAX_RESULT_JSON_BYTES = MAX_JSON_BYTES
 MAX_RESULT_DEPTH = MAX_JSON_DEPTH
 MAX_RESULT_NODES = MAX_JSON_NODES
-MAX_BROWSER_URL_LENGTH = 2048
-MAX_BROWSER_FILL_VALUE_LENGTH = 4096
-MAX_BROWSER_TYPE_TEXT_LENGTH = 4096
-MAX_BROWSER_TITLE_LENGTH = 256
-MAX_BROWSER_PAGE_TEXT_LENGTH = 4096
-MAX_BROWSER_ROLE_LENGTH = 64
-MAX_BROWSER_NAME_LENGTH = 128
-MAX_BROWSER_ELEMENT_VALUE_LENGTH = 256
-MAX_BROWSER_ELEMENTS = 12
 
 RequestId = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
@@ -49,9 +40,8 @@ ToolName = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 ]
 TOOL_ORDER: tuple[str, ...] = (
-    "system.ping", "terminal.exec", "browser.list_tabs", "browser.navigate",
-    "browser.snapshot", "browser.fill", "browser.click", "browser.scroll",
-    "browser.type", "browser.back",
+    "system.ping",
+    "terminal.exec",
 )
 
 # Imported after the bounded frame primitives to keep the provider result model

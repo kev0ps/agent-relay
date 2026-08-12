@@ -56,17 +56,6 @@ def test_protocol_does_not_expose_operation_specific_invoke_models() -> None:
     legacy_names = (
         "SystemPingInvoke",
         "TerminalExecInvoke",
-        "BrowserListTabsInvoke",
-        "BrowserNavigateInvoke",
-        "BrowserSnapshotInvoke",
-        "BrowserFillInvoke",
-        "BrowserClickInvoke",
-        "BrowserScrollInvoke",
-        "BrowserTypeInvoke",
-        "BrowserBackInvoke",
-        "ComputerCaptureInvoke",
-        "ComputerClickInvoke",
-        "ComputerTypeInvoke",
     )
     assert all(not hasattr(protocol, name) for name in legacy_names)
 
@@ -169,8 +158,8 @@ def test_invoke_message_is_an_explicit_closed_union() -> None:
         {
             "version": 2,
             "type": "invoke",
-            "request_id": "browser-1",
-            "tool_name": "browser.click",
+            "request_id": "cua-browser-1",
+            "tool_name": "cua.browser_click",
             "arguments": {"locator": {"role": "button", "name": "Submit"}},
         },
         {

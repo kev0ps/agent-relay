@@ -11,6 +11,7 @@ import platform
 import re
 import secrets
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,9 +56,16 @@ except ModuleNotFoundError as error:
 
 DEVICE_ID = "linux-cua-e2e-agent"
 CUA_CAPABILITIES = (
+    "cua.browser_navigate",
+    "cua.browser_prepare",
     "cua.click",
+    "cua.end_session",
+    "cua.get_browser_state",
     "cua.get_window_state",
+    "cua.kill_app",
+    "cua.launch_app",
     "cua.list_windows",
+    "cua.start_session",
     "cua.type_text",
     "system.ping",
     "terminal.exec",
@@ -69,13 +77,20 @@ AGENT_READY_TIMEOUT_SECONDS = 30.0
 LinuxCuaE2EError = native.NativeE2EError
 
 
-def _runtime(*, mcp_url: str, control_token: str, run_id: str, fixtures_root: Path) -> Any:
+def _runtime(
+    *,
+    mcp_url: str,
+    control_token: str,
+    run_id: str,
+    fixtures_root: Path,
+    fixture_url: str,
+) -> Any:
     return portable_scenarios.RuntimeConfig(
         mcp_url=mcp_url,
         control_token=control_token,
         device_id=DEVICE_ID,
         run_id=run_id,
-        fixture_url="http://127.0.0.1:1/",
+        fixture_url=fixture_url,
         fixtures_root=str(fixtures_root),
     )
 
@@ -251,6 +266,42 @@ def _x11_has_client_window(environment: dict[str, str]) -> bool:
     )
 
 
+def _resolve_chromium() -> Path:
+    """Resolve the browser supplied by the Linux E2E environment."""
+    for name in ("chromium", "chromium-browser", "google-chrome"):
+        raw_path = shutil.which(name)
+        if raw_path is None:
+            continue
+        candidate = Path(raw_path).resolve(strict=True)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise LinuxCuaE2EError("a compatible Chromium executable is unavailable")
+
+
+def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[str]:
+    """Build the isolated browser command used by the integrated CUA path."""
+    if not executable.is_absolute() or not profile.is_absolute():
+        raise ValueError("Chromium executable and profile must be absolute")
+    if not fixture_url.startswith("http://127.0.0.1:") or not fixture_url.endswith("/"):
+        raise ValueError("fixture URL must be loopback-only")
+    return [
+        str(executable),
+        f"--app={fixture_url}",
+        "--no-sandbox",
+        "--force-renderer-accessibility",
+        "--class=relay-desktop-fixture",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--window-size=1280,720",
+        f"--user-data-dir={profile}",
+    ]
+
+
 def _stderr_hint(path: Path) -> str | None:
     """Return a short, redacted diagnostic line without exposing child logs."""
     try:
@@ -316,42 +367,6 @@ def _event_hint(path: Path) -> str:
     )
 
 
-def _resolve_driver() -> Path:
-    try:
-        from cua_driver.wrapper import get_binary_path
-    except ImportError as error:
-        raise LinuxCuaE2EError("cua-driver is unavailable") from error
-    path = Path(get_binary_path())
-    if not path.is_absolute() or not path.is_file() or path.is_symlink() or not os.access(path, os.X_OK):
-        raise LinuxCuaE2EError("cua-driver executable is invalid")
-    return path
-
-
-def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[str]:
-    if not executable.is_absolute() or not profile.is_absolute():
-        raise ValueError("Chromium executable and profile must be absolute")
-    if not fixture_url.startswith("http://127.0.0.1:") or not fixture_url.endswith("/"):
-        raise ValueError("fixture URL must be loopback-only")
-    return [
-        str(executable),
-        f"--app={fixture_url}",
-        # GitHub-hosted Ubuntu disables Chromium's unprivileged user namespace
-        # sandbox; this process only visits the loopback fixture in an ephemeral job.
-        "--no-sandbox",
-        "--force-renderer-accessibility",
-        "--class=relay-desktop-fixture",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--window-size=1280,720",
-        f"--user-data-dir={profile}",
-    ]
-
-
 def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None = None) -> None:
     """Run real Server + Agent + public MCP Computer Use calls under Xvfb."""
     if sys.platform != "linux":
@@ -397,28 +412,22 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         repository = ROOT
         desktop_url = f"http://127.0.0.1:{fixture_port}/"
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
-        driver = _resolve_driver()
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            chromium = Path(playwright.chromium.executable_path)
-        if not chromium.is_absolute() or not chromium.is_file() or chromium.is_symlink():
-            raise LinuxCuaE2EError("Playwright Chromium executable is unavailable")
-
-        graphical_environment = native._minimal_environment(
-            home,
-            {
-                "DISPLAY": DISPLAY,
-                "NO_AT_BRIDGE": "0",
-                "GTK_MODULES": "gail:atk-bridge",
-                "QT_ACCESSIBILITY": "1",
-                "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
-                "CUA_DRIVER_TELEMETRY": "0",
-                "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
-                "XDG_CONFIG_HOME": str(home / ".config"),
-                "XDG_RUNTIME_DIR": str(runtime_dir),
-            },
-        )
+        chromium = _resolve_chromium()
+        graphical_values = {
+            "DISPLAY": DISPLAY,
+            "NO_AT_BRIDGE": "0",
+            "GTK_MODULES": "gail:atk-bridge",
+            "QT_ACCESSIBILITY": "1",
+            "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
+            "CUA_DRIVER_TELEMETRY": "0",
+            "CUA_DRIVER_RS_TELEMETRY_ENABLED": "0",
+            # Chromium's sandbox cannot initialize in the disposable CI
+            # harness; this flag is consumed only by the CUA browser child.
+            "CUA_E2E_BROWSER_NO_SANDBOX": "1",
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_RUNTIME_DIR": str(runtime_dir),
+        }
+        graphical_environment = native._minimal_environment(home, graphical_values)
         server_environment = native._minimal_environment(
             home,
             {
@@ -438,15 +447,20 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text,relay_cua_launch_app,relay_cua_start_session,relay_cua_browser_prepare,relay_cua_browser_navigate,relay_cua_get_browser_state,relay_cua_end_session,relay_cua_kill_app",
                 "RELAY_NATIVE_DEBUG": "1",
-                "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(driver),
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
             }
         )
         fixture_environment = native._minimal_environment(home, {"ARTIFACTS_DIR": str(local_artifacts)})
-        runtime = _runtime(mcp_url=mcp_url, control_token=control_token, run_id=run_id, fixtures_root=local_artifacts)
+        runtime = _runtime(
+            mcp_url=mcp_url,
+            control_token=control_token,
+            run_id=run_id,
+            fixtures_root=local_artifacts,
+            fixture_url=desktop_url,
+        )
 
         phase = "xvfb-start"
         xvfb = native._spawn(
@@ -500,7 +514,9 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
 
         def chromium_window_ready() -> bool:
             if browser.poll() is not None:
-                raise LinuxCuaE2EError("Linux CUA Chromium exited before its window appeared")
+                raise LinuxCuaE2EError(
+                    "Linux CUA Chromium exited before its window appeared"
+                )
             return _x11_has_client_window(graphical_environment)
 
         native._wait_for(
@@ -525,7 +541,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             return True
 
         native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
-        phase = "computer-scenario"
+        phase = "cua-scenario"
         portable_scenarios.run_cua_scenario(
             runtime,
             value,
@@ -533,6 +549,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             expected_capabilities=CUA_CAPABILITIES,
             expected_cua_app=COMPUTER_APP_NAME,
             expected_cua_window_title=COMPUTER_WINDOW_TITLE,
+            include_browser=True,
         )
         if any(process.poll() is not None for process in (server, fixture, browser, agent)):
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")

@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from agent_relay.capabilities.computer import (
     _driver_stderr_category,
     _driver_stderr_line_category,
+    get_cua_driver_path,
     safe_driver_environment,
     windows_daemon_pipe_ready,
 )
@@ -62,7 +63,6 @@ async def _probe_linux(driver: str, probe_env: dict[str, str]) -> int:
             driver,
             "mcp",
             "--no-overlay",
-            "--no-daemon-relaunch",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -187,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", required=True, choices=("linux", "windows"))
     arguments = parser.parse_args(argv)
-    driver = os.environ["RELAY_AGENT_COMPUTER_DRIVER_PATH"]
+    driver = str(get_cua_driver_path())
     probe_env = safe_driver_environment(os.environ.copy())
     if arguments.platform == "linux":
         return asyncio.run(_probe_linux(driver, probe_env))

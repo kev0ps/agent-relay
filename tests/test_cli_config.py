@@ -159,9 +159,9 @@ def test_server_runtime_reports_sanitized_validation_errors(tmp_path: Path) -> N
 def test_yaml_boolean_and_environment_boolean_are_parsed_strictly(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config.init_config(config_path, "agent", token="test-agent-token", tools=[], env={})
-    config.set_value(config_path, "agent", "browser.headless", "true")
-    settings = config.load_agent_settings(config_path, env={"RELAY_AGENT_BROWSER_HEADLESS": "false"})
-    assert settings.browser_headless is False
+    config.set_value(config_path, "agent", "computer.max_elements", "128")
+    settings = config.load_agent_settings(config_path, env={})
+    assert settings.computer_max_elements == 128
 
 
 def test_init_agent_explicitly_starts_with_empty_allowlist(
@@ -482,10 +482,11 @@ def test_canonical_environment_overrides_yaml_for_server(
     assert "9100" in output
 
 
-def test_noninteractive_agent_init_requires_explicit_tool_choice(
+def test_noninteractive_agent_init_defaults_to_no_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    monkeypatch.setattr("getpass.getpass", lambda *_: "agent-secret")
     assert (
         cli.main(
             [
@@ -496,9 +497,9 @@ def test_noninteractive_agent_init_requires_explicit_tool_choice(
                 "agent",
             ]
         )
-        == 1
+        == 0
     )
-    assert "--tools or --no-tools" in capsys.readouterr().err
+    assert "enabled tools: none" in capsys.readouterr().out
 
 
 def test_set_and_validate_reject_unknown_configuration_keys(

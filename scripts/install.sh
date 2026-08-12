@@ -83,20 +83,10 @@ if [[ -n "$sync_root" ]]; then
         printf 'AGENT_RELAY_SYNC_ROOT is not a locked Agent Relay project: %s\n' "$sync_root" >&2
         exit 1
     fi
-    sync_profile="${AGENT_RELAY_SYNC_PROFILE:-base}"
-    case "$sync_profile" in
-        base) sync_arguments=(sync --locked) ;;
-        browser) sync_arguments=(sync --locked --extra browser) ;;
-        computer) sync_arguments=(sync --locked --extra browser --extra computer) ;;
-        *)
-            printf "AGENT_RELAY_SYNC_PROFILE must be 'base', 'browser', or 'computer'.\n" >&2
-            exit 1
-            ;;
-    esac
-    printf 'Installing locked %s dependencies with uv...\n' "$sync_profile"
+    printf 'Installing locked Agent Relay dependencies with uv...\n'
     (
         cd -- "$sync_root"
-        "$uv_path" "${sync_arguments[@]}"
+        "$uv_path" sync --locked
     )
 fi
 

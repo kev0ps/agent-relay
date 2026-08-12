@@ -292,7 +292,7 @@ def _minimal_environment(home: Path, values: dict[str, str]) -> dict[str, str]:
     }
     if not os.environ.get("RELAY_E2E_AGENT_RELAY_COMMAND"):
         environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
-    for name in ("CUA_DRIVER_RS_HOME", "CUA_DRIVER_RS_INSTALL_DIR"):
+    for name in ("CUA_DRIVER_RS_HOME",):
         if value := os.environ.get(name):
             environment[name] = value
     environment.update(values)

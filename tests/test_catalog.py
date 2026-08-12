@@ -55,7 +55,7 @@ class _Provider(ProviderToolClient):
         return None
 
 
-def test_local_catalog_loader_discovers_builtins_and_marks_optional_providers() -> None:
+def test_local_catalog_loader_discovers_builtins_and_the_standard_cua_provider() -> None:
     snapshot = discover_local_catalog(env={})
     by_name = {entry.public_name: entry for entry in snapshot.entries}
 
@@ -78,31 +78,26 @@ def test_local_catalog_loader_discovers_builtins_and_marks_optional_providers() 
         "required": ["command_id"],
         "additionalProperties": False,
     }
-    assert by_name["relay_browser_snapshot"].status == "unavailable"
-    assert by_name["relay_cua_list_apps"].status == "unavailable"
-    assert set(snapshot.unavailable_providers) == {"browser", "cua"}
+    assert "cua" not in snapshot.unavailable_providers
+    assert by_name["relay_cua_click"].status == "disabled"
     assert all(entry.risk for entry in snapshot.entries)
 
 
-def test_local_catalog_loader_treats_configured_browser_as_catalog_available() -> None:
-    snapshot = discover_local_catalog(
-        env={
-            "RELAY_AGENT_BROWSER_USER_DATA_DIR": "/tmp/profile",
-            "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS": "https://example.test",
-            "RELAY_AGENT_COMPUTER_DRIVER_PATH": "/usr/local/bin/cua-driver",
-        }
+def test_local_catalog_loader_does_not_require_an_application_for_discovery() -> None:
+    snapshot = discover_local_catalog(env={})
+
+    assert "cua" not in snapshot.unavailable_providers
+    assert any(entry.public_name == "relay_cua_browser_navigate" for entry in snapshot.entries)
+
+
+def test_cua_catalog_construction_debug_is_bounded(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "agent_relay.capabilities.computer.get_cua_driver_path",
+        lambda: (_ for _ in ()).throw(ValueError("unavailable")),
     )
-
-    assert snapshot.entry("relay_browser_snapshot").status == "disabled"
-    assert snapshot.entry("relay_cua_list_apps").status == "unavailable"
-
-
-def test_cua_catalog_construction_debug_is_bounded(tmp_path, capsys) -> None:
-    missing_driver = tmp_path / "missing-driver"
 
     result = _configured_cua_catalog_client(
         {
-            "RELAY_AGENT_COMPUTER_DRIVER_PATH": str(missing_driver),
             "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": "fixture",
             "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": "Fixture",
             "RELAY_NATIVE_DEBUG": "1",
@@ -117,17 +112,17 @@ def test_cua_catalog_construction_debug_is_bounded(tmp_path, capsys) -> None:
 
 
 def test_local_catalog_loader_uses_injected_runtime_provider_tools_list() -> None:
-    provider = _Provider([_descriptor("browser", "snapshot", risk="read_only")])
+    provider = _Provider([_descriptor("cua", "get_browser_state", risk="read_only")])
 
-    snapshot = discover_local_catalog(providers={"browser": provider})
+    snapshot = discover_local_catalog(providers={"cua": provider})
 
-    assert snapshot.entry("relay_browser_snapshot").status == "disabled"
-    assert snapshot.unavailable_providers == ("cua",)
+    assert snapshot.entry("relay_cua_get_browser_state").status == "disabled"
+    assert snapshot.unavailable_providers == ()
 
 
 def test_public_names_are_stable_and_collision_checked() -> None:
     assert public_tool_name("cua-driver", "capture") == "relay_cua_driver_capture"
-    assert public_tool_name("Browser", "list.tabs") == "relay_browser_list_tabs"
+    assert public_tool_name("cua", "browser_list_tabs") == "relay_cua_browser_list_tabs"
 
     service = CatalogService(
         [
@@ -221,31 +216,31 @@ def test_missing_provider_is_unavailable_and_never_falls_back() -> None:
     service = CatalogService(
         [
             ProviderRegistration(
-                "browser",
+                "cua",
                 None,
-                known_tools=(_descriptor("browser", "navigate"),),
+                known_tools=(_descriptor("cua", "browser_navigate"),),
                 allow_reserved_public_names=True,
             )
         ]
     )
 
     snapshot = asyncio.run(service.discover())
-    entry = snapshot.entry("relay_browser_navigate")
+    entry = snapshot.entry("relay_cua_browser_navigate")
     assert entry.status == "unavailable"
     assert snapshot.selected_descriptors == ()
     with pytest.raises(CatalogError, match="unavailable"):
-        snapshot.validate_allowlist(["relay_browser_navigate"])
+        snapshot.validate_allowlist(["relay_cua_browser_navigate"])
 
 
 def test_policy_blocks_unsafe_tools_and_exposes_risk_class() -> None:
     service = CatalogService(
         [
             ProviderRegistration(
-                "browser",
+                "cua",
                 _Provider(
                     [
-                        _descriptor("browser", "snapshot", risk="read_only"),
-                        _descriptor("browser", "page", risk="interaction"),
+                        _descriptor("cua", "get_browser_state", risk="read_only"),
+                        _descriptor("cua", "page", risk="interaction"),
                     ]
                 ),
                 allow_reserved_public_names=True,
@@ -255,23 +250,23 @@ def test_policy_blocks_unsafe_tools_and_exposes_risk_class() -> None:
     )
 
     snapshot = asyncio.run(service.discover())
-    assert snapshot.entry("relay_browser_snapshot").risk == "read_only"
-    assert snapshot.entry("relay_browser_page").status == "blocked"
-    assert snapshot.entry("relay_browser_page").risk == "blocked"
+    assert snapshot.entry("relay_cua_get_browser_state").risk == "read_only"
+    assert snapshot.entry("relay_cua_page").status == "blocked"
+    assert snapshot.entry("relay_cua_page").risk == "blocked"
     with pytest.raises(CatalogError, match="blocked"):
-        snapshot.validate_allowlist(["relay_browser_page"])
+        snapshot.validate_allowlist(["relay_cua_page"])
 
 
 def test_invalid_provider_inventory_fails_closed() -> None:
     service = CatalogService(
         [
             ProviderRegistration(
-                "browser",
+                "cua",
                 _Provider(
                     [
                         {
-                            "provider_name": "browser",
-                            "tool_name": "navigate",
+                            "provider_name": "cua",
+                            "tool_name": "browser_navigate",
                             "public_name": "navigate",
                             "description": "navigate",
                             "input_schema": {"type": "object"},
@@ -292,12 +287,12 @@ def test_invalid_json_schema_type_fails_closed() -> None:
     service = CatalogService(
         [
             ProviderRegistration(
-                "browser",
+                "cua",
                 _Provider(
                     [
                         {
-                            "provider_name": "browser",
-                            "tool_name": "snapshot",
+                            "provider_name": "cua",
+                            "tool_name": "get_browser_state",
                             "public_name": "snapshot",
                             "description": "snapshot",
                             "input_schema": {

@@ -67,7 +67,7 @@ setting is required when clients use `localhost` or a direct IP address such as
 `http://192.168.1.41:8000/mcp`. After Bearer authentication, the Server accepts
 IP-literal Host values automatically and rejects arbitrary DNS names. A DNS
 name or reverse proxy remains an advanced deployment and requires explicit
-`RELAY_MCP_ALLOWED_HOSTS` (and `RELAY_MCP_ALLOWED_ORIGINS` for a Web browser).
+`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` settings.
 
 These HTTP checks do not identify or allowlist the client IP. Restrict source
 IPs with the Server host firewall and do not expose the plaintext listener to
@@ -156,7 +156,9 @@ policy.
 - It does not configure TLS, a reverse proxy, systemd, or a Windows service.
 - CI validates the Linux Server container plus native Linux Agent status path;
   it does not validate a mixed-platform deployment.
-- Docker image checks cover packaging and CLI startup, not Browser or CUA.
-- Browser and CUA require their native Agent dependencies and configuration.
+- Docker image checks cover packaging and CLI startup, not desktop or browser
+  operations.
+- The native Agent installs the standard CUA dependency and discovers its
+  catalogue automatically; only selected CUA tools require configuration.
 
 Read [`security.md`](security.md) before using a networked deployment.
