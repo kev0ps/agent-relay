@@ -272,8 +272,8 @@ def _resolve_chromium() -> Path:
         raw_path = shutil.which(name)
         if raw_path is None:
             continue
-        candidate = Path(raw_path).resolve(strict=True)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        candidate = Path(raw_path)
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
     raise LinuxCuaE2EError("a compatible Chromium executable is unavailable")
 

@@ -19,6 +19,18 @@ def _load_harness():
     return module
 
 
+def test_resolve_chromium_preserves_symlinked_launcher(tmp_path, monkeypatch) -> None:
+    harness = _load_harness()
+    target = tmp_path / "snap"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    target.chmod(0o755)
+    launcher = tmp_path / "chromium"
+    launcher.symlink_to(target)
+    monkeypatch.setattr(harness.shutil, "which", lambda _name: str(launcher))
+
+    assert harness._resolve_chromium() == launcher
+
+
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     harness = _load_harness()
     source = SCRIPT.read_text(encoding="utf-8")
