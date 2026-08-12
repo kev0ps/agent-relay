@@ -1285,7 +1285,10 @@ def _is_background_unavailable(result: ProviderToolResult) -> bool:
                 return True
     for item in result.content:
         text = getattr(item, "text", None)
-        if isinstance(text, str) and "background_unavailable" in text.casefold():
+        if (
+            isinstance(text, str)
+            and text.strip().casefold() == "background_unavailable"
+        ):
             return True
     return False
 
