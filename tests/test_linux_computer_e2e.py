@@ -155,6 +155,13 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "if: always()" in job
 
 
+def test_linux_cua_starts_driver_before_chromium() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert source.index('phase = "agent-start"') < source.index('phase = "chromium-start"')
+    assert '"ACCESSIBILITY_ENABLED": "1"' in source
+    assert '"NO_AT_BRIDGE": "0"' in source
+
+
 def test_linux_cua_evidence_policy_is_externalized() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     job = workflow.split("  e2e-linux-cua:", 1)[1].split(

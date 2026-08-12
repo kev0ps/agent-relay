@@ -458,6 +458,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         host_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
         graphical_values = {
             "DISPLAY": DISPLAY,
+            "ACCESSIBILITY_ENABLED": "1",
             "NO_AT_BRIDGE": "0",
             "GTK_MODULES": "gail:atk-bridge",
             "QT_ACCESSIBILITY": "1",
@@ -544,6 +545,25 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         )
         native._wait_for("Linux CUA desktop fixture", lambda: _fixture_ready(desktop_url), timeout=FIXTURE_READY_TIMEOUT_SECONDS)
 
+        phase = "agent-start"
+        agent = native._spawn(
+            native.agent_command(server_port, workspace),
+            environment=agent_environment,
+            cwd=repository,
+            lifecycle=lifecycle,
+            stderr_path=diagnostics["Agent"],
+        )
+
+        def agent_ready() -> bool:
+            if agent.poll() is not None:
+                raise LinuxCuaE2EError("Linux CUA Agent exited during startup")
+            _status(mcp_url, control_token, connected=True)
+            return True
+
+        native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
+        # The cua-driver keeps an AT-SPI registry listener for its lifetime.
+        # Start it before Chromium so the renderer publishes its accessibility
+        # subtree instead of registering only the top-level window.
         phase = "chromium-start"
         assert graphical_environment is not None
         browser = native._spawn(
@@ -576,22 +596,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             timeout=DESKTOP_READY_TIMEOUT_SECONDS,
         )
 
-        phase = "agent-start"
-        agent = native._spawn(
-            native.agent_command(server_port, workspace),
-            environment=agent_environment,
-            cwd=repository,
-            lifecycle=lifecycle,
-            stderr_path=diagnostics["Agent"],
-        )
-
-        def agent_ready() -> bool:
-            if agent.poll() is not None:
-                raise LinuxCuaE2EError("Linux CUA Agent exited during startup")
-            _status(mcp_url, control_token, connected=True)
-            return True
-
-        native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
         phase = "cua-scenario"
         portable_scenarios.run_cua_scenario(
             runtime,
