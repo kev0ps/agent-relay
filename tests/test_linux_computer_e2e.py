@@ -118,6 +118,22 @@ def test_non_snap_chromium_keeps_private_bus(tmp_path) -> None:
     assert result == environment
 
 
+def test_enable_chromium_accessibility_sets_both_session_flags(monkeypatch) -> None:
+    harness = _load_harness()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return None
+
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+
+    assert harness._enable_chromium_accessibility({"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/bus"})
+    assert [call[0][-2] for call in calls] == ["ScreenReaderEnabled", "IsEnabled"]
+    assert all(call[0][-1] == "<true>" for call in calls)
+    assert all(call[0][0:3] == ["gdbus", "call", "--session"] for call in calls)
+
+
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     harness = _load_harness()
     source = SCRIPT.read_text(encoding="utf-8")

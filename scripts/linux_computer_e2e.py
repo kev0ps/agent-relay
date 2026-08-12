@@ -201,6 +201,39 @@ def _accessibility_ready(environment: dict[str, str]) -> bool:
     )
 
 
+def _enable_chromium_accessibility(environment: dict[str, str]) -> bool:
+    """Advertise an assistive technology on the isolated session bus."""
+    try:
+        for property_name in ("ScreenReaderEnabled", "IsEnabled"):
+            subprocess.run(
+                [
+                    "gdbus",
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.a11y.Bus",
+                    "--object-path",
+                    "/org/a11y/bus",
+                    "--method",
+                    "org.freedesktop.DBus.Properties.Set",
+                    "org.a11y.Status",
+                    property_name,
+                    "<true>",
+                ],
+                env=environment,
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=2,
+                shell=False,
+            )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def _x11_window_hint(environment: dict[str, str]) -> str:
     """Return bounded X11 window counts without exposing window metadata."""
     counts: dict[str, str] = {}
@@ -519,6 +552,12 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         graphical_environment["DBUS_SESSION_BUS_ADDRESS"] = _start_dbus(graphical_environment, lifecycle)
         agent_environment["DBUS_SESSION_BUS_ADDRESS"] = graphical_environment["DBUS_SESSION_BUS_ADDRESS"]
         native._wait_for("Linux CUA accessibility bus", lambda: _accessibility_ready(graphical_environment), timeout=DESKTOP_READY_TIMEOUT_SECONDS)
+        assert graphical_environment is not None
+        native._wait_for(
+            "Linux CUA Chromium accessibility",
+            lambda: _enable_chromium_accessibility(graphical_environment),
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
 
         phase = "openbox-start"
         openbox = native._spawn(["openbox"], environment=graphical_environment, cwd=repository, lifecycle=lifecycle)
