@@ -25,6 +25,7 @@ DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"
 DISPLAY = ":91"
 COMPUTER_APP_NAME = "relay-desktop-fixture"
 COMPUTER_WINDOW_TITLE = "Relay Desktop Fixture"
+SNAP_CHROMIUM_BIN_DIR = Path("/snap/bin")
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -302,6 +303,46 @@ def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[
     ]
 
 
+def chromium_environment(
+    executable: Path,
+    environment: dict[str, str],
+    *,
+    host_runtime_dir: Path | None,
+    host_session_bus_address: str | None,
+) -> dict[str, str]:
+    """Give a snap Chromium the host user bus needed for its systemd scope."""
+    result = dict(environment)
+    if not _is_snap_chromium_launcher(executable):
+        return result
+    if host_session_bus_address:
+        result["DBUS_SESSION_BUS_ADDRESS"] = host_session_bus_address
+        return result
+    if host_runtime_dir is None:
+        return result
+    bus = host_runtime_dir / "bus"
+    if bus.is_socket():
+        result["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    return result
+
+
+def _is_snap_chromium_launcher(executable: Path) -> bool:
+    """Recognize snap Chromium without replacing its launcher symlink."""
+    current = executable
+    visited: set[Path] = set()
+    for _ in range(8):
+        if current.parent == SNAP_CHROMIUM_BIN_DIR:
+            return True
+        if current in visited or not current.is_symlink():
+            return False
+        visited.add(current)
+        try:
+            target = current.readlink()
+        except OSError:
+            return False
+        current = target if target.is_absolute() else current.parent / target
+    return False
+
+
 def _stderr_hint(path: Path) -> str | None:
     """Return a short, redacted diagnostic line without exposing child logs."""
     try:
@@ -413,6 +454,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         desktop_url = f"http://127.0.0.1:{fixture_port}/"
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
         chromium = _resolve_chromium()
+        host_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
         graphical_values = {
             "DISPLAY": DISPLAY,
             "NO_AT_BRIDGE": "0",
@@ -502,9 +544,17 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         native._wait_for("Linux CUA desktop fixture", lambda: _fixture_ready(desktop_url), timeout=FIXTURE_READY_TIMEOUT_SECONDS)
 
         phase = "chromium-start"
+        assert graphical_environment is not None
         browser = native._spawn(
             chromium_command(chromium, profile, desktop_url),
-            environment=graphical_environment,
+            environment=chromium_environment(
+                chromium,
+                graphical_environment,
+                host_runtime_dir=Path(host_runtime_dir)
+                if host_runtime_dir is not None
+                else None,
+                host_session_bus_address=os.environ.get("DBUS_SESSION_BUS_ADDRESS"),
+            ),
             cwd=repository,
             lifecycle=lifecycle,
             stderr_path=diagnostics["Chromium"],
