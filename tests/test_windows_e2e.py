@@ -332,7 +332,7 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     for test_path in (
         "tests/test_windows_e2e.py",
         "tests/test_installers.py",
-        "test_init_agent_from_server_uses_the_effective_custom_token_source",
+        "test_init_agent_from_server_uses_the_effective_dotenv_token",
         "tests/test_runner.py",
     ):
         assert test_path in job
