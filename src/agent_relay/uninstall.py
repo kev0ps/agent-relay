@@ -12,6 +12,9 @@ from pathlib import Path
 
 from . import config
 
+WINDOWS_UNINSTALL_TIMEOUT_SECONDS = 15
+WINDOWS_UNINSTALL_RETRY_INTERVAL_MILLISECONDS = 500
+
 
 def _candidate_uv_paths() -> tuple[Path, ...]:
     """Return the per-user uv paths used by the supported installers."""
@@ -77,6 +80,48 @@ def _powershell_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _windows_uninstall_script(
+    uv_path: Path,
+    log_path: Path,
+    *,
+    timeout_seconds: int = WINDOWS_UNINSTALL_TIMEOUT_SECONDS,
+    retry_interval_milliseconds: int = WINDOWS_UNINSTALL_RETRY_INTERVAL_MILLISECONDS,
+) -> str:
+    """Build the bounded retry script executed after the CLI exits."""
+    uv_literal = _powershell_literal(str(uv_path))
+    log_literal = _powershell_literal(str(log_path))
+    return (
+        "$ErrorActionPreference = 'Continue'; "
+        f"$deadline = [DateTime]::UtcNow.AddSeconds({timeout_seconds}); "
+        f"$retryInterval = {retry_interval_milliseconds}; "
+        "$attempt = 0; $succeeded = $false; "
+        "while ([DateTime]::UtcNow -le $deadline) { "
+        "$attempt += 1; "
+        f"Add-Content -LiteralPath {log_literal} "
+        "-Value ('Attempt {0}: uv tool uninstall agent-relay' -f $attempt); "
+        f"& {uv_literal} tool uninstall agent-relay "
+        f">> {log_literal} 2>&1; "
+        "$exitCode = [int]$LASTEXITCODE; "
+        f"Add-Content -LiteralPath {log_literal} "
+        "-Value ('Attempt {0} result: exit code {1}' -f $attempt, $exitCode); "
+        "if ($exitCode -eq 0) { $succeeded = $true; break } "
+        "$remainingMilliseconds = ($deadline - [DateTime]::UtcNow).TotalMilliseconds; "
+        "if ($remainingMilliseconds -le 0) { break } "
+        "$sleepMilliseconds = [int][Math]::Min($retryInterval, [Math]::Ceiling($remainingMilliseconds)); "
+        "Start-Sleep -Milliseconds $sleepMilliseconds; "
+        "} "
+        "if ($succeeded) { "
+        f"Add-Content -LiteralPath {log_literal} "
+        "-Value ('Final result: success after {0} attempt(s).' -f $attempt); "
+        "exit 0 } "
+        f"Add-Content -LiteralPath {log_literal} -Value "
+        "('Final result: failure after {0} attempt(s).' -f $attempt); "
+        f"Add-Content -LiteralPath {log_literal} -Value "
+        "'Stop other Agent Relay server or agent processes, then run: uv tool uninstall agent-relay'; "
+        "exit 1"
+    )
+
+
 def _schedule_windows_uninstall(uv_path: Path) -> Path:
     """Delegate uv removal until this process has released its own exe lock."""
     powershell = _find_powershell()
@@ -93,17 +138,7 @@ def _schedule_windows_uninstall(uv_path: Path) -> Path:
     except OSError as exc:
         raise config.ConfigError("could not prepare the Windows uninstall handoff") from exc
     log_path = Path(log_name)
-    script = (
-        "$ErrorActionPreference = 'Continue'; "
-        "Start-Sleep -Milliseconds 750; "
-        f"& {_powershell_literal(str(uv_path))} tool uninstall agent-relay "
-        f"> {_powershell_literal(str(log_path))} 2>&1; "
-        "$exitCode = $LASTEXITCODE; "
-        "if ($exitCode -ne 0) { "
-        f"Add-Content -LiteralPath {_powershell_literal(str(log_path))} "
-        "-Value 'Agent Relay is still in use. Stop other Agent Relay server or agent processes and retry.' "
-        "}"
-    )
+    script = _windows_uninstall_script(uv_path, log_path)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         subprocess.Popen(

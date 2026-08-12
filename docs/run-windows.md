@@ -63,15 +63,18 @@ The script:
 - downloads the Agent Relay source archive without requiring Git;
 - installs the runtime and its Python dependencies for the current user through
   `uv tool install`;
-- preserves an existing Agent section, including custom token paths and tool
-  allowlists;
+- preserves an existing Agent section and tool allowlists;
 - creates a local Server configuration when requested and no configuration file
   exists, then adds an Agent section only when one is missing;
 - enables no tools in a newly created Agent section.
 
 Set `AGENT_RELAY_SETUP=local`, `server`, `agent`, or `skip` to select the
 installer onboarding mode. The `agent` mode asks for the remote URL and masked
-Agent credential; use a private token file or stdin for non-interactive setup.
+Agent credential; use a private token file or stdin only as a one-time import
+channel for non-interactive setup; the value is copied into the adjacent `.env`.
+That `.env` contains only `RELAY_AGENT_TOKEN` (or both canonical token keys for
+a combined Server/Agent configuration); URL, workspace, and tool settings stay
+in YAML or explicit process environment variables.
 `AGENT_RELAY_REF` and
 `AGENT_RELAY_REF_KIND` select a branch or tag; `heads/main` is the default and
 is intended for development until a release process exists. Override the
@@ -101,12 +104,12 @@ agent-relay uninstall
 ```
 
 On Windows, the command schedules uv removal after the current executable has
-exited. Stop other `agent-relay server` or `agent-relay agent` processes first;
-if the tool remains installed, the status log explains that another Agent Relay
-process still holds a file lock. The uninstall never terminates unrelated
-processes automatically.
+exited and retries every 500 ms for up to 15 seconds. Stop other
+`agent-relay server` or `agent-relay agent` processes first; if the tool remains
+installed, the status log records every attempt and gives the manual command.
+The uninstall never terminates unrelated processes automatically.
 
-To also remove the default configuration, private secrets, and workspace, use
+To also remove the default configuration, private `.env`, and workspace, use
 an explicit purge:
 
 ```powershell

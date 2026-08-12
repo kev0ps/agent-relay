@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -247,6 +248,100 @@ def test_windows_uninstall_delegates_until_the_cli_exits(
     assert "-EncodedCommand" in launches[0][0]
     assert "tool uninstall agent-relay" not in " ".join(launches[0][0])
     log_path.unlink(missing_ok=True)
+
+
+def test_windows_uninstall_script_has_bounded_retry_and_final_status(
+    tmp_path: Path,
+) -> None:
+    script = cli.uninstall._windows_uninstall_script(
+        Path(r"C:\uv\uv.exe"),
+        tmp_path / "uninstall.log",
+    )
+    assert "AddSeconds(15)" in script
+    assert "$retryInterval = 500" in script
+    assert "Attempt {0}: uv tool uninstall agent-relay" in script
+    assert "Final result: success after" in script
+    assert "Final result: failure after" in script
+    assert "Stop other Agent Relay" in script
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows file locking")
+@pytest.mark.parametrize(("lock_seconds", "timeout_seconds", "expected"), [(1.2, 5, "success"), (30, 1, "failure")])
+def test_windows_uninstall_retries_real_locked_executable(
+    tmp_path: Path,
+    lock_seconds: float,
+    timeout_seconds: int,
+    expected: str,
+) -> None:
+    """A real executable lock is retried until release or the deadline."""
+    if Path(sys.executable).suffix.lower() != ".exe":
+        pytest.skip("a native Python executable is required")
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+    if powershell is None:
+        pytest.skip("PowerShell is unavailable")
+
+    tool_root = tmp_path / "uv" / "tools" / "agent-relay"
+    tool_root.mkdir(parents=True)
+    running_executable = tool_root / "Scripts" / "agent-relay.exe"
+    running_executable.parent.mkdir()
+    shutil.copy2(sys.executable, running_executable)
+    ready = tmp_path / "ready"
+    code = (
+        "from pathlib import Path; import time; "
+        f"Path({str(ready)!r}).write_text('ready'); time.sleep({lock_seconds})"
+    )
+    process = subprocess.Popen([str(running_executable), "-c", code])
+    log_path = tmp_path / "uninstall.log"
+    fake_uv = tmp_path / "uv.cmd"
+    target_literal = str(running_executable).replace("'", "''")
+    fake_uv.write_text(
+        "@echo off\r\n"
+        f"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+        f"\"$ErrorActionPreference='Stop'; try {{ Remove-Item -LiteralPath '{target_literal}' -Force -ErrorAction Stop; exit 0 }} catch {{ exit 5 }}\"\r\n"
+        "exit /b %ERRORLEVEL%\r\n",
+        encoding="utf-8",
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "the copied executable did not start"
+        script = cli.uninstall._windows_uninstall_script(
+            fake_uv,
+            log_path,
+            timeout_seconds=timeout_seconds,
+            retry_interval_milliseconds=100,
+        )
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded,
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_seconds + 10,
+        )
+        assert completed.returncode == (0 if expected == "success" else 1)
+        log = log_path.read_text(encoding="utf-8")
+        assert f"Final result: {expected}" in log
+        assert "Attempt 2" in log
+        if expected == "failure":
+            assert "Stop other Agent Relay" in log
+            assert running_executable.exists()
+        else:
+            assert not running_executable.exists()
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+        shutil.rmtree(tool_root, ignore_errors=True)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows file locking")

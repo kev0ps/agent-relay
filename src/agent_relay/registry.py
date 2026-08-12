@@ -198,7 +198,12 @@ class RelayRegistry:
 
     async def heartbeat(self, socket: JsonSocket) -> None:
         async with self._lock:
-            self._require_socket(socket).last_heartbeat = time.monotonic()
+            device = self._require_socket(socket)
+            observed = time.monotonic()
+            # Some Windows timer sources have millisecond resolution; keep a
+            # heartbeat strictly newer for status consumers even when two
+            # frames arrive inside one timer tick.
+            device.last_heartbeat = max(observed, device.last_heartbeat + 1e-9)
 
     async def invoke(
         self,

@@ -268,7 +268,7 @@ def _configure_server(
             "true" if allow_insecure_ws else "false",
         )
         _report(path, "server", catalog)
-    print("MCP and Agent credentials are distinct and were kept in private files.")
+    print("MCP and Agent credentials are distinct and were kept in the private .env.")
     print("Give an Agent administrator the Agent secret through a secure channel; do not paste it into a command or log.")
     print("Start the Server with: agent-relay server")
     return 0
@@ -407,7 +407,7 @@ def _configure_agent(
         catalog=catalog,
     )
     _report(path, "agent", catalog)
-    print("Agent credential stored in a private file and never printed.")
+    print("Agent credential stored in the private .env and never printed.")
     _check_connection(path, options, catalog=catalog)
     print("Start the Agent with: agent-relay agent")
     return 0

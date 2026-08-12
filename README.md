@@ -126,7 +126,7 @@ agent-relay agent
 For a guided first run, use the onboarding command. It offers Local Server +
 Agent, Server-only, and Agent connected to a remote Server flows. It asks only
 for settings relevant to the selected role; Agent credentials are masked or
-read from a private file and are never printed:
+read from a private `.env` file or secure input and are never printed:
 
 ```sh
 agent-relay onboard
@@ -150,15 +150,23 @@ agent-relay doctor
 
 `doctor` is an offline audit. Agent startup reports its connection attempt,
 WebSocket connection, authenticated registration, announced capability summary,
-disconnects, and bounded retry delays at the default INFO level. Detailed
+executed tool names, disconnects, and bounded retry delays at the default INFO
+level. Tool arguments, request identifiers, and results are not logged. Detailed
 internal phases and exception types remain behind `RELAY_NATIVE_DEBUG=1`.
 
 If you skipped configuration, follow the relevant platform guide before
 starting the processes. The shared YAML file is stored under the current user's
-`.agent-relay` directory; Server and Agent credentials remain in separate
-private secret files and are never written to YAML. `config get server` and
+`.agent-relay` directory; Server and Agent credentials are stored in the private
+`.env` beside that YAML and are never written to YAML. `config get server` and
 `config get agent` redact sensitive values. Canonical `RELAY_*` environment
-variables override YAML values when both are present.
+variables override YAML values when both are present. Agent Relay's `.env`
+contains only `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN`; URL, workspace, and
+tool settings remain YAML or explicit process environment overrides.
+
+This layout is a deliberate breaking change for the next version. Existing
+installations using `secrets/` or `*_TOKEN_FILE` must copy the token values into
+the adjacent `.env`, run `config validate`, and only then remove the old files.
+Agent Relay does not migrate or delete those files automatically.
 
 Browser and Computer Use require separate local dependencies and configuration;
 they are not enabled by the base one-line installation.
@@ -170,13 +178,14 @@ For a user-scoped installation created by the bootstrapper, remove only the
 agent-relay uninstall
 ```
 
-The default configuration, secrets, and workspace remain in `~/.agent-relay`.
+The default configuration, private `.env`, and workspace remain in `~/.agent-relay`.
 To remove that default data too, use `agent-relay uninstall --purge`; the
 command asks for confirmation (or accepts `--yes` in automation). Custom
 configurations and data outside `~/.agent-relay` are always preserved.
 On Windows, stop other `agent-relay server` and `agent-relay agent` processes
-first; the command delegates uv removal until its own executable is no longer
-locked.
+first; the command retries uv removal every 500 ms for up to 15 seconds until
+its own executable is no longer locked. If it still fails, follow the
+instruction in the status log after stopping the other Agent Relay processes.
 
 For a Linux Server container with a native Windows Agent, see the
 **[Docker server deployment guide →](docs/run-server-docker.md)**.
@@ -184,26 +193,30 @@ For a Linux Server container with a native Windows Agent, see the
 ## Connect Hermes
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. In the environment that
-launches Hermes, load the distinct MCP token from the private Server secret file
+launches Hermes, load the distinct MCP token from the private Server `.env`
 without printing it or placing its value in shell history.
 
 Linux shell:
 
 ```sh
 export RELAY_MCP_TOKEN="$(
-  cat "$HOME/.agent-relay/secrets/server/mcp_token"
+  sed -n 's/^RELAY_MCP_TOKEN=//p' "$HOME/.agent-relay/.env"
 )"
 ```
 
 Windows PowerShell:
 
 ```powershell
-$tokenPath = Join-Path $HOME ".agent-relay\secrets\server\mcp_token"
-$env:RELAY_MCP_TOKEN = (Get-Content -Raw -LiteralPath $tokenPath).Trim()
+$dotenvPath = Join-Path $HOME ".agent-relay\.env"
+$env:RELAY_MCP_TOKEN = (
+  Get-Content -LiteralPath $dotenvPath |
+    Where-Object { $_ -like 'RELAY_MCP_TOKEN=*' } |
+    ForEach-Object { $_.Substring('RELAY_MCP_TOKEN='.Length).Trim() }
+)
 ```
 
 If you initialized a custom configuration with `--config`, read the matching
-`secrets/server/mcp_token` path relative to that configuration instead.
+`.env` beside that configuration instead.
 Reference that environment variable from the Hermes configuration rather than
 writing a literal token into YAML.
 
@@ -228,8 +241,8 @@ access:
   defaulting to `0.0.0.0:8000`, for both `/mcp` and `/ws/agent`;
 - the Agent opens the WebSocket connection and hosts no listener;
 - `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN` are separate credentials; normal YAML
-  deployments store them in private `0600` secret files and canonical environment
-  overrides take precedence;
+  deployments store them in the adjacent private `.env` with mode `0600`, and
+  canonical environment overrides take precedence;
 - messages, outputs, timeouts and collections are typed and bounded;
 - terminal commands come from a fixed allowlist and run without a shell;
 - browser access uses an exact origin allowlist by default; the optional

@@ -52,15 +52,14 @@ fi
 cat > .env <<EOF
 RELAY_MCP_TOKEN=$mcp_token
 RELAY_AGENT_TOKEN=$agent_token
-RELAY_ALLOW_INSECURE_WS=true
 EOF
 unset agent_token mcp_token
 chmod 600 .env
 ```
 
-The Agent token must later be copied to a private token file on the controlled
-machine. The distinct MCP token stays on the Server host and authenticates the
-local MCP client.
+The Agent token must later be copied to the private `.env` beside the Agent
+YAML on the controlled machine. The distinct MCP token stays on the Server host
+and authenticates the local MCP client.
 
 Never commit `.env`, print it, enable shell tracing, or copy its values into
 logs. The Compose file supplies the bind host and port. No MCP host or origin
@@ -93,7 +92,8 @@ endpoint, and calls only `relay_device_status` through MCP. The check requires
 the status response to report that the expected Agent is connected with no
 optional capabilities enabled.
 
-The job generates distinct temporary credentials, keeps them in private files,
+The job generates distinct temporary credentials, keeps them in private `.env`
+files,
 and removes the Compose stack and credentials in an always-run cleanup step.
 
 Confirm that the host firewall exposes port `8000` only to the intended Agent
@@ -107,15 +107,20 @@ with the private MCP token as a Bearer credential.
 
 ## Connect the native Agent
 
-Install the same reviewed revision on the controlled machine. Configure its
-private token file with the Server's Agent token, then set values equivalent to:
+Install the same reviewed revision on the controlled machine. Create the
+private `.env` beside the Agent YAML with only the Server's Agent token:
 
 ```text
-RELAY_URL=ws://<SERVER-LAN-IP>:8000/ws/agent
-RELAY_AGENT_TOKEN_FILE=<PRIVATE-AGENT-TOKEN-FILE>
-RELAY_AGENT_WORKSPACE=<PRIVATE-WORKSPACE>
-RELAY_AGENT_TOOLS=relay_system_ping,relay_terminal_exec
-RELAY_ALLOW_INSECURE_WS=true
+RELAY_AGENT_TOKEN=<SERVER-AGENT-TOKEN>
+```
+
+Set the non-secret Agent options in the process environment before starting it:
+
+```sh
+export RELAY_URL=ws://<SERVER-LAN-IP>:8000/ws/agent
+export RELAY_AGENT_WORKSPACE=<PRIVATE-WORKSPACE>
+export RELAY_AGENT_TOOLS=relay_system_ping,relay_terminal_exec
+export RELAY_ALLOW_INSECURE_WS=true
 ```
 
 Start the Agent from that checkout:
@@ -142,7 +147,7 @@ docker compose down
 ```
 
 To rotate credentials, stop the Agent and Server, generate two new distinct
-tokens, update the Server `.env` and Agent token file, then restart both. Old
+tokens, update the Server and Agent `.env` files, then restart both. Old
 values must be deleted or revoked according to the host's secret-management
 policy.
 

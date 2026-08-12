@@ -45,12 +45,13 @@ def test_local_onboarding_creates_both_valid_sections_without_printing_secrets(
     assert set(document) == {"server", "agent"}
     assert document["server"]["host"] == "127.0.0.1"
     assert document["agent"]["tools"]["allowlist"] == []
-    agent_secret = (config_path.parent / "secrets/server/agent_token").read_text(
-        encoding="utf-8"
-    )
-    mcp_secret = (config_path.parent / "secrets/server/mcp_token").read_text(
-        encoding="utf-8"
-    )
+    dotenv_values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in (config_path.parent / ".env").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    }
+    agent_secret = dotenv_values["RELAY_AGENT_TOKEN"]
+    mcp_secret = dotenv_values["RELAY_MCP_TOKEN"]
     assert agent_secret != mcp_secret
     output = capsys.readouterr()
     assert agent_secret.strip() not in output.out
@@ -137,9 +138,9 @@ def test_remote_agent_onboarding_masks_file_secret_and_validates_policy(
     assert document["agent"]["allow_insecure_ws"] is False
     assert document["agent"]["workspace"] == str(workspace)
     assert token_file.read_text(encoding="utf-8").strip() not in capsys.readouterr().out
-    assert (
-        config_path.parent / "secrets/agent/agent_token"
-    ).read_text(encoding="utf-8").strip() == "remote-agent-secret"
+    assert "RELAY_AGENT_TOKEN=remote-agent-secret" in (
+        config_path.parent / ".env"
+    ).read_text(encoding="utf-8")
 
 
 def test_remote_agent_onboarding_rejects_plaintext_remote_url_by_default(
