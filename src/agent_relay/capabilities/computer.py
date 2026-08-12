@@ -672,7 +672,9 @@ class ComputerCapability:
         try:
             scoped_arguments = self._scope_arguments(tool_name, arguments)
         except (TypeError, ValueError):
-            _debug_cua_scope_rejection(f"{tool_name}-arguments")
+            _debug_cua_scope_rejection(
+                f"{tool_name}-arguments", tool_name=tool_name
+            )
             return _safe_cua_rejection()
         try:
             result = await client.call_tool(tool_name, scoped_arguments)
@@ -688,7 +690,9 @@ class ComputerCapability:
                 foreground_arguments["delivery_mode"] = "foreground"
                 result = await client.call_tool(tool_name, foreground_arguments)
         if result.is_error:
-            _debug_cua_scope_rejection(f"{tool_name}-provider-error")
+            _debug_cua_scope_rejection(
+                f"{tool_name}-provider-error", tool_name=tool_name
+            )
             return _safe_cua_rejection()
         try:
             if tool_name == "list_windows":
@@ -701,7 +705,9 @@ class ComputerCapability:
                 return self._scope_window_state(result)
             return self._scope_action_result(result)
         except (TypeError, ValueError):
-            _debug_cua_scope_rejection(f"{tool_name}-result")
+            _debug_cua_scope_rejection(
+                f"{tool_name}-result", tool_name=tool_name
+            )
             return _safe_cua_rejection()
 
     def _scope_arguments(
@@ -777,11 +783,11 @@ class ComputerCapability:
     ) -> ProviderToolResult:
         structured = result.structured_content
         if not isinstance(structured, dict):
-            _debug_cua_scope_rejection("structured-content")
+            _debug_cua_scope_rejection("structured-content", tool_name="list_windows")
             raise ValueError
         windows = structured.get("windows")
         if not isinstance(windows, list):
-            _debug_cua_scope_rejection("windows-field")
+            _debug_cua_scope_rejection("windows-field", tool_name="list_windows")
             raise ValueError
         matches = [
             window
@@ -819,6 +825,7 @@ class ComputerCapability:
             )
             _debug_cua_scope_rejection(
                 "identity",
+                tool_name="list_windows",
                 windows=len(windows),
                 app_matches=app_matches,
                 title_matches=title_matches,
@@ -837,13 +844,13 @@ class ComputerCapability:
             or type(window.get("is_on_screen")) is not bool
             or not isinstance(bounds, dict)
         ):
-            _debug_cua_scope_rejection("identity-fields")
+            _debug_cua_scope_rejection("identity-fields", tool_name="list_windows")
             raise ValueError
         safe_bounds: dict[str, JsonValue] = {}
         for key in ("x", "y", "width", "height"):
             value = bounds.get(key)
             if type(value) is not int:
-                _debug_cua_scope_rejection("bounds-fields")
+                _debug_cua_scope_rejection("bounds-fields", tool_name="list_windows")
                 raise ValueError
             safe_bounds[key] = value
         if browser_pid is not None:
@@ -856,7 +863,9 @@ class ComputerCapability:
                 or type(title) is not str
                 or len(title) > MAX_COMPUTER_WINDOW_TITLE_LENGTH
             ):
-                _debug_cua_scope_rejection("browser-window-identity")
+                _debug_cua_scope_rejection(
+                    "browser-window-identity", tool_name="list_windows"
+                )
                 raise ValueError
         else:
             app_name = self._app
@@ -1283,12 +1292,14 @@ def _is_background_unavailable(result: ProviderToolResult) -> bool:
 
 def _debug_cua_scope_rejection(
     reason: str,
+    *,
+    tool_name: str = "scope",
     **counts: int,
 ) -> None:
     """Emit only bounded CUA scope failure metadata in native debug mode."""
     details = " ".join(f"{key}={value}" for key, value in counts.items())
     suffix = f" {details}" if details else ""
-    _debug_log(f"computer CUA list_windows rejected: reason={reason}{suffix}")
+    _debug_log(f"computer CUA {tool_name} rejected: reason={reason}{suffix}")
 
 
 __all__ = [
