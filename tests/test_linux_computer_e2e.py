@@ -159,6 +159,39 @@ def test_linux_cua_waits_for_matching_x11_title_and_class(monkeypatch) -> None:
     assert [command[-2] for command in calls] == ["--name", "--class"]
 
 
+def test_linux_cua_controls_readiness_uses_public_snapshot_oracle(monkeypatch) -> None:
+    harness = _load_harness()
+    calls = []
+    runtime = SimpleNamespace(
+        mcp_url="http://127.0.0.1:9000/mcp",
+        control_token="control-token",
+    )
+
+    def fake_call_tool(url, token, tool_name, arguments, **kwargs):
+        calls.append((url, token, tool_name, arguments, kwargs))
+        return object()
+
+    monkeypatch.setattr(harness.portable_mcp, "call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        harness.portable_oracles,
+        "validate_cua_list_windows",
+        lambda result, **kwargs: (41, 7),
+    )
+    monkeypatch.setattr(
+        harness.portable_oracles,
+        "validate_cua_window_state",
+        lambda result, **kwargs: ("snapshot", "field", "button"),
+    )
+
+    assert harness._cua_controls_ready(runtime)
+    assert [item[2] for item in calls] == [
+        "relay_cua_list_windows",
+        "relay_cua_get_window_state",
+    ]
+    assert calls[1][3]["pid"] == 41
+    assert calls[1][3]["window_id"] == 7
+
+
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     harness = _load_harness()
     source = SCRIPT.read_text(encoding="utf-8")

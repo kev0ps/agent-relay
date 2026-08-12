@@ -96,6 +96,45 @@ def _runtime(
     )
 
 
+def _cua_controls_ready(runtime: Any) -> bool:
+    """Require the public CUA path to expose the fixture's two controls."""
+    try:
+        listed = portable_mcp.call_tool(
+            runtime.mcp_url,
+            runtime.control_token,
+            "relay_cua_list_windows",
+            {},
+            http_timeout=1.0,
+            operation_timeout=2.0,
+        )
+        pid, window_id = portable_oracles.validate_cua_list_windows(
+            listed,
+            expected_app=COMPUTER_APP_NAME,
+            expected_window_title=COMPUTER_WINDOW_TITLE,
+        )
+        snapshot = portable_mcp.call_tool(
+            runtime.mcp_url,
+            runtime.control_token,
+            "relay_cua_get_window_state",
+            {
+                "pid": pid,
+                "window_id": window_id,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+            http_timeout=1.0,
+            operation_timeout=2.0,
+        )
+        portable_oracles.validate_cua_window_state(
+            snapshot,
+            expected_pid=pid,
+            window_id=window_id,
+        )
+    except (ConnectionError, ValueError):
+        return False
+    return True
+
+
 def _status(
     mcp_url: str,
     control_token: str,
@@ -675,6 +714,11 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         native._wait_for(
             "Linux CUA Chromium identity",
             lambda: _x11_has_expected_window(graphical_environment),
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
+        native._wait_for(
+            "Linux CUA browser accessibility controls",
+            lambda: _cua_controls_ready(runtime),
             timeout=DESKTOP_READY_TIMEOUT_SECONDS,
         )
 
