@@ -401,6 +401,7 @@ def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[
         "--no-sandbox",
         "--force-renderer-accessibility",
         "--class=relay-desktop-fixture",
+        "--window-name=Relay Desktop Fixture",
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--no-first-run",

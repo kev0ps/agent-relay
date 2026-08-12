@@ -205,6 +205,7 @@ def test_linux_cua_uses_production_configuration_and_fixture() -> None:
         assert key in source
     assert "expected_cua_app=COMPUTER_APP_NAME" in source
     assert "expected_cua_window_title=COMPUTER_WINDOW_TITLE" in source
+    assert "--window-name=Relay Desktop Fixture" in source
 
 
 def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
