@@ -90,6 +90,7 @@ class RuntimeConfig:
     run_id: str
     fixture_url: str
     fixtures_root: str
+    browser_pid: str = ""
 
 
 def _mark(phase: list[str] | None, value: str) -> None:
@@ -291,10 +292,17 @@ async def _run_cua_browser_subscenario(
         )
         session_started = True
         _mark(phase, "browser-prepare")
+        prepare_pid = initial_pid
+        if runtime.browser_pid:
+            if not runtime.browser_pid.isascii() or not runtime.browser_pid.isdecimal():
+                raise ValueError("invalid CUA browser fixture process")
+            prepare_pid = int(runtime.browser_pid)
+        if type(prepare_pid) is not int or prepare_pid <= 0:
+            raise ValueError("CUA browser fixture process is unavailable")
         prepare_result = await client.call(
             "relay_cua_browser_prepare",
             {
-                "pid": initial_pid,
+                "pid": prepare_pid,
                 "session": session,
                 "allow_launch": True,
                 "profile": {"mode": "isolated_new"},

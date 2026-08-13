@@ -492,6 +492,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     scenarios = _scenarios()
+    prepare_pids: list[object] = []
 
     class BrowserSession(_CuaScenarioSession):
         fail_navigation = False
@@ -517,6 +518,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
             if tool_name == "relay_cua_start_session":
                 return _CuaScenarioResult()
             if tool_name == "relay_cua_browser_prepare":
+                prepare_pids.append(arguments.get("pid"))
                 if self.fail_prepare:
                     return _CuaScenarioResult(is_error=True)
                 return _CuaScenarioResult(
@@ -568,6 +570,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         device_id="portable-cua-browser-test",
         run_id="portable-cua-browser-run",
     )
+    runtime = dataclasses.replace(runtime, browser_pid="6000")
 
     scenarios.run_cua_scenario(
         runtime,
@@ -576,6 +579,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
         include_browser=True,
     )
+    assert prepare_pids == [6000]
 
 
     BrowserSession.fail_navigation = True

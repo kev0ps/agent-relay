@@ -85,6 +85,7 @@ def _runtime(
     run_id: str,
     fixtures_root: Path,
     fixture_url: str,
+    browser_pid: str = "",
 ) -> Any:
     return portable_scenarios.RuntimeConfig(
         mcp_url=mcp_url,
@@ -93,6 +94,7 @@ def _runtime(
         run_id=run_id,
         fixture_url=fixture_url,
         fixtures_root=str(fixtures_root),
+        browser_pid=browser_pid,
     )
 
 
@@ -614,14 +616,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             }
         )
         fixture_environment = native._minimal_environment(home, {"ARTIFACTS_DIR": str(local_artifacts)})
-        runtime = _runtime(
-            mcp_url=mcp_url,
-            control_token=control_token,
-            run_id=run_id,
-            fixtures_root=local_artifacts,
-            fixture_url=desktop_url,
-        )
-
         phase = "xvfb-start"
         xvfb = native._spawn(
             ["Xvfb", DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp"],
@@ -721,6 +715,14 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             "Linux CUA Chromium identity",
             lambda: _x11_has_expected_window(graphical_environment),
             timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
+        runtime = _runtime(
+            mcp_url=mcp_url,
+            control_token=control_token,
+            run_id=run_id,
+            fixtures_root=local_artifacts,
+            fixture_url=desktop_url,
+            browser_pid=str(browser.pid),
         )
         native._wait_for(
             "Linux CUA browser accessibility controls",
