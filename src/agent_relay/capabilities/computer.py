@@ -921,10 +921,6 @@ class ComputerCapability:
             raise ValueError
         safe_elements: list[JsonValue] = []
         tokens: set[str] = set()
-        field_role_count = 0
-        button_role_count = 0
-        name_label_count = 0
-        apply_label_count = 0
         for public_index, item in enumerate(elements):
             if not isinstance(item, dict):
                 _debug_cua_scope_rejection(
@@ -980,16 +976,6 @@ class ComputerCapability:
                     element=public_index,
                 )
                 raise ValueError
-            normalized_role = role.casefold()
-            normalized_label = label.casefold()
-            if normalized_role in {"textbox", "entry", "text", "edit", "editable"}:
-                field_role_count += 1
-            if normalized_role in {"button", "push button"}:
-                button_role_count += 1
-            if normalized_label == "name":
-                name_label_count += 1
-            if normalized_label == "apply":
-                apply_label_count += 1
             safe_item: dict[str, JsonValue] = {
                 "element_index": public_index,
                 "role": role,
@@ -1001,15 +987,6 @@ class ComputerCapability:
                 safe_item["value"] = value
             safe_elements.append(safe_item)
             tokens.add(token)
-        _debug_cua_scope_rejection(
-            "window-state-shape",
-            tool_name="get_window_state",
-            elements=len(safe_elements),
-            field_roles=field_role_count,
-            button_roles=button_role_count,
-            name_labels=name_label_count,
-            apply_labels=apply_label_count,
-        )
         self._element_tokens = frozenset(tokens)
         self._used_actions.clear()
         return ProviderToolResult(

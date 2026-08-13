@@ -213,6 +213,7 @@ async def _run_cua_browser_subscenario(
     session_started = False
     launch_profile_dir: tempfile.TemporaryDirectory[str] | None = None
     primary_error: BaseException | None = None
+    primary_phase: str | None = None
     try:
         _mark(phase, "browser-launch")
         launch_profile_dir = tempfile.TemporaryDirectory(
@@ -302,6 +303,8 @@ async def _run_cua_browser_subscenario(
         )
     except BaseException as error:
         primary_error = error
+        if phase:
+            primary_phase = phase[-1]
     finally:
         cleanup_error: BaseException | None = None
         if session_started:
@@ -321,6 +324,8 @@ async def _run_cua_browser_subscenario(
         if primary_error is None and cleanup_error is not None:
             raise cleanup_error
     if primary_error is not None:
+        if primary_phase is not None:
+            _mark(phase, primary_phase)
         raise primary_error
 
 

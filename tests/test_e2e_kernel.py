@@ -493,6 +493,8 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
     scenarios = _scenarios()
 
     class BrowserSession(_CuaScenarioSession):
+        fail_navigation = False
+
         async def list_tools(self) -> tuple[str, ...]:
             return scenarios.CUA_MCP_TOOLS
 
@@ -543,7 +545,12 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
                 "relay_cua_end_session",
                 "relay_cua_kill_app",
             }:
-                return _CuaScenarioResult()
+                return _CuaScenarioResult(
+                    is_error=(
+                        tool_name == "relay_cua_browser_navigate"
+                        and self.fail_navigation
+                    )
+                )
             return await super().call(tool_name, arguments)
 
     _install_cua_scenario_fakes(
@@ -565,6 +572,21 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
         include_browser=True,
     )
+
+
+    BrowserSession.fail_navigation = True
+    failure_phase: list[str] = []
+    with pytest.raises(ValueError, match="relay_cua_browser_navigate"):
+        scenarios.run_cua_scenario(
+            runtime,
+            "relay-value",
+            failure_phase,
+            expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+            include_browser=True,
+        )
+
+    assert failure_phase[-1] == "browser-navigate"
 
 
 @pytest.mark.parametrize("inventory_kind", ["missing", "extra", "reordered"])
