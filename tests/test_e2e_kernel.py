@@ -489,6 +489,7 @@ def test_computer_scenario_checks_tools_before_device_status(
 def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     scenarios = _scenarios()
 
@@ -605,6 +606,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         )
 
     assert failure_phase[-1] == "browser-prepare-provider-error"
+    assert "field_count=0 status_ok=False" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("inventory_kind", ["missing", "extra", "reordered"])

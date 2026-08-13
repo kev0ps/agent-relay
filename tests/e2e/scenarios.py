@@ -157,6 +157,29 @@ def _diagnose_pwd_mismatch(result: object, expected: str) -> None:
     )
 
 
+def _diagnose_browser_prepare(result: object) -> None:
+    """Log only fixed schema facts for a rejected browser prepare result."""
+    payload = getattr(result, "structuredContent", None)
+    if not isinstance(payload, dict):
+        print(
+            "E2E browser prepare diagnostic: structured_content=unavailable.",
+            file=sys.stderr,
+        )
+        return
+    status = payload.get("status")
+    prepared = payload.get("prepared")
+    prepared_pid = payload.get("prepared_pid")
+    print(
+        "E2E browser prepare diagnostic: "
+        f"field_count={len(payload)} "
+        f"status_ok={status == 'ok'} status_type={type(status).__name__} "
+        f"prepared_true={prepared is True} prepared_type={type(prepared).__name__} "
+        f"pid_positive={type(prepared_pid) is int and prepared_pid > 0} "
+        f"pid_type={type(prepared_pid).__name__}.",
+        file=sys.stderr,
+    )
+
+
 async def _run_core_scenario_async(
     runtime: RuntimeConfig,
     phase: list[str] | None = None,
@@ -259,7 +282,11 @@ async def _run_cua_browser_subscenario(
             if getattr(prepare_result, "isError", None) is True
             else "browser-prepare-response",
         )
-        prepared_pid = _oracles.validate_cua_browser_prepare(prepare_result)
+        try:
+            prepared_pid = _oracles.validate_cua_browser_prepare(prepare_result)
+        except ValueError:
+            _diagnose_browser_prepare(prepare_result)
+            raise
         _mark(phase, "browser-window")
         _prepared_pid, window_id = _oracles.validate_cua_list_windows(
             await client.call(
