@@ -48,6 +48,28 @@ def test_cua_jobs_use_the_standard_locked_dependency_set() -> None:
     assert "extra " + "computer" not in setup
 
 
+def test_cua_jobs_run_the_same_portable_contract_suite() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    common_tests = (
+        "tests/test_cua_catalog.py",
+        "tests/test_cua_profiles.py",
+        "tests/test_computer_capability.py",
+        "tests/test_desktop_fixture.py",
+        "tests/test_e2e_kernel.py",
+        "tests/test_e2e_mcp_client.py",
+        "tests/test_e2e_oracles.py",
+        "tests/test_linux_computer_e2e.py",
+        "tests/test_windows_computer_e2e.py",
+        "tests/test_linux_e2e.py",
+        "tests/test_windows_e2e.py",
+        "tests/test_runner.py",
+    )
+    for job_name in ("e2e-linux-cua", "e2e-windows-cua"):
+        job = workflow.split(f"  {job_name}:", 1)[1].split("\n  e2e-", 1)[0]
+        for test_path in common_tests:
+            assert test_path in job, f"{test_path} missing from {job_name}"
+
+
 def test_dependabot_groups_python_and_actions_weekly_without_automerge() -> None:
     dependabot = DEPENDABOT.read_text(encoding="utf-8")
     assert "package-ecosystem: pip" in dependabot

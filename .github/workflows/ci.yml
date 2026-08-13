@@ -191,7 +191,7 @@ jobs:
           installer: "true"
 
       - name: Run Linux contract tests
-        run: uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_runner.py
+        run: uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Linux integration suite
         run: uv run --frozen pytest -q -m integration
@@ -290,7 +290,14 @@ jobs:
             uv run --frozen python scripts/probe_cua_driver.py --platform linux
 
       - name: Run Linux CUA contract tests
-        run: uv run --frozen pytest -q tests/test_linux_computer_e2e.py tests/test_computer_capability.py tests/test_desktop_fixture.py
+        run: >-
+          uv run --frozen pytest -q
+          tests/test_cua_catalog.py tests/test_cua_profiles.py
+          tests/test_computer_capability.py tests/test_desktop_fixture.py
+          tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py
+          tests/test_e2e_oracles.py
+          tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py
+          tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Linux CUA end-to-end scenario
         shell: bash
@@ -351,6 +358,7 @@ jobs:
         shell: pwsh
         run: >-
           uv run --frozen pytest -q tests/test_windows_e2e.py
+          tests/test_linux_e2e.py
           tests/test_installers.py tests/test_cli_uninstall.py
           tests/test_cli_config.py::test_init_agent_from_server_uses_the_effective_dotenv_token
           tests/test_runner.py
@@ -437,8 +445,13 @@ jobs:
       - name: Run Windows CUA contract tests
         shell: pwsh
         run: >-
-          uv run --frozen pytest -q tests/test_windows_computer_e2e.py tests/test_windows_e2e.py tests/test_runner.py
-          -k "not git_search_skips_relative_default_path_entries"
+          uv run --frozen pytest -q
+          tests/test_cua_catalog.py tests/test_cua_profiles.py
+          tests/test_computer_capability.py tests/test_desktop_fixture.py
+          tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py
+          tests/test_e2e_oracles.py
+          tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py
+          tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Windows CUA Agent Relay end-to-end scenario
         shell: pwsh

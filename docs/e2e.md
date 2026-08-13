@@ -50,7 +50,8 @@ cleanup.
 Relevant local checks:
 
 ```sh
-uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_runner.py
+uv run --frozen pytest -q \
+  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 uv run --frozen pytest -q -m integration
 ```
 
@@ -89,7 +90,13 @@ prerequisite is guaranteed.
 Relevant local checks:
 
 ```sh
-uv run --frozen pytest -q tests/test_linux_computer_e2e.py tests/test_computer_capability.py tests/test_cua_catalog.py
+uv run --frozen pytest -q \
+  tests/test_cua_catalog.py tests/test_cua_profiles.py \
+  tests/test_computer_capability.py tests/test_desktop_fixture.py \
+  tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py \
+  tests/test_e2e_oracles.py \
+  tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py \
+  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 ```
 
 ## Windows Terminal
@@ -102,7 +109,8 @@ and cleanup behavior as the Linux Terminal gate.
 Relevant local checks:
 
 ```sh
-uv run --frozen pytest -q tests/test_windows_e2e.py tests/test_runner.py
+uv run --frozen pytest -q \
+  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 ```
 
 The runtime harness refuses non-Windows hosts.
@@ -127,10 +135,12 @@ Portable checks:
 
 ```sh
 uv run --frozen pytest -q \
-  tests/test_windows_computer_e2e.py \
-  tests/test_windows_e2e.py \
-  tests/test_runner.py \
-  -k "not git_search_skips_relative_default_path_entries"
+  tests/test_cua_catalog.py tests/test_cua_profiles.py \
+  tests/test_computer_capability.py tests/test_desktop_fixture.py \
+  tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py \
+  tests/test_e2e_oracles.py \
+  tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py \
+  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 ```
 
 ## Docker image smoke

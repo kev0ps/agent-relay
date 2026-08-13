@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic loopback-only desktop fixture for Linux client E2E tests."""
+"""Deterministic loopback-only desktop fixture for native client E2E tests."""
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def append_event(artifacts: Path, run_id: str, value: str) -> None:
+    artifact = artifacts / "computer-events.jsonl"
     payload = json.dumps(
         {"run_id": run_id, "event": "applied", "value": value},
         ensure_ascii=True,
@@ -48,11 +49,14 @@ def append_event(artifacts: Path, run_id: str, value: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)
-    descriptor = os.open(artifacts / "computer-events.jsonl", flags, 0o600)
+    descriptor = os.open(artifact, flags, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError("unsafe artifact")
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(artifact, 0o600)
         with os.fdopen(descriptor, "ab", closefd=True) as stream:
             descriptor = -1
             if stream.write(payload) != len(payload):

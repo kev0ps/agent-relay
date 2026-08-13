@@ -13,6 +13,9 @@ import pytest
 SCRIPT = Path(__file__).parents[1] / "scripts" / "linux_e2e.py"
 WINDOWS_SCRIPT = Path(__file__).parents[1] / "scripts" / "windows_e2e.py"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
+POSIX_ONLY = pytest.mark.skipif(
+    os.name != "posix", reason="requires the Linux process and evidence primitives"
+)
 
 
 def _load_harness():
@@ -186,6 +189,7 @@ def test_partial_signal_handler_installation_rolls_back(
     assert signal.getsignal(signal.SIGTERM) == previous[signal.SIGTERM]
 
 
+@POSIX_ONLY
 def test_failed_lifecycle_enter_restores_signal_handlers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,6 +211,7 @@ def test_failed_lifecycle_enter_restores_signal_handlers(
     assert signal.getsignal(signal.SIGTERM) == previous[signal.SIGTERM]
 
 
+@POSIX_ONLY
 def test_terminate_process_group_kills_descendant_after_leader_exit() -> None:
     """Group cleanup must not rely on the leader remaining alive."""
     harness = _load_harness()
@@ -236,6 +241,7 @@ def test_terminate_process_group_kills_descendant_after_leader_exit() -> None:
             pass
 
 
+@POSIX_ONLY
 def test_write_success_rejects_preexisting_symlink(tmp_path: Path) -> None:
     """Evidence writers must fail closed instead of following symlinks."""
     harness = _load_harness()
@@ -251,6 +257,7 @@ def test_write_success_rejects_preexisting_symlink(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "unchanged"
 
 
+@POSIX_ONLY
 def test_write_output_rejects_preexisting_symlink(tmp_path: Path) -> None:
     """Failure diagnostics must use the same no-follow artifact policy."""
     harness = _load_harness()
@@ -266,6 +273,7 @@ def test_write_output_rejects_preexisting_symlink(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "unchanged"
 
 
+@POSIX_ONLY
 def test_failed_cleanup_does_not_leave_success_marker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -316,6 +324,7 @@ def test_failed_cleanup_does_not_leave_success_marker(
     assert not (tmp_path / "evidence" / "success.json").exists()
 
 
+@POSIX_ONLY
 def test_primary_failure_reports_secondary_cleanup_without_raw_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -386,6 +395,17 @@ def test_terminal_harnesses_share_server_restart_lifecycle() -> None:
         for phase in phases:
             assert phase in source
         assert source.count("portable_scenarios.run_core_scenario(") == 3
+
+
+def test_linux_and_windows_ci_jobs_run_both_harness_contract_modules() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    linux_job = workflow.split("  e2e-linux:", 1)[1].split("\n  e2e-linux-cua:", 1)[0]
+    windows_job = workflow.split("  e2e-windows-terminal:", 1)[1].split(
+        "\n  e2e-windows-cua:", 1
+    )[0]
+    for job in (linux_job, windows_job):
+        assert "tests/test_linux_e2e.py" in job
+        assert "tests/test_windows_e2e.py" in job
 
 
 

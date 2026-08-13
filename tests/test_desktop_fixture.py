@@ -41,24 +41,96 @@ def _wait_ready() -> None:
     raise AssertionError("desktop fixture did not become ready")
 
 
+def _choose_port() -> int:
+    """Reserve one ephemeral loopback port for an isolated fixture process."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _fixture_environment(artifacts: Path) -> dict[str, str]:
+    """Keep the fixture isolated while retaining the Windows runtime basics."""
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "ARTIFACTS_DIR": str(artifacts),
+    }
+    if os.name == "nt":
+        for name in (
+            "COMSPEC",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOCALAPPDATA",
+            "PROGRAMDATA",
+            "SYSTEMDRIVE",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "WINDIR",
+        ):
+            if value := os.environ.get(name):
+                environment[name] = value
+    return environment
+
+
+def _stop_fixture(process: subprocess.Popen[bytes]) -> None:
+    """Stop the fixture process tree with the native primitive for each OS."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+
+
 @pytest.fixture
 def desktop_server(tmp_path: Path):
+    global PORT
+
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
-    process = subprocess.Popen(
-        [sys.executable, "-I", str(APP), "--run-id", "desktop.run-1"],
-        env={"PATH": os.environ.get("PATH", ""), "ARTIFACTS_DIR": str(artifacts)},
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    PORT = _choose_port()
+    diagnostic_path = tmp_path / "desktop-fixture.stderr.log"
     try:
-        _wait_ready()
-        yield artifacts
+        with diagnostic_path.open("wb") as diagnostic:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    str(APP),
+                    "--run-id",
+                    "desktop.run-1",
+                    "--port",
+                    str(PORT),
+                ],
+                env=_fixture_environment(artifacts),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=diagnostic,
+                start_new_session=True,
+            )
+            try:
+                _wait_ready()
+                yield artifacts
+            except BaseException as error:
+                diagnostic.flush()
+                details = diagnostic_path.read_text(encoding="utf-8", errors="replace").strip()
+                if details:
+                    raise AssertionError(f"desktop fixture diagnostic: {details}") from error
+                raise
+            finally:
+                _stop_fixture(process)
     finally:
-        os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=3)
+        PORT = 8898
 
 
 def _request(method: str, path: str, body: bytes = b"", content_type: str | None = None):
@@ -145,7 +217,8 @@ def test_valid_event_is_canonical_private_durable_append(desktop_server: Path) -
     assert artifact.read_bytes() == (
         b'{"run_id":"desktop.run-1","event":"applied","value":"Relay \\u2603"}\n'
     )
-    assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
 
 
 def test_repeat_action_remains_two_visible_lines(desktop_server: Path) -> None:
@@ -278,6 +351,9 @@ def test_short_and_trailing_bodies_are_rejected(desktop_server: Path) -> None:
     assert not (desktop_server / "computer-events.jsonl").exists()
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="requires POSIX no-follow and FIFO primitives"
+)
 @pytest.mark.parametrize("kind", ["symlink", "fifo"])
 def test_unsafe_artifact_targets_are_refused(tmp_path: Path, kind: str) -> None:
     app = _load_app(f"desktop_fixture_{kind}")
@@ -297,7 +373,7 @@ def test_unsafe_artifact_targets_are_refused(tmp_path: Path, kind: str) -> None:
 def test_run_id_is_strictly_validated(run_id: str, tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-I", str(APP), "--run-id", run_id],
-        env={"PATH": os.environ.get("PATH", ""), "ARTIFACTS_DIR": str(tmp_path)},
+        env=_fixture_environment(tmp_path),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
