@@ -172,9 +172,21 @@ def _diagnose_browser_prepare(result: object) -> None:
     refusal = payload.get("refusal")
     refusal_code = refusal.get("code") if isinstance(refusal, dict) else None
     known_refusal_codes = {
+        "browser_action_unavailable",
+        "browser_binding_ambiguous",
+        "browser_binding_stale",
         "browser_consent_required",
+        "browser_consent_revoked",
+        "browser_endpoint_owner_mismatch",
+        "browser_input_incomplete",
+        "browser_input_trust_unavailable",
+        "browser_origin_outside_scope",
+        "browser_reconnect_exhausted",
+        "browser_ref_stale",
         "browser_requires_setup",
         "browser_route_unavailable",
+        "browser_tab_not_found",
+        "browser_tab_required",
         "browser_wrong_target_refused",
     }
     print(
