@@ -90,6 +90,7 @@ class RuntimeConfig:
     run_id: str
     fixture_url: str
     fixtures_root: str
+    browser_pid: str = ""
 
 
 def _mark(phase: list[str] | None, value: str) -> None:
@@ -157,6 +158,53 @@ def _diagnose_pwd_mismatch(result: object, expected: str) -> None:
     )
 
 
+def _diagnose_browser_prepare(result: object) -> None:
+    """Log only fixed schema facts for a rejected browser prepare result."""
+    payload = getattr(result, "structuredContent", None)
+    if not isinstance(payload, dict):
+        print(
+            "E2E browser prepare diagnostic: structured_content=unavailable.",
+            file=sys.stderr,
+        )
+        return
+    status = payload.get("status")
+    prepared = payload.get("prepared")
+    prepared_pid = payload.get("prepared_pid")
+    refusal = payload.get("refusal")
+    refusal_code = refusal.get("code") if isinstance(refusal, dict) else None
+    known_refusal_codes = {
+        "browser_action_unavailable",
+        "browser_binding_ambiguous",
+        "browser_binding_stale",
+        "browser_consent_required",
+        "browser_consent_revoked",
+        "browser_endpoint_owner_mismatch",
+        "browser_input_incomplete",
+        "browser_input_trust_unavailable",
+        "browser_origin_outside_scope",
+        "browser_reconnect_exhausted",
+        "browser_ref_stale",
+        "browser_requires_setup",
+        "browser_route_unavailable",
+        "browser_tab_not_found",
+        "browser_tab_required",
+        "browser_wrong_target_refused",
+    }
+    print(
+        "E2E browser prepare diagnostic: "
+        f"field_count={len(payload)} "
+        f"status_ok={status == 'ok'} status_type={type(status).__name__} "
+        f"status_refused={status == 'refused'} status_error={status == 'error'} "
+        f"has_refusal={'refusal' in payload} has_error={'error' in payload} "
+        f"has_message={'message' in payload} has_code={'code' in payload} "
+        f"prepared_true={prepared is True} prepared_type={type(prepared).__name__} "
+        f"pid_positive={type(prepared_pid) is int and prepared_pid > 0} "
+        f"pid_type={type(prepared_pid).__name__} "
+        f"refusal_code={refusal_code if refusal_code in known_refusal_codes else 'other'}.",
+        file=sys.stderr,
+    )
+
+
 async def _run_core_scenario_async(
     runtime: RuntimeConfig,
     phase: list[str] | None = None,
@@ -213,6 +261,7 @@ async def _run_cua_browser_subscenario(
     session_started = False
     launch_profile_dir: tempfile.TemporaryDirectory[str] | None = None
     primary_error: BaseException | None = None
+    primary_phase: str | None = None
     try:
         _mark(phase, "browser-launch")
         launch_profile_dir = tempfile.TemporaryDirectory(
@@ -243,17 +292,33 @@ async def _run_cua_browser_subscenario(
         )
         session_started = True
         _mark(phase, "browser-prepare")
-        prepared_pid = _oracles.validate_cua_browser_prepare(
-            await client.call(
-                "relay_cua_browser_prepare",
-                {
-                    "pid": initial_pid,
-                    "session": session,
-                    "allow_launch": True,
-                    "profile": {"mode": "isolated_new"},
-                },
-            )
+        prepare_pid = initial_pid
+        if runtime.browser_pid:
+            if not runtime.browser_pid.isascii() or not runtime.browser_pid.isdecimal():
+                raise ValueError("invalid CUA browser fixture process")
+            prepare_pid = int(runtime.browser_pid)
+        if type(prepare_pid) is not int or prepare_pid <= 0:
+            raise ValueError("CUA browser fixture process is unavailable")
+        prepare_result = await client.call(
+            "relay_cua_browser_prepare",
+            {
+                "pid": prepare_pid,
+                "session": session,
+                "allow_launch": True,
+                "profile": {"mode": "isolated_new"},
+            },
         )
+        _mark(
+            phase,
+            "browser-prepare-provider-error"
+            if getattr(prepare_result, "isError", None) is True
+            else "browser-prepare-response",
+        )
+        try:
+            prepared_pid = _oracles.validate_cua_browser_prepare(prepare_result)
+        except ValueError:
+            _diagnose_browser_prepare(prepare_result)
+            raise
         _mark(phase, "browser-window")
         _prepared_pid, window_id = _oracles.validate_cua_list_windows(
             await client.call(
@@ -302,6 +367,8 @@ async def _run_cua_browser_subscenario(
         )
     except BaseException as error:
         primary_error = error
+        if phase:
+            primary_phase = phase[-1]
     finally:
         cleanup_error: BaseException | None = None
         if session_started:
@@ -321,6 +388,8 @@ async def _run_cua_browser_subscenario(
         if primary_error is None and cleanup_error is not None:
             raise cleanup_error
     if primary_error is not None:
+        if primary_phase is not None:
+            _mark(phase, primary_phase)
         raise primary_error
 
 

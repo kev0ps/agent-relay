@@ -25,6 +25,7 @@ DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"
 DISPLAY = ":91"
 COMPUTER_APP_NAME = "relay-desktop-fixture"
 COMPUTER_WINDOW_TITLE = "Relay Desktop Fixture"
+SNAP_CHROMIUM_BIN_DIR = Path("/snap/bin")
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -84,6 +85,7 @@ def _runtime(
     run_id: str,
     fixtures_root: Path,
     fixture_url: str,
+    browser_pid: str = "",
 ) -> Any:
     return portable_scenarios.RuntimeConfig(
         mcp_url=mcp_url,
@@ -92,7 +94,47 @@ def _runtime(
         run_id=run_id,
         fixture_url=fixture_url,
         fixtures_root=str(fixtures_root),
+        browser_pid=browser_pid,
     )
+
+
+def _cua_controls_ready(runtime: Any) -> bool:
+    """Require the public CUA path to expose the fixture's two controls."""
+    try:
+        listed = portable_mcp.call_tool(
+            runtime.mcp_url,
+            runtime.control_token,
+            "relay_cua_list_windows",
+            {},
+            http_timeout=1.0,
+            operation_timeout=2.0,
+        )
+        pid, window_id = portable_oracles.validate_cua_list_windows(
+            listed,
+            expected_app=COMPUTER_APP_NAME,
+            expected_window_title=COMPUTER_WINDOW_TITLE,
+        )
+        snapshot = portable_mcp.call_tool(
+            runtime.mcp_url,
+            runtime.control_token,
+            "relay_cua_get_window_state",
+            {
+                "pid": pid,
+                "window_id": window_id,
+                "include_screenshot": False,
+                "max_elements": 128,
+            },
+            http_timeout=1.0,
+            operation_timeout=2.0,
+        )
+        portable_oracles.validate_cua_window_state(
+            snapshot,
+            expected_pid=pid,
+            window_id=window_id,
+        )
+    except (ConnectionError, ValueError):
+        return False
+    return True
 
 
 def _status(
@@ -200,6 +242,39 @@ def _accessibility_ready(environment: dict[str, str]) -> bool:
     )
 
 
+def _enable_chromium_accessibility(environment: dict[str, str]) -> bool:
+    """Advertise an assistive technology on the isolated session bus."""
+    try:
+        for property_name in ("ScreenReaderEnabled", "IsEnabled"):
+            subprocess.run(
+                [
+                    "gdbus",
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.a11y.Bus",
+                    "--object-path",
+                    "/org/a11y/bus",
+                    "--method",
+                    "org.freedesktop.DBus.Properties.Set",
+                    "org.a11y.Status",
+                    property_name,
+                    "<true>",
+                ],
+                env=environment,
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=2,
+                shell=False,
+            )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def _x11_window_hint(environment: dict[str, str]) -> str:
     """Return bounded X11 window counts without exposing window metadata."""
     counts: dict[str, str] = {}
@@ -266,14 +341,57 @@ def _x11_has_client_window(environment: dict[str, str]) -> bool:
     )
 
 
+def _x11_search_ids(
+    environment: dict[str, str], option: str, value: str
+) -> set[str]:
+    try:
+        completed = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", option, value],
+            env=environment,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+            shell=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if completed.returncode != 0:
+        return set()
+    return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+
+
+def _x11_has_expected_window(environment: dict[str, str]) -> bool:
+    """Wait for the browser's final X11 class and HTML title, not just its frame."""
+    titles = _x11_search_ids(
+        environment,
+        "--name",
+        f"^{re.escape(COMPUTER_WINDOW_TITLE)}$",
+    )
+    classes = _x11_search_ids(
+        environment,
+        "--class",
+        f"^{re.escape(COMPUTER_APP_NAME)}$",
+    )
+    return bool(titles & classes)
+
+
 def _resolve_chromium() -> Path:
     """Resolve the browser supplied by the Linux E2E environment."""
-    for name in ("chromium", "chromium-browser", "google-chrome"):
+    for name in (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+    ):
         raw_path = shutil.which(name)
         if raw_path is None:
             continue
-        candidate = Path(raw_path).resolve(strict=True)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        candidate = Path(raw_path)
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
     raise LinuxCuaE2EError("a compatible Chromium executable is unavailable")
 
@@ -290,6 +408,7 @@ def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[
         "--no-sandbox",
         "--force-renderer-accessibility",
         "--class=relay-desktop-fixture",
+        "--window-name=Relay Desktop Fixture",
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--no-first-run",
@@ -300,6 +419,46 @@ def chromium_command(executable: Path, profile: Path, fixture_url: str) -> list[
         "--window-size=1280,720",
         f"--user-data-dir={profile}",
     ]
+
+
+def chromium_environment(
+    executable: Path,
+    environment: dict[str, str],
+    *,
+    host_runtime_dir: Path | None,
+    host_session_bus_address: str | None,
+) -> dict[str, str]:
+    """Give a snap Chromium the host user bus needed for its systemd scope."""
+    result = dict(environment)
+    if not _is_snap_chromium_launcher(executable):
+        return result
+    if host_session_bus_address:
+        result["DBUS_SESSION_BUS_ADDRESS"] = host_session_bus_address
+        return result
+    if host_runtime_dir is None:
+        return result
+    bus = host_runtime_dir / "bus"
+    if bus.is_socket():
+        result["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    return result
+
+
+def _is_snap_chromium_launcher(executable: Path) -> bool:
+    """Recognize snap Chromium without replacing its launcher symlink."""
+    current = executable
+    visited: set[Path] = set()
+    for _ in range(8):
+        if current.parent == SNAP_CHROMIUM_BIN_DIR:
+            return True
+        if current in visited or not current.is_symlink():
+            return False
+        visited.add(current)
+        try:
+            target = current.readlink()
+        except OSError:
+            return False
+        current = target if target.is_absolute() else current.parent / target
+    return False
 
 
 def _stderr_hint(path: Path) -> str | None:
@@ -319,6 +478,7 @@ def _stderr_hint(path: Path) -> str | None:
                 "cua catalog construction failed:",
                 "computer privacy command failed:",
                 "computer startup failed:",
+                "computer cua get_window_state rejected:",
                 "computer cua list_windows rejected:",
             )
         )
@@ -413,8 +573,10 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         desktop_url = f"http://127.0.0.1:{fixture_port}/"
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
         chromium = _resolve_chromium()
+        host_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
         graphical_values = {
             "DISPLAY": DISPLAY,
+            "ACCESSIBILITY_ENABLED": "1",
             "NO_AT_BRIDGE": "0",
             "GTK_MODULES": "gail:atk-bridge",
             "QT_ACCESSIBILITY": "1",
@@ -454,14 +616,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             }
         )
         fixture_environment = native._minimal_environment(home, {"ARTIFACTS_DIR": str(local_artifacts)})
-        runtime = _runtime(
-            mcp_url=mcp_url,
-            control_token=control_token,
-            run_id=run_id,
-            fixtures_root=local_artifacts,
-            fixture_url=desktop_url,
-        )
-
         phase = "xvfb-start"
         xvfb = native._spawn(
             ["Xvfb", DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp"],
@@ -475,6 +629,12 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         graphical_environment["DBUS_SESSION_BUS_ADDRESS"] = _start_dbus(graphical_environment, lifecycle)
         agent_environment["DBUS_SESSION_BUS_ADDRESS"] = graphical_environment["DBUS_SESSION_BUS_ADDRESS"]
         native._wait_for("Linux CUA accessibility bus", lambda: _accessibility_ready(graphical_environment), timeout=DESKTOP_READY_TIMEOUT_SECONDS)
+        assert graphical_environment is not None
+        native._wait_for(
+            "Linux CUA Chromium accessibility",
+            lambda: _enable_chromium_accessibility(graphical_environment),
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
 
         phase = "openbox-start"
         openbox = native._spawn(["openbox"], environment=graphical_environment, cwd=repository, lifecycle=lifecycle)
@@ -501,10 +661,37 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         )
         native._wait_for("Linux CUA desktop fixture", lambda: _fixture_ready(desktop_url), timeout=FIXTURE_READY_TIMEOUT_SECONDS)
 
+        phase = "agent-start"
+        agent = native._spawn(
+            native.agent_command(server_port, workspace),
+            environment=agent_environment,
+            cwd=repository,
+            lifecycle=lifecycle,
+            stderr_path=diagnostics["Agent"],
+        )
+
+        def agent_ready() -> bool:
+            if agent.poll() is not None:
+                raise LinuxCuaE2EError("Linux CUA Agent exited during startup")
+            _status(mcp_url, control_token, connected=True)
+            return True
+
+        native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
+        # The cua-driver keeps an AT-SPI registry listener for its lifetime.
+        # Start it before Chromium so the renderer publishes its accessibility
+        # subtree instead of registering only the top-level window.
         phase = "chromium-start"
+        assert graphical_environment is not None
         browser = native._spawn(
             chromium_command(chromium, profile, desktop_url),
-            environment=graphical_environment,
+            environment=chromium_environment(
+                chromium,
+                graphical_environment,
+                host_runtime_dir=Path(host_runtime_dir)
+                if host_runtime_dir is not None
+                else None,
+                host_session_bus_address=os.environ.get("DBUS_SESSION_BUS_ADDRESS"),
+            ),
             cwd=repository,
             lifecycle=lifecycle,
             stderr_path=diagnostics["Chromium"],
@@ -524,23 +711,25 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             chromium_window_ready,
             timeout=DESKTOP_READY_TIMEOUT_SECONDS,
         )
-
-        phase = "agent-start"
-        agent = native._spawn(
-            native.agent_command(server_port, workspace),
-            environment=agent_environment,
-            cwd=repository,
-            lifecycle=lifecycle,
-            stderr_path=diagnostics["Agent"],
+        native._wait_for(
+            "Linux CUA Chromium identity",
+            lambda: _x11_has_expected_window(graphical_environment),
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
+        )
+        runtime = _runtime(
+            mcp_url=mcp_url,
+            control_token=control_token,
+            run_id=run_id,
+            fixtures_root=local_artifacts,
+            fixture_url=desktop_url,
+            browser_pid=str(browser.pid),
+        )
+        native._wait_for(
+            "Linux CUA browser accessibility controls",
+            lambda: _cua_controls_ready(runtime),
+            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
         )
 
-        def agent_ready() -> bool:
-            if agent.poll() is not None:
-                raise LinuxCuaE2EError("Linux CUA Agent exited during startup")
-            _status(mcp_url, control_token, connected=True)
-            return True
-
-        native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
         phase = "cua-scenario"
         portable_scenarios.run_cua_scenario(
             runtime,

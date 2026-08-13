@@ -30,7 +30,7 @@ def test_ci_has_only_general_cua_native_jobs() -> None:
     assert forbidden_manual_path not in workflow
     assert "import cua_driver; print(cua_driver.get_binary_path())" in workflow
     assert "Verify Linux CUA browser prerequisite" in workflow
-    assert "chromium --version" in workflow
+    assert "google-chrome-stable --version" in workflow
     assert ("CUA_DRIVER_" + "RS_INSTALL_DIR") not in workflow
 
 

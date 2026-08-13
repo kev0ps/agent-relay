@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import stat
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from agent_relay.capabilities.computer import (
     ComputerCapability,
@@ -14,6 +17,20 @@ from agent_relay.capabilities.computer import (
     safe_driver_environment,
     validate_driver_executable,
 )
+from agent_relay.json_bounds import JsonValue
+from agent_relay.output_models import ProviderTextContent, ProviderToolResult
+
+
+class _RecordingToolClient:
+    def __init__(self, results: list[ProviderToolResult]) -> None:
+        self._results = iter(results)
+        self.calls: list[tuple[str, dict[str, JsonValue]]] = []
+
+    async def call_tool(
+        self, tool_name: str, arguments: Mapping[str, JsonValue]
+    ) -> ProviderToolResult:
+        self.calls.append((tool_name, dict(arguments)))
+        return next(self._results)
 
 
 def _write_driver(path: Path) -> None:
@@ -170,3 +187,133 @@ def test_driver_executable_validation_is_independent_of_configuration_fields(
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
     executable.chmod(0o755)
     assert validate_driver_executable(executable) == executable
+
+
+@pytest.mark.parametrize(
+    ("native", "expected"),
+    [
+        (
+            {
+                "effect": "confirmed",
+                "route": "background",
+                "delivery": {"mode": "uia", "delivered_count": 7},
+            },
+            {
+                "path": "background",
+                "verified": True,
+                "effect": "confirmed",
+                "scope": "uia",
+                "characters": 7,
+            },
+        ),
+        (
+            {
+                "effect": "partial",
+                "route": "x" * 65,
+                "delivery": {"mode": "foreground"},
+            },
+            {
+                "path": "cua",
+                "verified": False,
+                "effect": "unverifiable",
+                "scope": "foreground",
+            },
+        ),
+    ],
+)
+def test_normalize_native_action_result_maps_driver_action_result(
+    native: dict[str, JsonValue], expected: dict[str, JsonValue]
+) -> None:
+    result = ComputerCapability._normalize_native_action_result(native)
+
+    assert result == ProviderToolResult(
+        content=[], structuredContent=expected, isError=False
+    )
+
+
+@pytest.mark.parametrize("tool_name", ["click", "type_text"])
+def test_scoped_action_retries_background_unavailable_once_in_foreground(
+    tool_name: str,
+) -> None:
+    background_error = ProviderToolResult(
+        content=[],
+        structuredContent={"code": "background_unavailable"},
+        isError=True,
+    )
+    foreground_result = ProviderToolResult(
+        content=[],
+        structuredContent={
+            "effect": "confirmed",
+            "route": "foreground",
+            "delivery": {"mode": "foreground", "delivered_count": 4},
+        },
+        isError=False,
+    )
+    client = _RecordingToolClient([background_error, foreground_result])
+    capability = ComputerCapability.__new__(ComputerCapability)
+    capability._pid = 41
+    capability._window_id = 73
+    capability._element_tokens = frozenset({"element-1"})
+    capability._used_actions = set()
+    arguments: dict[str, JsonValue] = {
+        "pid": 41,
+        "window_id": 73,
+        "element_token": "element-1",
+        "delivery_mode": "background",
+    }
+    if tool_name == "type_text":
+        arguments["text"] = "test"
+
+    result = asyncio.run(capability._call_scoped_tool(client, tool_name, arguments))
+
+    assert client.calls == [
+        (tool_name, arguments),
+        (tool_name, {**arguments, "delivery_mode": "foreground"}),
+    ]
+    assert result == ProviderToolResult(
+        content=[],
+        structuredContent={
+            "path": "foreground",
+            "verified": True,
+            "effect": "confirmed",
+            "scope": "foreground",
+            "characters": 4,
+        },
+        isError=False,
+    )
+
+
+def test_scoped_action_does_not_retry_unrelated_provider_error() -> None:
+    provider_error = ProviderToolResult(
+        content=[
+            ProviderTextContent(
+                type="text",
+                text="background_unavailable was observed in an earlier request",
+            )
+        ],
+        structuredContent={"code": "target_unavailable"},
+        isError=True,
+    )
+    client = _RecordingToolClient([provider_error])
+    capability = ComputerCapability.__new__(ComputerCapability)
+    capability._pid = 41
+    capability._window_id = 73
+    capability._element_tokens = frozenset({"element-1"})
+    capability._used_actions = set()
+    arguments: dict[str, JsonValue] = {
+        "pid": 41,
+        "window_id": 73,
+        "element_token": "element-1",
+        "delivery_mode": "background",
+    }
+
+    result = asyncio.run(capability._call_scoped_tool(client, "click", arguments))
+
+    assert client.calls == [("click", arguments)]
+    assert result == ProviderToolResult(
+        content=[
+            ProviderTextContent(type="text", text="computer action rejected")
+        ],
+        structuredContent=None,
+        isError=True,
+    )

@@ -435,6 +435,8 @@ class ComputerCapability:
         self._browser_pids: set[int] = set()
         self._element_tokens: frozenset[str] = frozenset()
         self._used_actions: set[tuple[str, str]] = set()
+        self._scope_diagnostic_reason: str | None = None
+        self._scope_diagnostic_counts: dict[str, int] = {}
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
@@ -669,6 +671,8 @@ class ComputerCapability:
         tool_name: str,
         arguments: Mapping[str, JsonValue],
     ) -> ProviderToolResult:
+        self._scope_diagnostic_reason = None
+        self._scope_diagnostic_counts = {}
         try:
             scoped_arguments = self._scope_arguments(tool_name, arguments)
         except (TypeError, ValueError):
@@ -705,9 +709,11 @@ class ComputerCapability:
                 return self._scope_window_state(result)
             return self._scope_action_result(result)
         except (TypeError, ValueError):
-            _debug_cua_scope_rejection(
-                f"{tool_name}-result", tool_name=tool_name
-            )
+            counts = dict(self._scope_diagnostic_counts)
+            reason = self._scope_diagnostic_reason or f"{tool_name}-result"
+            _debug_cua_scope_rejection(reason, tool_name=tool_name, **counts)
+            self._scope_diagnostic_reason = None
+            self._scope_diagnostic_counts = {}
             return _safe_cua_rejection()
 
     def _scope_arguments(
@@ -783,11 +789,11 @@ class ComputerCapability:
     ) -> ProviderToolResult:
         structured = result.structured_content
         if not isinstance(structured, dict):
-            _debug_cua_scope_rejection("structured-content", tool_name="list_windows")
+            self._remember_scope_diagnostic("structured-content")
             raise ValueError
         windows = structured.get("windows")
         if not isinstance(windows, list):
-            _debug_cua_scope_rejection("windows-field", tool_name="list_windows")
+            self._remember_scope_diagnostic("windows-field")
             raise ValueError
         matches = [
             window
@@ -823,9 +829,8 @@ class ComputerCapability:
                 if browser_pid is None
                 else 0
             )
-            _debug_cua_scope_rejection(
+            self._remember_scope_diagnostic(
                 "identity",
-                tool_name="list_windows",
                 windows=len(windows),
                 app_matches=app_matches,
                 title_matches=title_matches,
@@ -844,13 +849,19 @@ class ComputerCapability:
             or type(window.get("is_on_screen")) is not bool
             or not isinstance(bounds, dict)
         ):
-            _debug_cua_scope_rejection("identity-fields", tool_name="list_windows")
+            self._remember_scope_diagnostic(
+                "identity-fields",
+                windows=len(windows),
+            )
             raise ValueError
         safe_bounds: dict[str, JsonValue] = {}
         for key in ("x", "y", "width", "height"):
             value = bounds.get(key)
             if type(value) is not int:
-                _debug_cua_scope_rejection("bounds-fields", tool_name="list_windows")
+                self._remember_scope_diagnostic(
+                    "bounds-fields",
+                    windows=len(windows),
+                )
                 raise ValueError
             safe_bounds[key] = value
         if browser_pid is not None:
@@ -863,8 +874,8 @@ class ComputerCapability:
                 or type(title) is not str
                 or len(title) > MAX_COMPUTER_WINDOW_TITLE_LENGTH
             ):
-                _debug_cua_scope_rejection(
-                    "browser-window-identity", tool_name="list_windows"
+                self._remember_scope_diagnostic(
+                    "browser-window-identity",
                 )
                 raise ValueError
         else:
@@ -888,6 +899,10 @@ class ComputerCapability:
             isError=False,
         )
 
+    def _remember_scope_diagnostic(self, reason: str, **counts: int) -> None:
+        self._scope_diagnostic_reason = reason
+        self._scope_diagnostic_counts = counts
+
     def _scope_window_state(self, result: ProviderToolResult) -> ProviderToolResult:
         structured = result.structured_content
         if not isinstance(structured, dict):
@@ -908,12 +923,17 @@ class ComputerCapability:
         tokens: set[str] = set()
         for public_index, item in enumerate(elements):
             if not isinstance(item, dict):
+                _debug_cua_scope_rejection(
+                    "element-not-object",
+                    tool_name="get_window_state",
+                    element=public_index,
+                )
                 raise ValueError
             index = item.get("element_index")
             role = item.get("role")
             token = item.get("element_token")
             label = item.get("label", item.get("name", ""))
-            if (
+            invalid_element = (
                 type(index) is not int
                 or index < 0
                 or type(role) is not str
@@ -925,7 +945,36 @@ class ComputerCapability:
                 or token in tokens
                 or type(label) is not str
                 or len(label) > 512
-            ):
+            )
+            if invalid_element:
+                reasons: list[str] = []
+                if type(index) is not int:
+                    reasons.append("index-type")
+                elif index < 0:
+                    reasons.append("index-negative")
+                if type(role) is not str:
+                    reasons.append("role-type")
+                elif not role:
+                    reasons.append("role-empty")
+                elif len(role) > 128:
+                    reasons.append("role-too-long")
+                if type(token) is not str:
+                    reasons.append("token-type")
+                elif not token:
+                    reasons.append("token-empty")
+                elif len(token) > 256:
+                    reasons.append("token-too-long")
+                elif token in tokens:
+                    reasons.append("token-duplicate")
+                if type(label) is not str:
+                    reasons.append("label-type")
+                elif len(label) > 512:
+                    reasons.append("label-too-long")
+                _debug_cua_scope_rejection(
+                    "element-invalid-" + ("+".join(reasons) or "unknown"),
+                    tool_name="get_window_state",
+                    element=public_index,
+                )
                 raise ValueError
             safe_item: dict[str, JsonValue] = {
                 "element_index": public_index,
@@ -1285,7 +1334,10 @@ def _is_background_unavailable(result: ProviderToolResult) -> bool:
                 return True
     for item in result.content:
         text = getattr(item, "text", None)
-        if isinstance(text, str) and "background_unavailable" in text.casefold():
+        if (
+            isinstance(text, str)
+            and text.strip().casefold() == "background_unavailable"
+        ):
             return True
     return False
 

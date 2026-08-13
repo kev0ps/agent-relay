@@ -250,13 +250,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             at-spi2-core dbus-x11 gir1.2-atspi-2.0 libatk-bridge2.0-0 \
-            chromium libglib2.0-bin openbox x11-utils xdotool xterm xvfb
+            chromium libglib2.0-bin openbox x11-utils xdotool xterm xvfb wget
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
+            | sudo gpg --dearmor --yes -o /usr/share/keyrings/google-linux.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends google-chrome-stable
 
       - name: Verify Linux CUA browser prerequisite
         run: |
           set -euo pipefail
-          command -v chromium
-          chromium --version
+          command -v google-chrome-stable
+          google-chrome-stable --version
 
       - name: Install locked CUA environment
         uses: ./.github/actions/setup-python

@@ -489,10 +489,15 @@ def test_computer_scenario_checks_tools_before_device_status(
 def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     scenarios = _scenarios()
+    prepare_pids: list[object] = []
 
     class BrowserSession(_CuaScenarioSession):
+        fail_navigation = False
+        fail_prepare = False
+
         async def list_tools(self) -> tuple[str, ...]:
             return scenarios.CUA_MCP_TOOLS
 
@@ -513,6 +518,9 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
             if tool_name == "relay_cua_start_session":
                 return _CuaScenarioResult()
             if tool_name == "relay_cua_browser_prepare":
+                prepare_pids.append(arguments.get("pid"))
+                if self.fail_prepare:
+                    return _CuaScenarioResult(is_error=True)
                 return _CuaScenarioResult(
                     structured={
                         "status": "ok",
@@ -543,7 +551,12 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
                 "relay_cua_end_session",
                 "relay_cua_kill_app",
             }:
-                return _CuaScenarioResult()
+                return _CuaScenarioResult(
+                    is_error=(
+                        tool_name == "relay_cua_browser_navigate"
+                        and self.fail_navigation
+                    )
+                )
             return await super().call(tool_name, arguments)
 
     _install_cua_scenario_fakes(
@@ -557,6 +570,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         device_id="portable-cua-browser-test",
         run_id="portable-cua-browser-run",
     )
+    runtime = dataclasses.replace(runtime, browser_pid="6000")
 
     scenarios.run_cua_scenario(
         runtime,
@@ -565,6 +579,38 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
         include_browser=True,
     )
+    assert prepare_pids == [6000]
+
+
+    BrowserSession.fail_navigation = True
+    failure_phase: list[str] = []
+    with pytest.raises(ValueError, match="relay_cua_browser_navigate"):
+        scenarios.run_cua_scenario(
+            runtime,
+            "relay-value",
+            failure_phase,
+            expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+            include_browser=True,
+        )
+
+    assert failure_phase[-1] == "browser-navigate"
+
+    BrowserSession.fail_navigation = False
+    BrowserSession.fail_prepare = True
+    failure_phase = []
+    with pytest.raises(ValueError, match="relay_cua_browser_prepare"):
+        scenarios.run_cua_scenario(
+            runtime,
+            "relay-value",
+            failure_phase,
+            expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+            include_browser=True,
+        )
+
+    assert failure_phase[-1] == "browser-prepare-provider-error"
+    assert "field_count=0 status_ok=False" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("inventory_kind", ["missing", "extra", "reordered"])
