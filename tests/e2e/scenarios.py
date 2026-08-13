@@ -244,17 +244,22 @@ async def _run_cua_browser_subscenario(
         )
         session_started = True
         _mark(phase, "browser-prepare")
-        prepared_pid = _oracles.validate_cua_browser_prepare(
-            await client.call(
-                "relay_cua_browser_prepare",
-                {
-                    "pid": initial_pid,
-                    "session": session,
-                    "allow_launch": True,
-                    "profile": {"mode": "isolated_new"},
-                },
-            )
+        prepare_result = await client.call(
+            "relay_cua_browser_prepare",
+            {
+                "pid": initial_pid,
+                "session": session,
+                "allow_launch": True,
+                "profile": {"mode": "isolated_new"},
+            },
         )
+        _mark(
+            phase,
+            "browser-prepare-provider-error"
+            if getattr(prepare_result, "isError", None) is True
+            else "browser-prepare-response",
+        )
+        prepared_pid = _oracles.validate_cua_browser_prepare(prepare_result)
         _mark(phase, "browser-window")
         _prepared_pid, window_id = _oracles.validate_cua_list_windows(
             await client.call(
