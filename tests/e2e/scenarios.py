@@ -169,13 +169,22 @@ def _diagnose_browser_prepare(result: object) -> None:
     status = payload.get("status")
     prepared = payload.get("prepared")
     prepared_pid = payload.get("prepared_pid")
+    refusal = payload.get("refusal")
+    refusal_code = refusal.get("code") if isinstance(refusal, dict) else None
+    known_refusal_codes = {
+        "browser_consent_required",
+        "browser_requires_setup",
+        "browser_route_unavailable",
+        "browser_wrong_target_refused",
+    }
     print(
         "E2E browser prepare diagnostic: "
         f"field_count={len(payload)} "
         f"status_ok={status == 'ok'} status_type={type(status).__name__} "
         f"prepared_true={prepared is True} prepared_type={type(prepared).__name__} "
         f"pid_positive={type(prepared_pid) is int and prepared_pid > 0} "
-        f"pid_type={type(prepared_pid).__name__}.",
+        f"pid_type={type(prepared_pid).__name__} "
+        f"refusal_code={refusal_code if refusal_code in known_refusal_codes else 'other'}.",
         file=sys.stderr,
     )
 
