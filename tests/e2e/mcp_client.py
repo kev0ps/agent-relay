@@ -44,15 +44,17 @@ EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = (
     "relay_terminal_exec",
     "relay_cua_list_windows",
     "relay_cua_get_window_state",
+    "relay_cua_launch_app",
+    "relay_cua_kill_app",
     "relay_cua_click",
     "relay_cua_type_text",
-    "relay_cua_launch_app",
-    "relay_cua_start_session",
+    "relay_cua_get_browser_state",
     "relay_cua_browser_prepare",
     "relay_cua_browser_navigate",
-    "relay_cua_get_browser_state",
+    "relay_cua_browser_click",
+    "relay_cua_browser_type",
+    "relay_cua_start_session",
     "relay_cua_end_session",
-    "relay_cua_kill_app",
 )
 SERVER_MCP_TOOLS: Final[tuple[str, ...]] = ("relay_device_status",)
 # Keep these black-box limits aligned with ``agent_relay.json_bounds`` without

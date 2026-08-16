@@ -451,6 +451,73 @@ def test_validate_cua_action_accepts_bounded_result() -> None:
     )
 
 
+def test_validate_cua_browser_controls_returns_opaque_refs() -> None:
+    payload = {
+        "target_id": "target-1",
+        "tabs": [{"tab_id": "tab-1", "active": True}],
+        "url": "http://127.0.0.1:8898/",
+        "title": "Relay Desktop Fixture",
+        "text": "Relay Desktop Fixture Name Apply idle",
+        "elements": [
+            {
+                "ref": "p1:0",
+                "role": "textbox",
+                "name": "Name",
+                "value": "",
+                "editable": True,
+                "enabled": True,
+                "clickable": False,
+            },
+            {
+                "ref": "p1:1",
+                "role": "button",
+                "name": "Apply",
+                "value": "",
+                "editable": False,
+                "enabled": True,
+                "clickable": True,
+            },
+        ],
+    }
+    assert _oracles().validate_cua_browser_controls(
+        _make_call_tool_result(payload),
+        expected_url="http://127.0.0.1:8898/",
+    ) == ("p1:0", "p1:1")
+
+
+def test_validate_cua_browser_controls_rejects_native_handles() -> None:
+    payload = {
+        "target_id": "target-1",
+        "tabs": [{"tab_id": "tab-1", "active": True}],
+        "url": "http://127.0.0.1:8898/",
+        "text": "Relay Desktop Fixture Name Apply",
+        "elements": [
+            {
+                "ref": "p1:0",
+                "role": "textbox",
+                "name": "Name",
+                "editable": True,
+                "enabled": True,
+                "clickable": False,
+                "element_token": "native-handle",
+            },
+            {
+                "ref": "p1:1",
+                "role": "button",
+                "name": "Apply",
+                "editable": False,
+                "enabled": True,
+                "clickable": True,
+            },
+        ],
+    }
+    with pytest.raises(ValueError):
+        _oracles().validate_cua_browser_controls(
+            _make_call_tool_result(payload),
+            expected_url="http://127.0.0.1:8898/",
+        )
+
+
 def test_validate_cua_browser_launch_accepts_cua_019_shape() -> None:
     assert _oracles().validate_cua_browser_launch(
         _make_call_tool_result(

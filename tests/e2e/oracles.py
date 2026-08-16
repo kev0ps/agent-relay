@@ -418,7 +418,7 @@ def validate_cua_browser_launch(result: Any) -> int:
 
 
 def validate_cua_browser_prepare(result: Any) -> int:
-    """Return the isolated browser PID minted by CUA ``browser_prepare``."""
+    """Return the browser PID accepted by CUA ``browser_prepare``."""
     payload = _structured(result, "relay_cua_browser_prepare")
     prepared_pid = payload.get("prepared_pid")
     if (
@@ -489,6 +489,85 @@ def validate_cua_browser_state(
         and not _contains_browser_text(payload, expected_text)
     ):
         raise ValueError("invalid relay_cua_get_browser_state page state")
+
+
+def validate_cua_browser_controls(
+    result: Any,
+    *,
+    expected_url: str,
+    expected_text: str | None = None,
+) -> tuple[str, str]:
+    """Return exactly one editable field ref and one Apply button ref.
+
+    Browser refs are opaque, session-scoped values minted by the provider. The
+    oracle accepts only the bounded DOM-ref shape and rejects native handles,
+    locators, or accessibility element tokens crossing the browser boundary.
+    """
+    payload = _structured(result, "relay_cua_get_browser_state")
+    validate_cua_browser_state(
+        result,
+        expected_url=expected_url,
+        expected_text=expected_text,
+    )
+    elements = payload.get("elements")
+    if type(elements) is not list or not 1 <= len(elements) <= 64:
+        raise ValueError("invalid relay_cua_get_browser_state elements")
+    field_refs: list[str] = []
+    button_refs: list[str] = []
+    seen_refs: set[str] = set()
+    for element in elements:
+        if type(element) is not dict:
+            raise ValueError("invalid relay_cua_get_browser_state element")
+        allowed = {
+            "ref",
+            "role",
+            "name",
+            "value",
+            "editable",
+            "enabled",
+            "clickable",
+        }
+        if set(element) - allowed:
+            raise ValueError("invalid relay_cua_get_browser_state element")
+        ref = element.get("ref")
+        role = element.get("role")
+        name = element.get("name")
+        if (
+            not isinstance(ref, str)
+            or not _exact_str(ref, nonempty=True, maximum=256)
+            or ref in seen_refs
+            or not isinstance(role, str)
+            or not _exact_str(role, nonempty=True, maximum=64)
+            or not isinstance(name, str)
+            or not _exact_str(name, maximum=256)
+            or type(element.get("editable")) is not bool
+            or type(element.get("enabled")) is not bool
+            or type(element.get("clickable")) is not bool
+            or (
+                "value" in element
+                and not _exact_str(element["value"], maximum=2048)
+            )
+        ):
+            raise ValueError("invalid relay_cua_get_browser_state element")
+        seen_refs.add(ref)
+        normalized_role = role.casefold()
+        if (
+            normalized_role in {"textbox", "combobox"}
+            and name.casefold() == "name"
+            and element["editable"]
+            and element["enabled"]
+        ):
+            field_refs.append(ref)
+        if (
+            normalized_role in {"button", "push button"}
+            and name.casefold() == "apply"
+            and element["clickable"]
+            and element["enabled"]
+        ):
+            button_refs.append(ref)
+    if len(field_refs) != 1 or len(button_refs) != 1:
+        raise ValueError("invalid relay_cua_get_browser_state fixture controls")
+    return field_refs[0], button_refs[0]
 
 
 #

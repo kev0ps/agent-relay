@@ -22,9 +22,15 @@ The MCP facade publishes the server-local `relay_device_status` tool plus only
 selected descriptors from the connected Agent catalogue. All desktop and
 browser descriptors come from the same CUA MCP provider. The Relay validates
 the executable returned by `cua_driver.get_binary_path()`, the environment,
-JSON-RPC frames, descriptors, arguments, and bounded results. No browser DOM
-handles, element IDs, cookies, headers, or profile paths cross the Relay
-boundary.
+JSON-RPC frames, descriptors, arguments, and bounded results. Raw browser DOM
+handles, native accessibility/window handles, cookies, headers, and profile
+paths do not cross the Relay boundary.
+
+The browser protocol does carry bounded opaque identifiers needed for a
+session-scoped follow-up: `target_id`, `tab_id`, and provider snapshot `ref`
+values. They are validated as opaque CUA identifiers and are not raw DOM,
+accessibility, process, or native window handles; stale or mismatched values
+fail closed.
 
 CUA tools are discovered dynamically, but discovery is not authorization:
 newly discovered descriptors are disabled until explicitly selected, while

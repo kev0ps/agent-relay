@@ -35,8 +35,8 @@ sessions, files, desktops, or external websites as test data.
 Run the narrowest relevant tests first. Before requesting review, run:
 
 ```sh
-uv run --frozen pytest -q -m "not integration"
-uv run --frozen pytest -q -m integration
+uv run --frozen python -m pytest -q -m "not integration"
+uv run --frozen python -m pytest -q -m integration
 uv run --frozen ruff check .
 uv lock --check
 git diff --check

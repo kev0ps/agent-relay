@@ -798,6 +798,35 @@ def test_malformed_mcp_descriptor_is_inventory_error_without_sensitive_context()
     asyncio.run(scenario())
 
 
+def test_malformed_unselected_cua_descriptor_does_not_poison_inventory() -> None:
+    class MixedTransport(FakeMcpTransport):
+        async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+            del cursor
+            return {
+                "tools": [
+                    {
+                        "name": "capture",
+                        "description": "Capture the synthetic desktop",
+                        "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": False,
+                        },
+                    },
+                    {
+                        "name": "future_tool",
+                        "inputSchema": "wss://user:password@host/?token=very-secret",
+                    },
+                ]
+            }
+
+    async def scenario() -> None:
+        client = McpProviderToolClient(MixedTransport(), provider_name="cua")
+        tools = await client.list_tools()
+        assert [tool.tool_name for tool in tools] == ["capture"]
+
+    asyncio.run(scenario())
+
+
 def test_provider_description_is_bounded_before_descriptor_validation() -> None:
     class LongDescriptionTransport(FakeMcpTransport):
         async def list_tools(self, cursor: str | None = None) -> dict[str, object]:

@@ -655,7 +655,7 @@ def test_agent_main_uses_supplied_catalog_before_starting_runtime(
     assert observed == [snapshot]
 
 
-def test_runtime_catalog_reuses_one_started_cua_provider(
+def test_runtime_catalog_starts_one_cua_provider_without_selecting_unknown_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = AgentSettings(
@@ -663,7 +663,7 @@ def test_runtime_catalog_reuses_one_started_cua_provider(
         device_id="catalog-agent",
         agent_token="[REDACTED]",
         workspace=tmp_path,
-        tools_allowlist=("relay_cua_provider_added_later",),
+        tools_allowlist=(),
         computer_allowed_app_name="Fixture",
         computer_allowed_window_title="Fixture Window",
     )
@@ -681,7 +681,7 @@ def test_runtime_catalog_reuses_one_started_cua_provider(
                 ProviderToolDescriptor(
                     provider_name="cua",
                     tool_name="provider_added_later",
-                    public_name="provider_added_later",
+                    public_name="relay_cua_provider_added_later",
                     description="provider-added tool",
                     input_schema={
                         "type": "object",
@@ -719,10 +719,10 @@ def test_runtime_catalog_reuses_one_started_cua_provider(
 
     assert provider.starts == 1
     assert provider.closes == 1
-    assert observed[0]._provider_routes["cua.provider_added_later"][0] is provider
+    assert "cua.provider_added_later" not in observed[0]._provider_routes
     assert tuple(
         descriptor.public_name for descriptor in observed[0]._announcement_descriptors
-    ) == ("relay_cua_provider_added_later",)
+    ) == ()
     assert id(provider) not in observed[0]._unique_capabilities
 
 

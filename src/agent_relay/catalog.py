@@ -118,6 +118,28 @@ class CatalogPolicy:
             "script",
         }
     )
+    cua_interaction_names: frozenset[str] = frozenset(
+        {
+            "launch_app",
+            "bring_to_front",
+            "set_window_frame",
+            "invoke_menu",
+            "click",
+            "double_click",
+            "right_click",
+            "drag",
+            "type_text",
+            "press_key",
+            "hotkey",
+            "scroll",
+            "move_cursor",
+            "zoom",
+            "browser_prepare",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+        }
+    )
     cua_read_only_names: frozenset[str] = frozenset(
         {
             "list_apps",
@@ -185,12 +207,18 @@ class CatalogPolicy:
         if descriptor.provider_name == "cua":
             if name in self.cua_blocked_names:
                 return "blocked"
+            if name in self.cua_interaction_names:
+                return "interaction"
             if name in self.cua_read_only_names:
                 return "read_only"
             if name in self.cua_destructive_names:
                 return "destructive"
             if name in self.cua_admin_names:
                 return "admin"
+            # Dynamic provider inventories are untrusted metadata. A new CUA
+            # tool must be classified explicitly before it can cross the
+            # Agent allowlist boundary; visibility is retained for diagnostics.
+            return "blocked"
         return descriptor.risk
 
 

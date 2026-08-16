@@ -328,7 +328,7 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "Verify checked-out commit" in job
     assert "uses: ./.github/actions/setup-python" in job
     assert "uv run --frozen ruff check ." not in job
-    assert "uv run --frozen pytest -q" in job
+    assert "uv run --frozen python -m pytest -q" in job
     for test_path in (
         "tests/test_windows_e2e.py",
         "tests/test_installers.py",
@@ -337,7 +337,7 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     ):
         assert test_path in job
     assert "git_search_skips_relative_default_path_entries" in job
-    assert "uv run --frozen pytest -q -m integration" in job
+    assert "uv run --frozen python -m pytest -q -m integration" in job
     assert "uv run --frozen python scripts/windows_e2e.py" in job
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile windows-terminal" in job

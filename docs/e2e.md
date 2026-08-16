@@ -33,7 +33,7 @@ or browser session.
 
 | Platform | Terminal | CUA operations | Interpretation |
 |---|---|---|---|
-| Linux | E2E | X11/Xvfb/AT-SPI desktop + local browser subpath | Current repeatable native path |
+| Linux | E2E | X11/Xvfb/AT-SPI desktop + local browser subpath | CI-gated native path; local contract tests are not product E2E proof |
 | Windows | E2E | Hosted UI Automation desktop candidate | CUA remains experimental until the full fixture gate is repeatable |
 | Docker image | CLI smoke only | Not a product CUA path | Packaging evidence, not capability E2E |
 
@@ -50,9 +50,9 @@ cleanup.
 Relevant local checks:
 
 ```sh
-uv run --frozen pytest -q \
+uv run --frozen python -m pytest -q \
   tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
-uv run --frozen pytest -q -m integration
+uv run --frozen python -m pytest -q -m integration
 ```
 
 ## Linux CUA
@@ -70,27 +70,36 @@ relay_cua_type_text
 ```
 
 The same CUA scenario then runs one bounded browser subpath against the local
-page served by that harness:
+page served by that harness. CUA owns the browser process from launch through
+cleanup; `browser_prepare` attaches to the launched process with an existing
+profile rather than starting a second browser:
 
 ```text
 relay_cua_launch_app -> relay_cua_start_session
-  -> relay_cua_browser_prepare (isolated profile)
-  -> relay_cua_get_browser_state / relay_cua_browser_navigate
-  -> relay_cua_get_browser_state -> relay_cua_end_session
+  -> relay_cua_list_windows (launch PID/window anchor)
+  -> relay_cua_browser_prepare (existing profile, same PID)
+  -> relay_cua_list_windows (prepared PID)
+  -> relay_cua_get_browser_state (target/tab binding)
+  -> relay_cua_browser_navigate -> relay_cua_get_browser_state
+  -> relay_cua_browser_type -> relay_cua_browser_click
+  -> relay_cua_get_browser_state / correlated fixture event
+  -> relay_cua_end_session -> relay_cua_kill_app
 ```
 
 The scenario verifies automatic driver resolution, provider startup, complete
 catalogue discovery, explicit activation, policy blocking, representative
-desktop operations, browser URL/state, correlated fixture evidence, and
-cleanup. This is an integrated browser subpath of the general Linux CUA job,
-not a separate scenario or job. Chromium is an explicit prerequisite of
-that job. Windows keeps the desktop candidate path until a hosted browser
-prerequisite is guaranteed.
+desktop operations, browser URL/state, browser typing and clicking, correlated
+fixture evidence, and cleanup. This is an integrated browser subpath of the
+general Linux CUA job, not a separate scenario or job. Chromium is an explicit
+prerequisite of that job. Windows keeps the desktop candidate path until a
+hosted browser prerequisite is guaranteed. A green contract/probe run or a
+local mock does not replace a successful graphical Linux CUA run at the same
+SHA; the latter remains the product-level proof.
 
 Relevant local checks:
 
 ```sh
-uv run --frozen pytest -q \
+uv run --frozen python -m pytest -q \
   tests/test_cua_catalog.py tests/test_cua_profiles.py \
   tests/test_computer_capability.py tests/test_desktop_fixture.py \
   tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py \
@@ -109,7 +118,7 @@ and cleanup behavior as the Linux Terminal gate.
 Relevant local checks:
 
 ```sh
-uv run --frozen pytest -q \
+uv run --frozen python -m pytest -q \
   tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 ```
 
@@ -134,7 +143,7 @@ does not close the gate.
 Portable checks:
 
 ```sh
-uv run --frozen pytest -q \
+uv run --frozen python -m pytest -q \
   tests/test_cua_catalog.py tests/test_cua_profiles.py \
   tests/test_computer_capability.py tests/test_desktop_fixture.py \
   tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py \

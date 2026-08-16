@@ -143,8 +143,13 @@ def test_profile_transitions_preserve_non_cua_and_keep_dynamic_tools_off(
         *CUA_PROFILE_PUBLIC_NAMES["full"],
     ]
 
-    config.update_tool(path, "relay_cua_new_tool", enabled=True, catalog=catalog)
-    assert config.cua_tool_summary(path, catalog=catalog).access == "custom"
+    with pytest.raises(config.ConfigError, match="blocked"):
+        config.update_tool(path, "relay_cua_new_tool", enabled=True, catalog=catalog)
+    assert _allowlist(path) == [
+        "relay_system_ping",
+        *CUA_PROFILE_PUBLIC_NAMES["full"],
+    ]
+    assert config.cua_tool_summary(path, catalog=catalog).access == "full"
     config.update_cua_access(path, "none", catalog=catalog)
     assert _allowlist(path) == ["relay_system_ping"]
 

@@ -440,6 +440,15 @@ class McpProviderToolClient:
                                 )
                             except Exception:
                                 failure_category = "descriptor"
+                                if self._provider_name == "cua":
+                                    # CUA inventory is versioned independently from
+                                    # Relay. A malformed, unselected future tool must
+                                    # not hide valid tools; selection still fails later
+                                    # because the malformed descriptor is absent.
+                                    _debug_cua_descriptor_failure(
+                                        self._provider_name, failure_category
+                                    )
+                                    continue
                                 raise
                             descriptors.append(descriptor)
                         if len(descriptors) > MAX_PROVIDER_TOOLS:

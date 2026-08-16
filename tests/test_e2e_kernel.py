@@ -174,6 +174,12 @@ def _install_cua_scenario_fakes(
     monkeypatch.setattr(scenarios._oracles, "validate_cua_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scenarios._oracles, "validate_cua_event", lambda *_args, **_kwargs: b"stable-event")
     monkeypatch.setattr(scenarios._oracles, "assert_no_cua_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_cua_browser_controls",
+        lambda *_args, **_kwargs: ("p1:0", "p1:1"),
+    )
+    monkeypatch.setattr(scenarios._oracles, "poll_cua_event", lambda *_args, **_kwargs: b"stable-event")
     monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
     return observed
 
@@ -493,6 +499,8 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
 ) -> None:
     scenarios = _scenarios()
     prepare_pids: list[object] = []
+    prepare_arguments: list[dict[str, object]] = []
+    launch_calls: list[dict[str, object]] = []
 
     class BrowserSession(_CuaScenarioSession):
         fail_navigation = False
@@ -507,6 +515,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
             arguments: dict[str, object],
         ) -> _CuaScenarioResult:
             if tool_name == "relay_cua_launch_app":
+                launch_calls.append(dict(arguments))
                 return _CuaScenarioResult(
                     structured={
                         "pid": 5000,
@@ -519,6 +528,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
                 return _CuaScenarioResult()
             if tool_name == "relay_cua_browser_prepare":
                 prepare_pids.append(arguments.get("pid"))
+                prepare_arguments.append(dict(arguments))
                 if self.fail_prepare:
                     return _CuaScenarioResult(is_error=True)
                 return _CuaScenarioResult(
@@ -530,12 +540,37 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
                 )
             if tool_name == "relay_cua_get_browser_state":
                 if "target_id" in arguments:
+                    applied = bool(getattr(self, "browser_value", ""))
                     return _CuaScenarioResult(
                         structured={
                             "target_id": "target-1",
                             "tabs": [{"tab_id": "tab-1", "active": True}],
                             "url": "http://127.0.0.1:1/",
-                            "text": "Relay Desktop Fixture",
+                            "text": (
+                                "Relay Desktop Fixture applied"
+                                if applied
+                                else "Relay Desktop Fixture"
+                            ),
+                            "elements": [
+                                {
+                                    "ref": "p1:0",
+                                    "role": "textbox",
+                                    "name": "Name",
+                                    "value": getattr(self, "browser_value", ""),
+                                    "editable": True,
+                                    "enabled": True,
+                                    "clickable": False,
+                                },
+                                {
+                                    "ref": "p1:1",
+                                    "role": "button",
+                                    "name": "Apply",
+                                    "value": "",
+                                    "editable": False,
+                                    "enabled": True,
+                                    "clickable": True,
+                                },
+                            ],
                         }
                     )
                 return _CuaScenarioResult(
@@ -546,8 +581,12 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
                         "tabs": [{"tab_id": "tab-1", "active": True}],
                     }
                 )
+            if tool_name == "relay_cua_browser_type":
+                self.browser_value = str(arguments.get("text", ""))
+                return _CuaScenarioResult()
             if tool_name in {
                 "relay_cua_browser_navigate",
+                "relay_cua_browser_click",
                 "relay_cua_end_session",
                 "relay_cua_kill_app",
             }:
@@ -580,6 +619,11 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         include_browser=True,
     )
     assert prepare_pids == [6000]
+    assert launch_calls == []
+    assert prepare_arguments[0]["window_id"] == 77
+    assert prepare_arguments[0]["strategy"] == {"kind": "existing_profile"}
+    assert "allow_launch" not in prepare_arguments[0]
+    assert "profile" not in prepare_arguments[0]
 
 
     BrowserSession.fail_navigation = True

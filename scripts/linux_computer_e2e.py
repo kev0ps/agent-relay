@@ -57,8 +57,10 @@ except ModuleNotFoundError as error:
 
 DEVICE_ID = "linux-cua-e2e-agent"
 CUA_CAPABILITIES = (
+    "cua.browser_click",
     "cua.browser_navigate",
     "cua.browser_prepare",
+    "cua.browser_type",
     "cua.click",
     "cua.end_session",
     "cua.get_browser_state",
@@ -135,6 +137,46 @@ def _cua_controls_ready(runtime: Any) -> bool:
     except (ConnectionError, ValueError):
         return False
     return True
+
+
+def _launch_cua_browser(runtime: Any, profile: Path) -> int:
+    """Launch the fixture through the public CUA path exactly once."""
+    result = portable_mcp.call_tool(
+        runtime.mcp_url,
+        runtime.control_token,
+        "relay_cua_launch_app",
+        {
+            "name": "chromium",
+            "additional_arguments": [
+                f"--user-data-dir={profile}",
+                f"--app={runtime.fixture_url}",
+                "--class=relay-desktop-fixture",
+                "--window-name=Relay Desktop Fixture",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--force-renderer-accessibility",
+            ],
+        },
+        http_timeout=2.0,
+        operation_timeout=10.0,
+    )
+    return portable_oracles.validate_cua_browser_launch(result)
+
+
+def _kill_cua_browser(runtime: Any, pid: int) -> None:
+    """Release a CUA-launched browser on harness failure."""
+    result = portable_mcp.call_tool(
+        runtime.mcp_url,
+        runtime.control_token,
+        "relay_cua_kill_app",
+        {"pid": pid},
+        http_timeout=2.0,
+        operation_timeout=10.0,
+    )
+    portable_oracles.validate_cua_browser_success(
+        result,
+        tool_name="relay_cua_kill_app",
+    )
 
 
 def _status(
@@ -547,6 +589,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
     diagnostics: dict[str, Path] = {}
     event_artifact: Path | None = None
     graphical_environment: dict[str, str] | None = None
+    browser_pid: int | None = None
 
     try:
         lifecycle.install_signal_handlers()
@@ -572,8 +615,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         repository = ROOT
         desktop_url = f"http://127.0.0.1:{fixture_port}/"
         mcp_url = f"http://127.0.0.1:{server_port}/mcp"
-        chromium = _resolve_chromium()
-        host_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
         graphical_values = {
             "DISPLAY": DISPLAY,
             "ACCESSIBILITY_ENABLED": "1",
@@ -609,7 +650,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text,relay_cua_launch_app,relay_cua_start_session,relay_cua_browser_prepare,relay_cua_browser_navigate,relay_cua_get_browser_state,relay_cua_end_session,relay_cua_kill_app",
+                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text,relay_cua_launch_app,relay_cua_start_session,relay_cua_browser_prepare,relay_cua_browser_navigate,relay_cua_browser_type,relay_cua_browser_click,relay_cua_get_browser_state,relay_cua_end_session,relay_cua_kill_app",
                 "RELAY_NATIVE_DEBUG": "1",
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
@@ -678,51 +719,29 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
 
         native._wait_for("Linux CUA Agent registration", agent_ready, timeout=AGENT_READY_TIMEOUT_SECONDS)
         # The cua-driver keeps an AT-SPI registry listener for its lifetime.
-        # Start it before Chromium so the renderer publishes its accessibility
-        # subtree instead of registering only the top-level window.
+        # Start it before the public CUA browser launch so the renderer
+        # publishes its accessibility subtree instead of only its top-level window.
         phase = "chromium-start"
-        assert graphical_environment is not None
-        browser = native._spawn(
-            chromium_command(chromium, profile, desktop_url),
-            environment=chromium_environment(
-                chromium,
-                graphical_environment,
-                host_runtime_dir=Path(host_runtime_dir)
-                if host_runtime_dir is not None
-                else None,
-                host_session_bus_address=os.environ.get("DBUS_SESSION_BUS_ADDRESS"),
-            ),
-            cwd=repository,
-            lifecycle=lifecycle,
-            stderr_path=diagnostics["Chromium"],
-        )
-        if browser.poll() is not None:
-            raise LinuxCuaE2EError("Linux CUA Chromium exited during startup")
-
-        def chromium_window_ready() -> bool:
-            if browser.poll() is not None:
-                raise LinuxCuaE2EError(
-                    "Linux CUA Chromium exited before its window appeared"
-                )
-            return _x11_has_client_window(graphical_environment)
-
-        native._wait_for(
-            "Linux CUA Chromium window",
-            chromium_window_ready,
-            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
-        )
-        native._wait_for(
-            "Linux CUA Chromium identity",
-            lambda: _x11_has_expected_window(graphical_environment),
-            timeout=DESKTOP_READY_TIMEOUT_SECONDS,
-        )
         runtime = _runtime(
             mcp_url=mcp_url,
             control_token=control_token,
             run_id=run_id,
             fixtures_root=local_artifacts,
             fixture_url=desktop_url,
-            browser_pid=str(browser.pid),
+        )
+        browser_pid = _launch_cua_browser(runtime, profile)
+        runtime = _runtime(
+            mcp_url=mcp_url,
+            control_token=control_token,
+            run_id=run_id,
+            fixtures_root=local_artifacts,
+            fixture_url=desktop_url,
+            browser_pid=str(browser_pid),
+        )
+        lifecycle.add_cleanup(
+            lambda: _kill_cua_browser(runtime, browser_pid)
+            if browser_pid is not None
+            else None
         )
         native._wait_for(
             "Linux CUA browser accessibility controls",
@@ -740,10 +759,14 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             expected_cua_window_title=COMPUTER_WINDOW_TITLE,
             include_browser=True,
         )
-        if any(process.poll() is not None for process in (server, fixture, browser, agent)):
+        browser_pid = None
+        if any(process.poll() is not None for process in (server, fixture, agent)):
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")
     except BaseException as error:
         scenario_error = error
+        if any(item.startswith("browser-") for item in scenario_phase):
+            # The portable browser subscenario owns cleanup after it starts.
+            browser_pid = None
         if graphical_environment is not None:
             print(
                 f"Linux CUA X11 diagnostic: {_x11_window_hint(graphical_environment)}",

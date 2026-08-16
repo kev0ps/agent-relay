@@ -54,15 +54,17 @@ CORE_MCP_TOOLS: Final[tuple[str, ...]] = (
 CUA_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
     "relay_cua_list_windows",
     "relay_cua_get_window_state",
+    "relay_cua_launch_app",
+    "relay_cua_kill_app",
     "relay_cua_click",
     "relay_cua_type_text",
-    "relay_cua_launch_app",
-    "relay_cua_start_session",
+    "relay_cua_get_browser_state",
     "relay_cua_browser_prepare",
     "relay_cua_browser_navigate",
-    "relay_cua_get_browser_state",
+    "relay_cua_browser_click",
+    "relay_cua_browser_type",
+    "relay_cua_start_session",
     "relay_cua_end_session",
-    "relay_cua_kill_app",
 )
 CUA_DESKTOP_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
     "relay_cua_list_windows",
@@ -252,7 +254,7 @@ async def _run_cua_browser_subscenario(
     runtime: RuntimeConfig,
     phase: list[str] | None,
 ) -> None:
-    """Exercise the CUA browser contract inside the native CUA scenario."""
+    """Exercise the CUA browser contract using one owned browser process."""
     if not runtime.fixture_url.startswith("http://127.0.0.1:"):
         raise ValueError("CUA browser fixture must be loopback HTTP")
     session = f"{CUA_BROWSER_SESSION_PREFIX}{runtime.run_id}"
@@ -263,25 +265,35 @@ async def _run_cua_browser_subscenario(
     primary_error: BaseException | None = None
     primary_phase: str | None = None
     try:
-        _mark(phase, "browser-launch")
-        launch_profile_dir = tempfile.TemporaryDirectory(
-            prefix="agent-relay-cua-browser-"
-        )
-        launch_profile = Path(launch_profile_dir.name)
-        initial_pid = _oracles.validate_cua_browser_launch(
-            await client.call(
-                "relay_cua_launch_app",
-                {
-                    "name": "chromium",
-                    "additional_arguments": [
-                        f"--user-data-dir={launch_profile}",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--force-renderer-accessibility",
-                    ],
-                },
+        if runtime.browser_pid:
+            if not runtime.browser_pid.isascii() or not runtime.browser_pid.isdecimal():
+                raise ValueError("invalid CUA browser fixture process")
+            initial_pid = int(runtime.browser_pid)
+            if initial_pid <= 0:
+                raise ValueError("CUA browser fixture process is unavailable")
+        else:
+            _mark(phase, "browser-launch")
+            launch_profile_dir = tempfile.TemporaryDirectory(
+                prefix="agent-relay-cua-browser-"
             )
-        )
+            launch_profile = Path(launch_profile_dir.name)
+            initial_pid = _oracles.validate_cua_browser_launch(
+                await client.call(
+                    "relay_cua_launch_app",
+                    {
+                        "name": "chromium",
+                        "additional_arguments": [
+                            f"--user-data-dir={launch_profile}",
+                            f"--app={runtime.fixture_url}",
+                            "--class=relay-desktop-fixture",
+                            "--window-name=Relay Desktop Fixture",
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--force-renderer-accessibility",
+                        ],
+                    },
+                )
+            )
         _mark(phase, "browser-session-start")
         _oracles.validate_cua_browser_success(
             await client.call(
@@ -291,7 +303,7 @@ async def _run_cua_browser_subscenario(
             tool_name="relay_cua_start_session",
         )
         session_started = True
-        _mark(phase, "browser-prepare")
+        _mark(phase, "browser-window-anchor")
         prepare_pid = initial_pid
         if runtime.browser_pid:
             if not runtime.browser_pid.isascii() or not runtime.browser_pid.isdecimal():
@@ -299,13 +311,21 @@ async def _run_cua_browser_subscenario(
             prepare_pid = int(runtime.browser_pid)
         if type(prepare_pid) is not int or prepare_pid <= 0:
             raise ValueError("CUA browser fixture process is unavailable")
+        _anchor_pid, browser_window_id = _oracles.validate_cua_list_windows(
+            await client.call(
+                "relay_cua_list_windows",
+                {"pid": prepare_pid},
+            ),
+            expected_pid=prepare_pid,
+        )
+        _mark(phase, "browser-prepare")
         prepare_result = await client.call(
             "relay_cua_browser_prepare",
             {
                 "pid": prepare_pid,
+                "window_id": browser_window_id,
                 "session": session,
-                "allow_launch": True,
-                "profile": {"mode": "isolated_new"},
+                "strategy": {"kind": "existing_profile"},
             },
         )
         _mark(
@@ -354,6 +374,52 @@ async def _run_cua_browser_subscenario(
             tool_name="relay_cua_browser_navigate",
         )
         _mark(phase, "browser-state")
+        browser_state = await client.call(
+            "relay_cua_get_browser_state",
+            {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "session": session,
+            },
+        )
+        _oracles.validate_cua_browser_state(
+            browser_state,
+            expected_url=runtime.fixture_url,
+        )
+        field_ref, button_ref = _oracles.validate_cua_browser_controls(
+            browser_state,
+            expected_url=runtime.fixture_url,
+        )
+        browser_value = "b-value"
+        _mark(phase, "browser-type")
+        _oracles.validate_cua_browser_success(
+            await client.call(
+                "relay_cua_browser_type",
+                {
+                    "target_id": target_id,
+                    "tab_id": tab_id,
+                    "ref": field_ref,
+                    "text": browser_value,
+                    "replace": True,
+                    "session": session,
+                },
+            ),
+            tool_name="relay_cua_browser_type",
+        )
+        _mark(phase, "browser-click")
+        _oracles.validate_cua_browser_success(
+            await client.call(
+                "relay_cua_browser_click",
+                {
+                    "target_id": target_id,
+                    "tab_id": tab_id,
+                    "ref": button_ref,
+                    "session": session,
+                },
+            ),
+            tool_name="relay_cua_browser_click",
+        )
+        _mark(phase, "browser-state-after-click")
         _oracles.validate_cua_browser_state(
             await client.call(
                 "relay_cua_get_browser_state",
@@ -364,6 +430,14 @@ async def _run_cua_browser_subscenario(
                 },
             ),
             expected_url=runtime.fixture_url,
+            expected_text="applied",
+        )
+        _mark(phase, "browser-event")
+        _oracles.poll_cua_event(
+            _fixture_path(runtime, CUA_EVENT_FILE),
+            run_id=runtime.run_id,
+            value=browser_value,
+            timeout=EVENT_POLL_TIMEOUT,
         )
     except BaseException as error:
         primary_error = error
@@ -383,6 +457,24 @@ async def _run_cua_browser_subscenario(
                 )
             except BaseException as error:
                 cleanup_error = error
+        cleanup_pids: list[int] = []
+        for candidate in (prepared_pid, initial_pid):
+            if type(candidate) is int and candidate > 0 and candidate not in cleanup_pids:
+                cleanup_pids.append(candidate)
+        if runtime.browser_pid.isascii() and runtime.browser_pid.isdecimal():
+            runtime_pid = int(runtime.browser_pid)
+            if runtime_pid > 0 and runtime_pid not in cleanup_pids:
+                cleanup_pids.append(runtime_pid)
+        for pid in cleanup_pids:
+            _mark(phase, "browser-kill")
+            try:
+                _oracles.validate_cua_browser_success(
+                    await client.call("relay_cua_kill_app", {"pid": pid}),
+                    tool_name="relay_cua_kill_app",
+                )
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
         if launch_profile_dir is not None:
             launch_profile_dir.cleanup()
         if primary_error is None and cleanup_error is not None:
@@ -527,6 +619,7 @@ async def _run_cua_scenario_async(
         if include_browser:
             await _run_cua_browser_subscenario(client, runtime, phase)
     _mark(phase, "artifact-event")
+    expected_event_value = "b-value" if include_browser else value
     deadline = time.monotonic() + EVENT_POLL_TIMEOUT
     previous: bytes | None = None
     while time.monotonic() < deadline:
@@ -534,7 +627,7 @@ async def _run_cua_scenario_async(
             current = _oracles.validate_cua_event(
                 artifact,
                 run_id=runtime.run_id,
-                value=value,
+                value=expected_event_value,
             )
         except ValueError:
             time.sleep(0.05)
@@ -547,7 +640,7 @@ async def _run_cua_scenario_async(
     _oracles.validate_cua_event(
         artifact,
         run_id=runtime.run_id,
-        value=value,
+        value=expected_event_value,
     )
 
 

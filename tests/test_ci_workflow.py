@@ -48,6 +48,25 @@ def test_cua_jobs_use_the_standard_locked_dependency_set() -> None:
     assert "extra " + "computer" not in setup
 
 
+def test_ci_uses_reproducible_pytest_module_invocation() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    pytest_lines = [line for line in workflow.splitlines() if "pytest" in line]
+    assert pytest_lines
+    assert all("uv run --frozen python -m pytest" in line for line in pytest_lines)
+    assert "uv run --frozen pytest" not in workflow
+
+
+def test_linux_cua_job_uses_secure_apt_source_and_bounded_budget() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    linux_cua = workflow.split("  e2e-linux-cua:", 1)[1].split(
+        "\n  e2e-windows-terminal:", 1
+    )[0]
+    assert "timeout-minutes: 10" in linux_cua
+    assert "https://dl.google.com/linux/linux_signing_key.pub" in linux_cua
+    assert "https://dl.google.com/linux/chrome/deb/" in linux_cua
+    assert "http://dl.google.com" not in linux_cua
+
+
 def test_cua_jobs_run_the_same_portable_contract_suite() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     common_tests = (

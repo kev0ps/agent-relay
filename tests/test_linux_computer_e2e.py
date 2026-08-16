@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "linux_computer_e2e.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"
+POSIX_ONLY = pytest.mark.skipif(
+    os.name != "posix",
+    reason="requires POSIX AF_UNIX and symlink semantics",
+)
 
 
 def _load_harness():
@@ -19,6 +26,13 @@ def _load_harness():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_cua_capabilities_are_unique_and_registry_sorted() -> None:
+    harness = _load_harness()
+
+    assert len(harness.CUA_CAPABILITIES) == len(set(harness.CUA_CAPABILITIES))
+    assert harness.CUA_CAPABILITIES == tuple(sorted(harness.CUA_CAPABILITIES))
 
 
 def test_resolve_chromium_preserves_symlinked_launcher(tmp_path, monkeypatch) -> None:
@@ -50,6 +64,8 @@ def test_resolve_chromium_prefers_non_snap_google_chrome(tmp_path, monkeypatch) 
     assert harness._resolve_chromium() == chrome
 
 
+
+@POSIX_ONLY
 def test_snap_chromium_uses_host_user_bus_for_snapd_scope(
     tmp_path,
 ) -> None:
@@ -90,6 +106,7 @@ def test_snap_chromium_prefers_host_bus_address_over_private_bus(tmp_path) -> No
     assert environment["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/private/bus"
 
 
+@POSIX_ONLY
 def test_snap_chromium_detection_follows_launcher_symlink(tmp_path, monkeypatch) -> None:
     harness = _load_harness()
     snap_bin = tmp_path / "snap" / "bin"

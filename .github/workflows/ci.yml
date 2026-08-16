@@ -39,11 +39,11 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/agent-relay.coverage
         run: >-
-          uv run --frozen pytest -q -m "not integration"
+          uv run --frozen python -m pytest -q -m "not integration"
           --cov=agent_relay --cov-report=term-missing
 
       - name: Run explicit integration suite
-        run: uv run --frozen pytest -q -m integration
+        run: uv run --frozen python -m pytest -q -m integration
 
       - name: Verify checks left the repository clean
         run: |
@@ -191,10 +191,10 @@ jobs:
           installer: "true"
 
       - name: Run Linux contract tests
-        run: uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
+        run: uv run --frozen python -m pytest -q tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Linux integration suite
-        run: uv run --frozen pytest -q -m integration
+        run: uv run --frozen python -m pytest -q -m integration
 
       - name: Run Linux Terminal MCP end-to-end scenario
         shell: bash
@@ -227,7 +227,7 @@ jobs:
     name: Linux CUA end-to-end
     needs: python
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -253,7 +253,7 @@ jobs:
             chromium libglib2.0-bin openbox x11-utils xdotool xterm xvfb wget
           wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
             | sudo gpg --dearmor --yes -o /usr/share/keyrings/google-linux.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
             | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends google-chrome-stable
@@ -297,7 +297,7 @@ jobs:
 
       - name: Run Linux CUA contract tests
         run: >-
-          uv run --frozen pytest -q
+          uv run --frozen python -m pytest -q
           tests/test_cua_catalog.py tests/test_cua_profiles.py
           tests/test_computer_capability.py tests/test_desktop_fixture.py
           tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py
@@ -363,7 +363,7 @@ jobs:
       - name: Run Windows test suite
         shell: pwsh
         run: >-
-          uv run --frozen pytest -q tests/test_windows_e2e.py
+          uv run --frozen python -m pytest -q tests/test_windows_e2e.py
           tests/test_linux_e2e.py
           tests/test_installers.py tests/test_cli_uninstall.py
           tests/test_cli_config.py::test_init_agent_from_server_uses_the_effective_dotenv_token
@@ -372,7 +372,7 @@ jobs:
 
       - name: Run Windows integration suite
         shell: pwsh
-        run: uv run --frozen pytest -q -m integration
+        run: uv run --frozen python -m pytest -q -m integration
 
       - name: Run Windows Terminal MCP end-to-end scenario
         shell: pwsh
@@ -451,7 +451,7 @@ jobs:
       - name: Run Windows CUA contract tests
         shell: pwsh
         run: >-
-          uv run --frozen pytest -q
+          uv run --frozen python -m pytest -q
           tests/test_cua_catalog.py tests/test_cua_profiles.py
           tests/test_computer_capability.py tests/test_desktop_fixture.py
           tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py

@@ -344,8 +344,8 @@ speculative roadmap; implementation history remains available through Git.
 
 For a local check:
 ```sh
-uv run --frozen pytest -q -m "not integration"
-uv run --frozen pytest -q -m integration
+uv run --frozen python -m pytest -q -m "not integration"
+uv run --frozen python -m pytest -q -m integration
 uv run --frozen ruff check .
 uv lock --check
 git diff --check
