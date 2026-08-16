@@ -76,6 +76,32 @@ def test_resolve_chromium_prefers_non_snap_google_chrome(tmp_path, monkeypatch) 
 
 
 
+def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> None:
+    harness = _load_harness()
+    executable = tmp_path / "google-chrome-stable"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    runtime = SimpleNamespace(
+        mcp_url="http://127.0.0.1:9000/mcp",
+        control_token="control-token",
+        fixture_url="http://127.0.0.1:9001/",
+    )
+    calls = []
+
+    def fake_call_tool(url, token, tool_name, arguments, **kwargs):
+        calls.append((url, token, tool_name, arguments, kwargs))
+        return object()
+
+    monkeypatch.setattr(harness.portable_mcp, "call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        harness.portable_oracles,
+        "validate_cua_browser_launch",
+        lambda result: 73,
+    )
+
+    assert harness._launch_cua_browser(runtime, tmp_path / "profile", executable) == 73
+    assert calls[0][3]["name"] == str(executable)
+
+
 @POSIX_ONLY
 def test_snap_chromium_uses_host_user_bus_for_snapd_scope(
     tmp_path,

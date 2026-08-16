@@ -156,14 +156,16 @@ def _cua_controls_ready(runtime: Any) -> bool:
     return True
 
 
-def _launch_cua_browser(runtime: Any, profile: Path) -> int:
+def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
     """Launch the fixture through the public CUA path exactly once."""
+    if not executable.is_absolute() or not executable.is_file():
+        raise LinuxCuaE2EError("a compatible Chromium executable is unavailable")
     result = portable_mcp.call_tool(
         runtime.mcp_url,
         runtime.control_token,
         "relay_cua_launch_app",
         {
-            "name": "chromium",
+            "name": str(executable),
             "additional_arguments": [
                 f"--user-data-dir={profile}",
                 f"--app={runtime.fixture_url}",
@@ -741,6 +743,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         # Start it before the public CUA browser launch so the renderer
         # publishes its accessibility subtree instead of only its top-level window.
         phase = "chromium-start"
+        chromium = _resolve_chromium()
         runtime = _runtime(
             mcp_url=mcp_url,
             control_token=control_token,
@@ -748,7 +751,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             fixtures_root=local_artifacts,
             fixture_url=desktop_url,
         )
-        browser_pid = _launch_cua_browser(runtime, profile)
+        browser_pid = _launch_cua_browser(runtime, profile, chromium)
         runtime = _runtime(
             mcp_url=mcp_url,
             control_token=control_token,
