@@ -73,6 +73,23 @@ CUA_CAPABILITIES = (
     "system.ping",
     "terminal.exec",
 )
+CUA_AGENT_TOOLS = (
+    "relay_system_ping",
+    "relay_terminal_exec",
+    "relay_cua_list_windows",
+    "relay_cua_get_window_state",
+    "relay_cua_launch_app",
+    "relay_cua_kill_app",
+    "relay_cua_click",
+    "relay_cua_type_text",
+    "relay_cua_get_browser_state",
+    "relay_cua_browser_prepare",
+    "relay_cua_browser_navigate",
+    "relay_cua_browser_click",
+    "relay_cua_browser_type",
+    "relay_cua_start_session",
+    "relay_cua_end_session",
+)
 DESKTOP_READY_TIMEOUT_SECONDS = 15.0
 FIXTURE_READY_TIMEOUT_SECONDS = 15.0
 AGENT_READY_TIMEOUT_SECONDS = 30.0
@@ -650,7 +667,9 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_WORKSPACE": str(workspace),
                 "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
-                "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text,relay_cua_launch_app,relay_cua_start_session,relay_cua_browser_prepare,relay_cua_browser_navigate,relay_cua_browser_type,relay_cua_browser_click,relay_cua_get_browser_state,relay_cua_end_session,relay_cua_kill_app",
+                # Dynamic MCP publication preserves announcement order; keep this
+                # sequence identical to the public CUA_MCP_TOOLS contract.
+                "RELAY_AGENT_TOOLS": ",".join(CUA_AGENT_TOOLS),
                 "RELAY_NATIVE_DEBUG": "1",
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,

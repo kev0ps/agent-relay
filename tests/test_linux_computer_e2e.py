@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.e2e.mcp_client import EXPECTED_MCP_TOOLS
+
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "linux_computer_e2e.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -33,6 +35,15 @@ def test_cua_capabilities_are_unique_and_registry_sorted() -> None:
 
     assert len(harness.CUA_CAPABILITIES) == len(set(harness.CUA_CAPABILITIES))
     assert harness.CUA_CAPABILITIES == tuple(sorted(harness.CUA_CAPABILITIES))
+
+
+def test_cua_agent_tool_order_matches_public_mcp_contract() -> None:
+    harness = _load_harness()
+
+    expected = tuple(
+        name for name in EXPECTED_MCP_TOOLS if name != "relay_device_status"
+    )
+    assert harness.CUA_AGENT_TOOLS == expected
 
 
 def test_resolve_chromium_preserves_symlinked_launcher(tmp_path, monkeypatch) -> None:
