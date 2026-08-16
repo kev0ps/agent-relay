@@ -157,6 +157,42 @@ def test_cua_capability_discovers_and_calls_native_and_browser_tools(
     asyncio.run(scenario())
 
 
+def test_browser_pid_scope_accepts_empty_window_metadata() -> None:
+    capability = ComputerCapability.__new__(ComputerCapability)
+    capability._used_actions = set()
+    result = ProviderToolResult(
+        content=[],
+        structuredContent={
+            "windows": [
+                {
+                    "pid": 41,
+                    "window_id": 73,
+                    "app_name": "",
+                    "title": "",
+                    "is_on_screen": True,
+                    "bounds": {"x": 0, "y": 0, "width": 1280, "height": 720},
+                }
+            ]
+        },
+        isError=False,
+    )
+
+    scoped = capability._scope_window_list(result, browser_pid=41)
+
+    assert scoped.structured_content == {
+        "windows": [
+            {
+                "pid": 41,
+                "window_id": 73,
+                "app_name": "",
+                "title": "",
+                "is_on_screen": True,
+                "bounds": {"x": 0, "y": 0, "width": 1280, "height": 720},
+            }
+        ]
+    }
+
+
 def test_driver_diagnostics_are_closed_and_safe() -> None:
     assert _driver_stderr_line_category(b"named pipe failed: secret") == "named-pipe"
     assert _driver_stderr_line_category(b"access is denied") == "permission"

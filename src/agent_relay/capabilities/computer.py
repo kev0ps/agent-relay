@@ -869,7 +869,6 @@ class ComputerCapability:
             title = window.get("title")
             if (
                 type(app_name) is not str
-                or not app_name
                 or len(app_name) > MAX_COMPUTER_APP_LENGTH
                 or type(title) is not str
                 or len(title) > MAX_COMPUTER_WINDOW_TITLE_LENGTH
