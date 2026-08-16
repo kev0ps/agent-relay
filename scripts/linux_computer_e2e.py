@@ -185,7 +185,8 @@ def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
         runtime.control_token,
         "relay_cua_launch_app",
         {
-            "name": str(executable),
+            "name": executable.name,
+            "launch_path": str(executable),
             "additional_arguments": [
                 f"--user-data-dir={profile}",
                 f"--app={runtime.fixture_url}",
