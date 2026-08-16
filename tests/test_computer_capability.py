@@ -208,9 +208,11 @@ def test_driver_environment_excludes_relay_credentials() -> None:
             "RELAY_AGENT_TOKEN": "secret",
             "RELAY_URL": "ws://localhost",
             "CUA_DRIVER_RS_HOME": "/tmp/cua",
+            "ACCESSIBILITY_ENABLED": "1",
         }
     )
     assert environment["PATH"] == "/usr/bin"
+    assert environment["ACCESSIBILITY_ENABLED"] == "1"
     assert environment["CUA_DRIVER_TELEMETRY"] == "0"
     assert "RELAY_AGENT_TOKEN" not in environment
     assert "RELAY_URL" not in environment
