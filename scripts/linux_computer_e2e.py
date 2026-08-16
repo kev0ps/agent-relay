@@ -120,19 +120,39 @@ def _runtime(
 def _cua_controls_ready(runtime: Any) -> bool:
     """Require the public CUA path to expose the fixture's two controls."""
     try:
+        raw_browser_pid = getattr(runtime, "browser_pid", "")
+        browser_pid: int | None = None
+        list_arguments: dict[str, int] = {}
+        if raw_browser_pid:
+            if (
+                not isinstance(raw_browser_pid, str)
+                or not raw_browser_pid.isascii()
+                or not raw_browser_pid.isdecimal()
+            ):
+                return False
+            browser_pid = int(raw_browser_pid)
+            if browser_pid <= 0:
+                return False
+            list_arguments["pid"] = browser_pid
         listed = portable_mcp.call_tool(
             runtime.mcp_url,
             runtime.control_token,
             "relay_cua_list_windows",
-            {},
+            list_arguments,
             http_timeout=1.0,
             operation_timeout=2.0,
         )
-        pid, window_id = portable_oracles.validate_cua_list_windows(
-            listed,
-            expected_app=COMPUTER_APP_NAME,
-            expected_window_title=COMPUTER_WINDOW_TITLE,
-        )
+        if browser_pid is None:
+            pid, window_id = portable_oracles.validate_cua_list_windows(
+                listed,
+                expected_app=COMPUTER_APP_NAME,
+                expected_window_title=COMPUTER_WINDOW_TITLE,
+            )
+        else:
+            pid, window_id = portable_oracles.validate_cua_list_windows(
+                listed,
+                expected_pid=browser_pid,
+            )
         snapshot = portable_mcp.call_tool(
             runtime.mcp_url,
             runtime.control_token,

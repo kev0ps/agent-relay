@@ -265,6 +265,41 @@ def test_linux_cua_controls_readiness_uses_public_snapshot_oracle(monkeypatch) -
     assert calls[1][3]["window_id"] == 7
 
 
+def test_linux_cua_controls_readiness_scopes_by_browser_pid(monkeypatch) -> None:
+    harness = _load_harness()
+    calls = []
+    validator_kwargs = []
+    runtime = SimpleNamespace(
+        mcp_url="http://127.0.0.1:9000/mcp",
+        control_token="control-token",
+        browser_pid="41",
+    )
+
+    def fake_call_tool(url, token, tool_name, arguments, **kwargs):
+        calls.append((url, token, tool_name, arguments, kwargs))
+        return object()
+
+    def validate_windows(result, **kwargs):
+        validator_kwargs.append(kwargs)
+        return 41, 7
+
+    monkeypatch.setattr(harness.portable_mcp, "call_tool", fake_call_tool)
+    monkeypatch.setattr(
+        harness.portable_oracles,
+        "validate_cua_list_windows",
+        validate_windows,
+    )
+    monkeypatch.setattr(
+        harness.portable_oracles,
+        "validate_cua_window_state",
+        lambda result, **kwargs: ("snapshot", "field", "button"),
+    )
+
+    assert harness._cua_controls_ready(runtime)
+    assert calls[0][3] == {"pid": 41}
+    assert validator_kwargs[0] == {"expected_pid": 41}
+
+
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     harness = _load_harness()
     source = SCRIPT.read_text(encoding="utf-8")
