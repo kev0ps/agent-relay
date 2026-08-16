@@ -176,8 +176,8 @@ def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
                 "--force-renderer-accessibility",
             ],
         },
-        http_timeout=2.0,
-        operation_timeout=10.0,
+        http_timeout=10.0,
+        operation_timeout=15.0,
     )
     return portable_oracles.validate_cua_browser_launch(result)
 

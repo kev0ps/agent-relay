@@ -100,6 +100,8 @@ def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> Non
 
     assert harness._launch_cua_browser(runtime, tmp_path / "profile", executable) == 73
     assert calls[0][3]["name"] == str(executable)
+    assert calls[0][4]["http_timeout"] == 10.0
+    assert calls[0][4]["operation_timeout"] == 15.0
 
 
 @POSIX_ONLY
