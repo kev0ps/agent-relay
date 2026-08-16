@@ -209,6 +209,22 @@ def test_enable_chromium_accessibility_sets_both_session_flags(monkeypatch) -> N
     assert all(call[0][0:3] == ["gdbus", "call", "--session"] for call in calls)
 
 
+def test_read_at_spi_bus_address_parses_gdbus_reply(monkeypatch) -> None:
+    harness = _load_harness()
+
+    monkeypatch.setattr(
+        harness.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="('unix:path=/tmp/at-spi/bus',)\n",
+        ),
+    )
+
+    assert harness._read_at_spi_bus_address({"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/bus"}) == "unix:path=/tmp/at-spi/bus"
+
+
+
 def test_linux_cua_waits_for_matching_x11_title_and_class(monkeypatch) -> None:
     harness = _load_harness()
     calls = []
@@ -344,6 +360,7 @@ def test_linux_cua_starts_driver_before_chromium() -> None:
     assert source.index('phase = "agent-start"') < source.index('phase = "chromium-start"')
     assert '"ACCESSIBILITY_ENABLED": "1"' in source
     assert '"NO_AT_BRIDGE": "0"' in source
+    assert "AT_SPI_BUS_ADDRESS" in source
 
 
 def test_linux_cua_evidence_policy_is_externalized() -> None:

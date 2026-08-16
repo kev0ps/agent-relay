@@ -357,6 +357,39 @@ def _enable_chromium_accessibility(environment: dict[str, str]) -> bool:
     return True
 
 
+def _read_at_spi_bus_address(environment: dict[str, str]) -> str:
+    """Resolve the isolated AT-SPI bus address for the driver and browser."""
+    try:
+        completed = subprocess.run(
+            [
+                "gdbus",
+                "call",
+                "--session",
+                "--dest",
+                "org.a11y.Bus",
+                "--object-path",
+                "/org/a11y/bus",
+                "--method",
+                "org.a11y.Bus.GetAddress",
+            ],
+            env=environment,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+            shell=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise LinuxCuaE2EError("AT-SPI bus address is unavailable") from error
+    match = re.fullmatch(r"\('(?P<address>unix:[^']+)'\s*,?\)\s*", completed.stdout)
+    if completed.returncode != 0 or match is None:
+        raise LinuxCuaE2EError("AT-SPI bus address is invalid")
+    return match.group("address")
+
+
 def _x11_window_hint(environment: dict[str, str]) -> str:
     """Return bounded X11 window counts without exposing window metadata."""
     counts: dict[str, str] = {}
@@ -718,6 +751,9 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             lambda: _enable_chromium_accessibility(graphical_environment),
             timeout=DESKTOP_READY_TIMEOUT_SECONDS,
         )
+        at_spi_bus_address = _read_at_spi_bus_address(graphical_environment)
+        graphical_environment["AT_SPI_BUS_ADDRESS"] = at_spi_bus_address
+        agent_environment["AT_SPI_BUS_ADDRESS"] = at_spi_bus_address
 
         phase = "openbox-start"
         openbox = native._spawn(["openbox"], environment=graphical_environment, cwd=repository, lifecycle=lifecycle)
