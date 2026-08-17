@@ -102,9 +102,8 @@ def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> Non
     assert calls[0][3]["name"] == executable.name
     assert calls[0][3]["launch_path"] == str(executable)
     launch_arguments = calls[0][3]["additional_arguments"]
-    assert runtime.fixture_url in launch_arguments
-    assert f"--app={runtime.fixture_url}" not in launch_arguments
-    assert "--new-window" in launch_arguments
+    assert f"--app={runtime.fixture_url}" in launch_arguments
+    assert runtime.fixture_url not in launch_arguments
     assert {
         "--no-first-run",
         "--no-default-browser-check",

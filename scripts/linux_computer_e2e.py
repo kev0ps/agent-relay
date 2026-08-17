@@ -250,7 +250,7 @@ def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
             "launch_path": str(executable),
             "additional_arguments": [
                 f"--user-data-dir={profile}",
-                "--new-window",
+                f"--app={runtime.fixture_url}",
                 "--class=relay-desktop-fixture",
                 "--window-name=Relay Desktop Fixture",
                 "--no-sandbox",
@@ -263,7 +263,6 @@ def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
                 "--disable-sync",
                 "--window-size=1280,720",
                 "--force-renderer-accessibility",
-                runtime.fixture_url,
             ],
         },
         http_timeout=10.0,

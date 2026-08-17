@@ -312,7 +312,7 @@ async def _run_cua_browser_subscenario(
     runtime: RuntimeConfig,
     phase: list[str] | None,
 ) -> None:
-    """Exercise the CUA browser contract using one owned browser process."""
+    """Exercise the CUA browser contract in a dedicated browser process."""
     if not runtime.fixture_url.startswith("http://127.0.0.1:"):
         raise ValueError("CUA browser fixture must be loopback HTTP")
     session = f"{CUA_BROWSER_SESSION_PREFIX}{runtime.run_id}"
@@ -342,12 +342,13 @@ async def _run_cua_browser_subscenario(
                         "name": "chromium",
                         "additional_arguments": [
                             f"--user-data-dir={launch_profile}",
-                            f"--app={runtime.fixture_url}",
-                            "--class=relay-desktop-fixture",
-                            "--window-name=Relay Desktop Fixture",
+                            "--new-window",
+                            "--class=relay-browser-fixture",
+                            "--window-name=Relay Browser Fixture",
                             "--no-sandbox",
                             "--disable-dev-shm-usage",
                             "--force-renderer-accessibility",
+                            runtime.fixture_url,
                         ],
                     },
                 )

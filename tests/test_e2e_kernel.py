@@ -609,8 +609,6 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         device_id="portable-cua-browser-test",
         run_id="portable-cua-browser-run",
     )
-    runtime = dataclasses.replace(runtime, browser_pid="6000")
-
     scenarios.run_cua_scenario(
         runtime,
         "relay-value",
@@ -618,8 +616,13 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
         include_browser=True,
     )
-    assert prepare_pids == [6000]
-    assert launch_calls == []
+    assert prepare_pids == [5000]
+    assert len(launch_calls) == 1
+    launch_arguments = launch_calls[0]["additional_arguments"]
+    assert isinstance(launch_arguments, list)
+    assert "http://127.0.0.1:1/" in launch_arguments
+    assert "--app=http://127.0.0.1:1/" not in launch_arguments
+    assert "--new-window" in launch_arguments
     assert prepare_arguments[0]["window_id"] == 77
     assert prepare_arguments[0]["strategy"] == {"kind": "existing_profile"}
     assert "allow_launch" not in prepare_arguments[0]
