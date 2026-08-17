@@ -1233,7 +1233,22 @@ class ComputerCapability:
                     future.set_result(result)
         except asyncio.CancelledError:
             raise
+        except ConnectionError:
+            _debug_log("computer CUA driver response failed: category=eof")
+            self._unavailable.set()
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(ComputerUnavailableError())
+            self._pending.clear()
+        except ValueError:
+            _debug_log("computer CUA driver response failed: category=invalid-frame")
+            self._unavailable.set()
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(ComputerUnavailableError())
+            self._pending.clear()
         except Exception:
+            _debug_log("computer CUA driver response failed: category=reader")
             self._unavailable.set()
             for future in self._pending.values():
                 if not future.done():

@@ -663,6 +663,7 @@ def _stderr_hint(path: Path) -> str | None:
                 "computer startup failed:",
                 "agent invocation failed:",
                 "computer cua driver exited:",
+                "computer cua driver response failed:",
                 "computer cua get_window_state rejected:",
                 "computer cua list_windows rejected:",
             )
