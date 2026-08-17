@@ -101,8 +101,10 @@ def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> Non
     assert harness._launch_cua_browser(runtime, tmp_path / "profile", executable) == 73
     assert calls[0][3]["name"] == executable.name
     assert calls[0][3]["launch_path"] == str(executable)
-    assert f"--app={runtime.fixture_url}" in calls[0][3]["additional_arguments"]
-    assert "--remote-debugging-port=0" in calls[0][3]["additional_arguments"]
+    launch_arguments = calls[0][3]["additional_arguments"]
+    assert runtime.fixture_url in launch_arguments
+    assert f"--app={runtime.fixture_url}" not in launch_arguments
+    assert "--new-window" in launch_arguments
     assert {
         "--no-first-run",
         "--no-default-browser-check",
@@ -110,10 +112,7 @@ def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> Non
         "--disable-component-update",
         "--disable-sync",
     }.issubset(set(calls[0][3]["additional_arguments"]))
-    assert all(
-        argument != runtime.fixture_url
-        for argument in calls[0][3]["additional_arguments"]
-    )
+
     assert calls[0][4]["http_timeout"] == 10.0
     assert calls[0][4]["operation_timeout"] == 15.0
 
