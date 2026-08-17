@@ -275,18 +275,36 @@ def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
 
 def _kill_cua_browser(runtime: Any, pid: int) -> None:
     """Release a CUA-launched browser on harness failure."""
-    result = portable_mcp.call_tool(
-        runtime.mcp_url,
-        runtime.control_token,
-        "relay_cua_kill_app",
-        {"pid": pid},
-        http_timeout=2.0,
-        operation_timeout=10.0,
-    )
-    portable_oracles.validate_cua_browser_success(
-        result,
-        tool_name="relay_cua_kill_app",
-    )
+    try:
+        result = portable_mcp.call_tool(
+            runtime.mcp_url,
+            runtime.control_token,
+            "relay_cua_kill_app",
+            {"pid": pid},
+            http_timeout=2.0,
+            operation_timeout=10.0,
+        )
+    except BaseException as error:
+        print(
+            f"Linux CUA desktop kill diagnostic: pid={pid} call_error={type(error).__name__}",
+            file=sys.stderr,
+        )
+        raise
+    try:
+        portable_oracles.validate_cua_browser_success(
+            result,
+            tool_name="relay_cua_kill_app",
+        )
+    except BaseException:
+        payload = getattr(result, "structuredContent", None)
+        keys = ",".join(sorted(str(key) for key in payload)) if isinstance(payload, dict) else "none"
+        print(
+            "Linux CUA desktop kill diagnostic: "
+            f"pid={pid} is_error={getattr(result, 'isError', None) is True} "
+            f"structured_keys={keys} content_count={len(getattr(result, 'content', []) or [])}.",
+            file=sys.stderr,
+        )
+        raise
 
 
 def _status(
