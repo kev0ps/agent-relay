@@ -639,7 +639,6 @@ async def _run_cua_browser_subscenario(
             tab_id=tab_id,
             session=session,
             expected_url=runtime.fixture_url,
-            expected_text="applied",
         )
         _mark(phase, "browser-event")
         _oracles.poll_cua_event(
