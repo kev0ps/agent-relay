@@ -627,6 +627,7 @@ async def _run_cua_browser_subscenario(
                     "target_id": target_id,
                     "tab_id": tab_id,
                     "ref": button_ref,
+                    "input_route": "dom_event",
                     "session": session,
                 },
             ),
