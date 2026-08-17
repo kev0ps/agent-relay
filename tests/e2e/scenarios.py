@@ -676,10 +676,15 @@ async def _run_cua_browser_subscenario(
         for pid in cleanup_pids:
             _mark(phase, "browser-kill")
             try:
-                _oracles.validate_cua_browser_success(
-                    await client.call("relay_cua_kill_app", {"pid": pid}),
-                    tool_name="relay_cua_kill_app",
-                )
+                kill_result = await client.call("relay_cua_kill_app", {"pid": pid})
+                try:
+                    _oracles.validate_cua_browser_success(
+                        kill_result,
+                        tool_name="relay_cua_kill_app",
+                    )
+                except BaseException:
+                    _diagnose_cua_kill_result(kill_result, pid)
+                    raise
             except BaseException as error:
                 if cleanup_error is None:
                     cleanup_error = error
@@ -691,6 +696,19 @@ async def _run_cua_browser_subscenario(
         if primary_phase is not None:
             _mark(phase, primary_phase)
         raise primary_error
+
+
+def _diagnose_cua_kill_result(result: Any, pid: int) -> None:
+    """Log bounded facts when cleanup refuses a process kill."""
+    payload = getattr(result, "structuredContent", None)
+    keys = ",".join(sorted(str(key) for key in payload)) if isinstance(payload, dict) else "none"
+    print(
+        "E2E browser kill diagnostic: "
+        f"pid={pid} is_error={getattr(result, 'isError', None) is True} "
+        f"structured_keys={keys} "
+        f"content_count={len(getattr(result, 'content', []) or [])}.",
+        file=sys.stderr,
+    )
 
 
 def run_core_scenario(
