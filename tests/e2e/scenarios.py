@@ -44,6 +44,7 @@ except ModuleNotFoundError as error:
 
 EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = _mcp.EXPECTED_MCP_TOOLS
 MCP_OPERATION_TIMEOUT: Final[float] = 10.0
+MCP_BROWSER_HTTP_TIMEOUT: Final[float] = 15.0
 EVENT_POLL_TIMEOUT: Final[float] = 10.0
 CUA_EVENT_FILE: Final[str] = "computer-events.jsonl"
 CORE_MCP_TOOLS: Final[tuple[str, ...]] = (
@@ -518,9 +519,11 @@ async def _run_cua_scenario_async(
 ) -> None:
     """Exercise generic CUA inventory, snapshot tokens, and safe actions."""
     artifact = _fixture_path(runtime, CUA_EVENT_FILE)
+    client_options = {"http_timeout": MCP_BROWSER_HTTP_TIMEOUT} if include_browser else {}
     async with _mcp.MCPClientSession(
         runtime.mcp_url,
         runtime.control_token,
+        **client_options,
     ) as client:
         _mark(phase, "tools-list")
         _require_tools(

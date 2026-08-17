@@ -10,6 +10,7 @@ inventory on every call (the server-side contract requires it).
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -269,6 +270,46 @@ def test_mcp_session_tools_list_has_a_bounded_transport_timeout() -> None:
     session._session = BlockingSession()
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(session.list_tools())
+
+
+def test_browser_cua_scenario_requests_driver_compatible_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _load_mcp_client()
+    scenarios = importlib.import_module("tests.e2e.scenarios")
+    captured: dict[str, object] = {}
+
+    class StopSession:
+        def __init__(self, *_args, **kwargs) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            raise AssertionError("session construction captured")
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", StopSession)
+    runtime = scenarios.RuntimeConfig(
+        mcp_url="http://127.0.0.1:8123/mcp",
+        control_token="token",
+        device_id="device",
+        run_id="run-id",
+        fixture_url="http://127.0.0.1:8124/",
+        fixtures_root="/tmp/fixtures",
+    )
+    with pytest.raises(AssertionError, match="session construction captured"):
+        asyncio.run(
+            scenarios._run_cua_scenario_async(
+                runtime,
+                "value",
+                expected_cua_app="app",
+                expected_cua_window_title="title",
+                include_browser=True,
+            )
+        )
+
+    assert captured["http_timeout"] == 15.0
 
 
 def test_call_tool_validates_url_is_loopback() -> None:
