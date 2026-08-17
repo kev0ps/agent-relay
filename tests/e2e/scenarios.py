@@ -10,6 +10,7 @@ command/path input.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import sys
 import tempfile
@@ -191,6 +192,7 @@ def _diagnose_browser_prepare(result: object) -> None:
         }
     )
     text_lengths: list[int] = []
+    text_digests: list[str] = []
     text_keywords: set[str] = set()
     content_codes: set[str] = set()
     keywords = (
@@ -210,6 +212,7 @@ def _diagnose_browser_prepare(result: object) -> None:
         if not isinstance(text, str):
             continue
         text_lengths.append(len(text))
+        text_digests.append(hashlib.sha256(text.encode("utf-8")).hexdigest()[:16])
         normalized = text.casefold().replace("-", "_").replace(" ", "_")
         text_keywords.update(keyword for keyword in keywords if keyword in normalized)
         content_codes.update(code for code in known_refusal_codes if code in normalized)
@@ -217,6 +220,7 @@ def _diagnose_browser_prepare(result: object) -> None:
         f"content_count={len(content_items)} "
         f"content_types={','.join(content_types) or 'none'} "
         f"text_lengths={','.join(map(str, text_lengths)) or 'none'} "
+        f"text_digests={','.join(text_digests) or 'none'} "
         f"text_keywords={','.join(sorted(text_keywords)) or 'none'} "
         f"content_codes={','.join(sorted(content_codes)) or 'none'}"
     )
