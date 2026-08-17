@@ -1250,6 +1250,11 @@ class ComputerCapability:
             raise
         finally:
             if not self._closing:
+                _debug_log(
+                    "computer CUA driver exited: "
+                    f"returncode={process.returncode}"
+                )
+            if not self._closing:
                 self._unavailable.set()
 
     async def _reset(self) -> None:
