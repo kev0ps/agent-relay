@@ -1154,9 +1154,13 @@ class RelayAgent:
                 "command_failed",
                 "configured command failed",
             )
-        except Exception:
+        except Exception as error:
             if message.request_id in cancelled_requests:
                 return
+            _debug_log(
+                "agent invocation failed: "
+                f"tool={message.tool_name} exception={type(error).__name__}"
+            )
             await self._send_error(socket, message.request_id, "agent_error", "local action failed")
 
     async def _receive(self, socket: TextSocket) -> object:
