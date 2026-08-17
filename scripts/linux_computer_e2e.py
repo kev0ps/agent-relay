@@ -890,7 +890,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             run_id=run_id,
             fixtures_root=local_artifacts,
             fixture_url=desktop_url,
-            browser_pid=str(browser_pid),
             browser_launch_path=str(chromium),
         )
         lifecycle.add_cleanup(
