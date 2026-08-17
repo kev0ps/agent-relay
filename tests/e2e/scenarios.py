@@ -342,6 +342,7 @@ async def _wait_for_cua_browser_state(
     session: str,
     expected_url: str,
     expected_text: str | None = None,
+    require_controls: bool = False,
 ) -> Any:
     """Wait for CDP navigation/readback to expose the expected page state."""
     deadline = time.monotonic() + CUA_BROWSER_WINDOW_READY_TIMEOUT
@@ -357,6 +358,12 @@ async def _wait_for_cua_browser_state(
                 expected_url=expected_url,
                 expected_text=expected_text,
             )
+            if require_controls:
+                _oracles.validate_cua_browser_controls(
+                    last_result,
+                    expected_url=expected_url,
+                    expected_text=expected_text,
+                )
             return last_result
         except ValueError:
             await asyncio.sleep(0.1)
@@ -365,6 +372,12 @@ async def _wait_for_cua_browser_state(
         expected_url=expected_url,
         expected_text=expected_text,
     )
+    if require_controls:
+        _oracles.validate_cua_browser_controls(
+            last_result,
+            expected_url=expected_url,
+            expected_text=expected_text,
+        )
     raise AssertionError("unreachable browser state wait")
 
 
@@ -543,6 +556,7 @@ async def _run_cua_browser_subscenario(
             tab_id=tab_id,
             session=session,
             expected_url=runtime.fixture_url,
+            require_controls=True,
         )
         field_ref, button_ref = _oracles.validate_cua_browser_controls(
             browser_state,
