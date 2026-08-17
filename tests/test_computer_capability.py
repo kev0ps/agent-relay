@@ -218,6 +218,36 @@ def test_driver_environment_excludes_relay_credentials() -> None:
     assert "RELAY_URL" not in environment
 
 
+def test_driver_startup_does_not_grant_existing_profiles_by_default(tmp_path: Path) -> None:
+    executable = tmp_path / "cua-driver"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    capability = ComputerCapability(
+        environ={"PATH": "/usr/bin"},
+    )
+    capability._path = executable
+    assert capability._allow_existing_profile_grant is False
+    assert capability._driver_start_arguments() == ["mcp", "--no-overlay"]
+    assert capability._env.get("AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE") is None
+
+    granted = ComputerCapability(
+        environ={
+            "PATH": "/usr/bin",
+            "AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE": "1",
+        },
+    )
+    granted._path = executable
+    assert granted._allow_existing_profile_grant is True
+    assert granted._driver_start_arguments() == [
+        "mcp",
+        "--no-overlay",
+        "--grant",
+        "existing-profile",
+    ]
+    assert granted._env.get("AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE") is None
+
+
 def test_driver_executable_validation_is_independent_of_configuration_fields(
     tmp_path: Path,
 ) -> None:

@@ -307,6 +307,10 @@ jobs:
 
       - name: Run Linux CUA end-to-end scenario
         shell: bash
+        env:
+          # The scenario owns only a synthetic temporary Chromium profile. Keep
+          # the existing-profile grant opt-in and scoped to this graphical gate.
+          AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE: "1"
         run: |
           set -euo pipefail
           evidence_dir="$GITHUB_WORKSPACE/linux-cua-evidence"

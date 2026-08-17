@@ -406,9 +406,11 @@ class ComputerCapability:
         self._action_timeout = float(action_timeout_seconds)
         self._shutdown_timeout = float(shutdown_timeout_seconds)
         self._max_elements = max_elements
-        self._env = safe_driver_environment(
-            dict(os.environ if environ is None else environ)
+        source_environment = dict(os.environ if environ is None else environ)
+        self._allow_existing_profile_grant = (
+            source_environment.get("AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE") == "1"
         )
+        self._env = safe_driver_environment(source_environment)
         self._windows = os.name == "nt"
         self._process: asyncio.subprocess.Process | None = None
         self._daemon: _AsyncManagedProcess | None = None
@@ -523,6 +525,12 @@ class ComputerCapability:
                 observed = phase
             await asyncio.sleep(0.25)
 
+    def _driver_start_arguments(self) -> list[str]:
+        arguments = ["mcp", "--no-overlay"]
+        if self._allow_existing_profile_grant:
+            arguments.extend(["--grant", "existing-profile"])
+        return arguments
+
     async def _start_owned(self) -> None:
         if self._windows:
             # The Windows daemon owns the interactive desktop session; the
@@ -538,7 +546,7 @@ class ComputerCapability:
             self._startup_phase = "privacy-environment"
 
         self._startup_phase = "process-spawn"
-        driver_args = ["mcp", "--no-overlay"]
+        driver_args = self._driver_start_arguments()
         self._process = await asyncio.create_subprocess_exec(
             str(self._path),
             *driver_args,

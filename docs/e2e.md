@@ -72,7 +72,10 @@ relay_cua_type_text
 The same CUA scenario then runs one bounded browser subpath against the local
 page served by that harness. CUA owns the browser process from launch through
 cleanup; `browser_prepare` attaches to the launched process with an existing
-profile rather than starting a second browser:
+profile rather than starting a second browser. The graphical CI step explicitly
+sets `AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE=1`; Relay maps that opt-in to the
+driver's `--grant existing-profile` startup authorization. It is absent by
+default and is scoped here to the synthetic temporary profile:
 
 ```text
 relay_cua_launch_app -> relay_cua_start_session
