@@ -350,7 +350,12 @@ async def _wait_for_cua_browser_state(
     while time.monotonic() < deadline:
         last_result = await client.call(
             "relay_cua_get_browser_state",
-            {"target_id": target_id, "tab_id": tab_id, "session": session},
+            {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "session": session,
+                "snapshot_format": "semantic_v2",
+            },
         )
         try:
             _oracles.validate_cua_browser_state(

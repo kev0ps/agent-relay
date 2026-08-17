@@ -509,6 +509,78 @@ def validate_cua_browser_controls(
         expected_url=expected_url,
         expected_text=expected_text,
     )
+    semantic_snapshot = payload.get("snapshot")
+    semantic_refs = payload.get("refs")
+    if (
+        isinstance(semantic_snapshot, dict)
+        and semantic_snapshot.get("format") == "semantic_v2"
+        and isinstance(semantic_refs, list)
+    ):
+        if not 1 <= len(semantic_refs) <= 128:
+            raise ValueError("invalid semantic browser refs")
+        field_refs: list[str] = []
+        button_refs: list[str] = []
+        seen_refs: set[str] = set()
+        for ref_entry in semantic_refs:
+            if type(ref_entry) is not dict:
+                raise ValueError("invalid semantic browser ref")
+            allowed = {
+                "ref",
+                "role",
+                "name",
+                "value",
+                "states",
+                "actions",
+                "frame",
+                "visibility",
+            }
+            if set(ref_entry) - allowed:
+                raise ValueError("invalid semantic browser ref")
+            ref = ref_entry.get("ref")
+            role = ref_entry.get("role")
+            name = ref_entry.get("name")
+            states = ref_entry.get("states")
+            actions = ref_entry.get("actions")
+            if (
+                not isinstance(ref, str)
+                or not _exact_str(ref, nonempty=True, maximum=256)
+                or ref in seen_refs
+                or not isinstance(role, str)
+                or not _exact_str(role, nonempty=True, maximum=64)
+                or not isinstance(name, str)
+                or not _exact_str(name, maximum=256)
+                or type(states) is not list
+                or type(actions) is not list
+                or not all(_exact_str(state, nonempty=True, maximum=64) for state in states)
+                or not all(_exact_str(action, nonempty=True, maximum=64) for action in actions)
+                or (
+                    "value" in ref_entry
+                    and ref_entry["value"] is not None
+                    and not _exact_str(ref_entry["value"], maximum=2048)
+                )
+                or not _exact_str(ref_entry.get("frame"), nonempty=True, maximum=64)
+                or not _exact_str(ref_entry.get("visibility"), nonempty=True, maximum=64)
+            ):
+                raise ValueError("invalid semantic browser ref")
+            seen_refs.add(ref)
+            normalized_role = role.casefold()
+            normalized_actions = {action.casefold() for action in actions}
+            if (
+                normalized_role in {"textbox", "combobox"}
+                and name.casefold() == "name"
+                and "type" in normalized_actions
+            ):
+                field_refs.append(ref)
+            if (
+                normalized_role in {"button", "push button"}
+                and name.casefold() == "apply"
+                and "click" in normalized_actions
+            ):
+                button_refs.append(ref)
+        if len(field_refs) != 1 or len(button_refs) != 1:
+            raise ValueError("invalid semantic browser fixture controls")
+        return field_refs[0], button_refs[0]
+
     elements = payload.get("elements")
     if type(elements) is not list or not 1 <= len(elements) <= 64:
         raise ValueError("invalid relay_cua_get_browser_state elements")
