@@ -117,6 +117,10 @@ def _runtime(
     )
 
 
+_CUA_FIELD_ROLES = frozenset({"textbox", "entry", "text", "edit", "editable"})
+_CUA_BUTTON_ROLES = frozenset({"button", "push button"})
+
+
 def _cua_snapshot_diagnostic(result: Any) -> str:
     payload = getattr(result, "structuredContent", None)
     if not isinstance(payload, dict):
@@ -124,20 +128,36 @@ def _cua_snapshot_diagnostic(result: Any) -> str:
     elements = payload.get("elements")
     if not isinstance(elements, list):
         return f"elements_type={type(elements).__name__}"
+    field_roles = 0
+    button_roles = 0
+    labeled_elements = 0
+    nonempty_labels = 0
     name_labels = 0
     apply_labels = 0
     for element in elements:
         if not isinstance(element, dict):
             continue
+        role = element.get("role")
+        if isinstance(role, str):
+            folded_role = role.casefold()
+            if folded_role in _CUA_FIELD_ROLES:
+                field_roles += 1
+            elif folded_role in _CUA_BUTTON_ROLES:
+                button_roles += 1
         label = element.get("label")
         if not isinstance(label, str):
             continue
+        labeled_elements += 1
+        if label:
+            nonempty_labels += 1
         if label.casefold() == "name":
             name_labels += 1
         elif label.casefold() == "apply":
             apply_labels += 1
     return (
-        f"element_count={len(elements)} name_labels={name_labels} "
+        f"element_count={len(elements)} field_roles={field_roles} "
+        f"button_roles={button_roles} labeled_elements={labeled_elements} "
+        f"nonempty_labels={nonempty_labels} name_labels={name_labels} "
         f"apply_labels={apply_labels} degraded={payload.get('degraded') is True} "
         f"has_snapshot_id={isinstance(payload.get('snapshot_id'), str)}"
     )

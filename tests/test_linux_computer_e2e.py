@@ -302,7 +302,11 @@ def test_cua_snapshot_diagnostic_is_bounded() -> None:
 
     diagnostic = harness._cua_snapshot_diagnostic(result)
 
-    assert diagnostic == "element_count=2 name_labels=1 apply_labels=1 degraded=False has_snapshot_id=True"
+    assert diagnostic == (
+        "element_count=2 field_roles=1 button_roles=1 labeled_elements=2 "
+        "nonempty_labels=2 name_labels=1 apply_labels=1 degraded=False "
+        "has_snapshot_id=True"
+    )
     assert "secret" not in diagnostic
 
 
