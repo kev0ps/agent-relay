@@ -334,6 +334,40 @@ async def _wait_for_cua_browser_window(
     raise ValueError(f"CUA browser native window did not become visible with non-empty bounds{suffix}")
 
 
+async def _wait_for_cua_browser_state(
+    client: Any,
+    *,
+    target_id: str,
+    tab_id: str,
+    session: str,
+    expected_url: str,
+    expected_text: str | None = None,
+) -> Any:
+    """Wait for CDP navigation/readback to expose the expected page state."""
+    deadline = time.monotonic() + CUA_BROWSER_WINDOW_READY_TIMEOUT
+    last_result: Any = None
+    while time.monotonic() < deadline:
+        last_result = await client.call(
+            "relay_cua_get_browser_state",
+            {"target_id": target_id, "tab_id": tab_id, "session": session},
+        )
+        try:
+            _oracles.validate_cua_browser_state(
+                last_result,
+                expected_url=expected_url,
+                expected_text=expected_text,
+            )
+            return last_result
+        except ValueError:
+            await asyncio.sleep(0.1)
+    _oracles.validate_cua_browser_state(
+        last_result,
+        expected_url=expected_url,
+        expected_text=expected_text,
+    )
+    raise AssertionError("unreachable browser state wait")
+
+
 async def _run_core_scenario_async(
     runtime: RuntimeConfig,
     phase: list[str] | None = None,
@@ -503,16 +537,11 @@ async def _run_cua_browser_subscenario(
             tool_name="relay_cua_browser_navigate",
         )
         _mark(phase, "browser-state")
-        browser_state = await client.call(
-            "relay_cua_get_browser_state",
-            {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "session": session,
-            },
-        )
-        _oracles.validate_cua_browser_state(
-            browser_state,
+        browser_state = await _wait_for_cua_browser_state(
+            client,
+            target_id=target_id,
+            tab_id=tab_id,
+            session=session,
             expected_url=runtime.fixture_url,
         )
         field_ref, button_ref = _oracles.validate_cua_browser_controls(
@@ -549,15 +578,11 @@ async def _run_cua_browser_subscenario(
             tool_name="relay_cua_browser_click",
         )
         _mark(phase, "browser-state-after-click")
-        _oracles.validate_cua_browser_state(
-            await client.call(
-                "relay_cua_get_browser_state",
-                {
-                    "target_id": target_id,
-                    "tab_id": tab_id,
-                    "session": session,
-                },
-            ),
+        await _wait_for_cua_browser_state(
+            client,
+            target_id=target_id,
+            tab_id=tab_id,
+            session=session,
             expected_url=runtime.fixture_url,
             expected_text="applied",
         )
