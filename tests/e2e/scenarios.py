@@ -17,7 +17,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 try:
     from tests.e2e import mcp_client as _mcp
@@ -75,6 +75,7 @@ CUA_DESKTOP_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
     "relay_cua_type_text",
 )
 CUA_BROWSER_SESSION_PREFIX: Final[str] = "relay-cua-browser-"
+CUA_BROWSER_WINDOW_READY_TIMEOUT: Final[float] = 20.0
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,32 @@ def _diagnose_browser_prepare(result: object) -> None:
         if isinstance(refusal_detail, dict)
         else "none"
     )
+    cause = refusal_detail.get("cause") if isinstance(refusal_detail, dict) else None
+    cause_code = cause.get("code") if isinstance(cause, dict) else None
+    cause_message = cause.get("message") if isinstance(cause, dict) else cause
+    cause_keywords = (
+        ",".join(
+            keyword
+            for keyword in keywords
+            if keyword in cause_message.casefold().replace("-", "_").replace(" ", "_")
+        )
+        if isinstance(cause_message, str)
+        else "none"
+    )
+    setup_side_effects = (
+        refusal_detail.get("setup_side_effects")
+        if isinstance(refusal_detail, dict)
+        else None
+    )
+    setup_facts = (
+        ",".join(
+            f"{key}={setup_side_effects[key]}"
+            for key in sorted(setup_side_effects)
+            if isinstance(setup_side_effects[key], bool)
+        )
+        if isinstance(setup_side_effects, dict)
+        else "none"
+    )
     print(
         "E2E browser prepare diagnostic: "
         f"field_count={len(payload)} "
@@ -261,9 +288,50 @@ def _diagnose_browser_prepare(result: object) -> None:
         f"pid_type={type(prepared_pid).__name__} "
         f"refusal_code={refusal_code if refusal_code in known_refusal_codes else 'other'} "
         f"refusal_keys={refusal_keys} refusal_detail_keys={refusal_detail_keys} "
+        f"cause_code={cause_code if cause_code in known_refusal_codes else 'other'} "
+        f"cause_message_len={len(cause_message) if isinstance(cause_message, str) else 'none'} "
+        f"cause_message_digest={hashlib.sha256(cause_message.encode('utf-8')).hexdigest()[:16] if isinstance(cause_message, str) else 'none'} "
+        f"cause_keywords={cause_keywords or 'none'} setup_side_effects={setup_facts} "
         f"{content_facts}.",
         file=sys.stderr,
     )
+
+
+async def _wait_for_cua_browser_window(
+    client: Any,
+    pid: int,
+    phase: list[str] | None,
+) -> int:
+    """Wait for a visible, non-empty native window before browser setup."""
+    deadline = time.monotonic() + CUA_BROWSER_WINDOW_READY_TIMEOUT
+    last_window_id: int | None = None
+    while time.monotonic() < deadline:
+        result = await client.call("relay_cua_list_windows", {"pid": pid})
+        payload = getattr(result, "structuredContent", None)
+        windows = payload.get("windows") if isinstance(payload, dict) else None
+        if isinstance(windows, list):
+            for window in windows:
+                if not isinstance(window, dict):
+                    continue
+                window_id = window.get("window_id")
+                bounds = window.get("bounds")
+                if (
+                    type(window_id) is int
+                    and window_id > 0
+                    and window.get("is_on_screen") is True
+                    and isinstance(bounds, dict)
+                    and isinstance(bounds.get("width"), (int, float))
+                    and isinstance(bounds.get("height"), (int, float))
+                    and bounds["width"] > 0
+                    and bounds["height"] > 0
+                ):
+                    return window_id
+                if type(window_id) is int and window_id > 0:
+                    last_window_id = window_id
+        await asyncio.sleep(0.1)
+    _mark(phase, "browser-window-timeout")
+    suffix = f" (last_window_id={last_window_id})" if last_window_id is not None else ""
+    raise ValueError(f"CUA browser native window did not become visible with non-empty bounds{suffix}")
 
 
 async def _run_core_scenario_async(
@@ -345,6 +413,8 @@ async def _run_cua_browser_subscenario(
                             "--disable-extensions",
                             "--disable-default-apps",
                             "--new-window",
+                            "--window-position=0,0",
+                            "--window-size=1280,720",
                             "--no-sandbox",
                             "--disable-dev-shm-usage",
                             "--disable-gpu",
@@ -376,13 +446,7 @@ async def _run_cua_browser_subscenario(
             prepare_pid = int(runtime.browser_pid)
         if type(prepare_pid) is not int or prepare_pid <= 0:
             raise ValueError("CUA browser fixture process is unavailable")
-        _anchor_pid, browser_window_id = _oracles.validate_cua_list_windows(
-            await client.call(
-                "relay_cua_list_windows",
-                {"pid": prepare_pid},
-            ),
-            expected_pid=prepare_pid,
-        )
+        browser_window_id = await _wait_for_cua_browser_window(client, prepare_pid, phase)
         _mark(phase, "browser-prepare")
         prepare_result = await client.call(
             "relay_cua_browser_prepare",
