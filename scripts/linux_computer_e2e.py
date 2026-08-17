@@ -736,6 +736,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
     event_artifact: Path | None = None
     graphical_environment: dict[str, str] | None = None
     browser_pid: int | None = None
+    runtime: Any | None = None
 
     try:
         lifecycle.install_signal_handlers()
@@ -904,6 +905,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
         )
 
         phase = "cua-scenario"
+        assert runtime is not None
         portable_scenarios.run_cua_scenario(
             runtime,
             value,
@@ -918,8 +920,13 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")
     except BaseException as error:
         scenario_error = error
-        if any(item.startswith("browser-") for item in scenario_phase):
-            # The portable browser subscenario owns cleanup after it starts.
+        if any(item.startswith("browser-") for item in scenario_phase) and (
+            browser_pid is not None
+            and runtime is not None
+            and runtime.browser_pid == str(browser_pid)
+        ):
+            # Only suppress the outer cleanup when the browser subscenario truly
+            # owns the same PID as the harness desktop browser.
             browser_pid = None
         if graphical_environment is not None:
             print(
