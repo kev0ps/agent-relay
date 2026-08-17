@@ -605,7 +605,6 @@ async def _run_cua_browser_subscenario(
             browser_state,
             expected_url=runtime.fixture_url,
         )
-        browser_value = "b-value"
         _mark(phase, "browser-type")
         _oracles.validate_cua_browser_success(
             await client.call(
