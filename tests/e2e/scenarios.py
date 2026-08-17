@@ -827,6 +827,19 @@ async def _run_cua_scenario_async(
             tool_name="relay_cua_click",
         )
         if include_browser:
+            _mark(phase, "desktop-event")
+            _oracles.poll_cua_event(
+                artifact,
+                run_id=runtime.run_id,
+                value=value,
+                timeout=EVENT_POLL_TIMEOUT,
+            )
+            try:
+                artifact.unlink()
+            except FileNotFoundError:
+                pass
+            if artifact.exists():
+                raise ValueError("desktop CUA event artifact was not reset")
             await _run_cua_browser_subscenario(client, runtime, phase)
     _mark(phase, "artifact-event")
     expected_event_value = "b-value" if include_browser else value
