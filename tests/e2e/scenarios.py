@@ -696,7 +696,15 @@ async def _run_cua_browser_subscenario(
                 if cleanup_error is None:
                     cleanup_error = error
         if launch_profile_dir is not None:
-            launch_profile_dir.cleanup()
+            try:
+                launch_profile_dir.cleanup()
+            except BaseException as error:
+                print(
+                    f"E2E browser profile cleanup diagnostic: error={type(error).__name__}.",
+                    file=sys.stderr,
+                )
+                if cleanup_error is None:
+                    cleanup_error = error
         if primary_error is None and cleanup_error is not None:
             print(
                 f"E2E browser cleanup diagnostic: error={type(cleanup_error).__name__}.",
