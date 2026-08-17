@@ -468,11 +468,13 @@ async def _run_cua_browser_subscenario(
     client: _mcp.MCPClientSession,
     runtime: RuntimeConfig,
     phase: list[str] | None,
+    browser_value: str | None = None,
 ) -> None:
     """Exercise the CUA browser contract in a dedicated browser process."""
     if not runtime.fixture_url.startswith("http://127.0.0.1:"):
         raise ValueError("CUA browser fixture must be loopback HTTP")
     session = f"{CUA_BROWSER_SESSION_PREFIX}{runtime.run_id}"
+    browser_value = browser_value or f"relay-gh-cua-{runtime.run_id}"
     initial_pid: int | None = None
     prepared_pid: int | None = None
     session_started = False
@@ -883,9 +885,9 @@ async def _run_cua_scenario_async(
                 pass
             if artifact.exists():
                 raise ValueError("desktop CUA event artifact was not reset")
-            await _run_cua_browser_subscenario(client, runtime, phase)
+            await _run_cua_browser_subscenario(client, runtime, phase, browser_value=value)
     _mark(phase, "artifact-event")
-    expected_event_value = "b-value" if include_browser else value
+    expected_event_value = value
     deadline = time.monotonic() + EVENT_POLL_TIMEOUT
     previous: bytes | None = None
     while time.monotonic() < deadline:
