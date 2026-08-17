@@ -138,6 +138,7 @@ def _cua_runtime(
     *,
     device_id: str,
     run_id: str,
+    browser_launch_path: str = "",
 ) -> object:
     return scenarios.RuntimeConfig(
         mcp_url="http://127.0.0.1:8000/mcp",
@@ -146,6 +147,7 @@ def _cua_runtime(
         run_id=run_id,
         fixture_url="http://127.0.0.1:1/",
         fixtures_root=str(tmp_path),
+        browser_launch_path=browser_launch_path,
     )
 
 
@@ -608,6 +610,7 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
         tmp_path,
         device_id="portable-cua-browser-test",
         run_id="portable-cua-browser-run",
+        browser_launch_path="/usr/bin/chromium",
     )
     scenarios.run_cua_scenario(
         runtime,
@@ -623,6 +626,8 @@ def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
     assert "http://127.0.0.1:1/" in launch_arguments
     assert "--app=http://127.0.0.1:1/" not in launch_arguments
     assert "--new-window" in launch_arguments
+    assert launch_calls[0]["launch_path"] == "/usr/bin/chromium"
+    assert "name" not in launch_calls[0]
     assert prepare_arguments[0]["window_id"] == 77
     assert prepare_arguments[0]["strategy"] == {"kind": "existing_profile"}
     assert "allow_launch" not in prepare_arguments[0]

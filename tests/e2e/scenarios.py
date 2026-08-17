@@ -95,6 +95,7 @@ class RuntimeConfig:
     fixture_url: str
     fixtures_root: str
     browser_pid: str = ""
+    browser_launch_path: str = ""
 
 
 def _mark(phase: list[str] | None, value: str) -> None:
@@ -335,12 +336,7 @@ async def _run_cua_browser_subscenario(
                 prefix="agent-relay-cua-browser-"
             )
             launch_profile = Path(launch_profile_dir.name)
-            initial_pid = _oracles.validate_cua_browser_launch(
-                await client.call(
-                    "relay_cua_launch_app",
-                    {
-                        "name": "chromium",
-                        "additional_arguments": [
+            launch_arguments = [
                             f"--user-data-dir={launch_profile}",
                             "--no-first-run",
                             "--no-default-browser-check",
@@ -354,9 +350,14 @@ async def _run_cua_browser_subscenario(
                             "--disable-gpu",
                             "--force-renderer-accessibility",
                             runtime.fixture_url,
-                        ],
-                    },
-                )
+            ]
+            launch_request: dict[str, object] = {"additional_arguments": launch_arguments}
+            if runtime.browser_launch_path:
+                launch_request["launch_path"] = runtime.browser_launch_path
+            else:
+                launch_request["name"] = "chromium"
+            initial_pid = _oracles.validate_cua_browser_launch(
+                await client.call("relay_cua_launch_app", launch_request),
             )
         _mark(phase, "browser-session-start")
         _oracles.validate_cua_browser_success(

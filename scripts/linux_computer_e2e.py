@@ -106,6 +106,7 @@ def _runtime(
     fixtures_root: Path,
     fixture_url: str,
     browser_pid: str = "",
+    browser_launch_path: str = "",
 ) -> Any:
     return portable_scenarios.RuntimeConfig(
         mcp_url=mcp_url,
@@ -115,6 +116,7 @@ def _runtime(
         fixture_url=fixture_url,
         fixtures_root=str(fixtures_root),
         browser_pid=browser_pid,
+        browser_launch_path=browser_launch_path,
     )
 
 
@@ -889,6 +891,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             fixtures_root=local_artifacts,
             fixture_url=desktop_url,
             browser_pid=str(browser_pid),
+            browser_launch_path=str(chromium),
         )
         lifecycle.add_cleanup(
             lambda: _kill_cua_browser(runtime, browser_pid)
