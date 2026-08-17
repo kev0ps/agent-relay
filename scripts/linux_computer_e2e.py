@@ -254,6 +254,7 @@ def _launch_cua_browser(runtime: Any, profile: Path, executable: Path) -> int:
                 "--class=relay-desktop-fixture",
                 "--window-name=Relay Desktop Fixture",
                 "--no-sandbox",
+                "--remote-debugging-port=0",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--no-first-run",

@@ -102,6 +102,7 @@ def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> Non
     assert calls[0][3]["name"] == executable.name
     assert calls[0][3]["launch_path"] == str(executable)
     assert f"--app={runtime.fixture_url}" in calls[0][3]["additional_arguments"]
+    assert "--remote-debugging-port=0" in calls[0][3]["additional_arguments"]
     assert {
         "--no-first-run",
         "--no-default-browser-check",
