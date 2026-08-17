@@ -915,7 +915,8 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
             expected_cua_window_title=COMPUTER_WINDOW_TITLE,
             include_browser=True,
         )
-        browser_pid = None
+        if browser_pid is not None and runtime.browser_pid == str(browser_pid):
+            browser_pid = None
         if any(process.poll() is not None for process in (server, fixture, agent)):
             raise LinuxCuaE2EError("Linux CUA owned process exited unexpectedly")
     except BaseException as error:
