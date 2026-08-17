@@ -79,7 +79,7 @@ class _CuaScenarioSession:
         return None
 
     async def list_tools(self) -> tuple[str, ...]:
-        return _scenarios().CUA_MCP_TOOLS
+        return _scenarios().CUA_DESKTOP_MCP_TOOLS
 
     async def call(self, tool_name: str, arguments: dict[str, object]) -> _CuaScenarioResult:
         if tool_name == "relay_cua_list_windows":
@@ -138,6 +138,7 @@ def _cua_runtime(
     *,
     device_id: str,
     run_id: str,
+    browser_launch_path: str = "",
 ) -> object:
     return scenarios.RuntimeConfig(
         mcp_url="http://127.0.0.1:8000/mcp",
@@ -146,6 +147,7 @@ def _cua_runtime(
         run_id=run_id,
         fixture_url="http://127.0.0.1:1/",
         fixtures_root=str(tmp_path),
+        browser_launch_path=browser_launch_path,
     )
 
 
@@ -173,7 +175,13 @@ def _install_cua_scenario_fakes(
     monkeypatch.setattr(scenarios._oracles, "validate_cua_window_state", validate_state)
     monkeypatch.setattr(scenarios._oracles, "validate_cua_action", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scenarios._oracles, "validate_cua_event", lambda *_args, **_kwargs: b"stable-event")
-    monkeypatch.setattr(scenarios._oracles, "assert_no_fixture_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scenarios._oracles, "assert_no_cua_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        scenarios._oracles,
+        "validate_cua_browser_controls",
+        lambda *_args, **_kwargs: ("p1:0", "p1:1"),
+    )
+    monkeypatch.setattr(scenarios._oracles, "poll_cua_event", lambda *_args, **_kwargs: b"stable-event")
     monkeypatch.setattr(scenarios.time, "sleep", lambda _seconds: None)
     return observed
 
@@ -282,32 +290,17 @@ def test_expected_mcp_tools_inventory_is_closed() -> None:
         assert name.startswith("relay_"), name
 
 
-def test_portable_kernel_exposes_shared_core_browser_and_computer_scenarios() -> None:
+def test_portable_kernel_exposes_shared_core_and_cua_scenarios() -> None:
     """The portable kernel owns actions, not platform orchestration."""
     scenarios = _scenarios()
 
     for name in (
         "run_core_scenario",
-        "run_browser_scenario",
         "run_cua_scenario",
     ):
         assert callable(getattr(scenarios, name, None)), (
             f"tests/e2e/scenarios.py must expose {name} for every harness"
         )
-
-
-@pytest.mark.parametrize(
-    "script_name",
-    ["linux_browser_e2e.py", "windows_browser_e2e.py"],
-)
-def test_browser_adapters_delegate_launch_to_playwright_persistent_context(script_name: str) -> None:
-    source = (E2E_DIR.parents[1] / "scripts" / script_name).read_text(encoding="utf-8")
-
-    assert "RELAY_AGENT_BROWSER_USER_DATA_DIR" in source
-    assert "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS" in source
-    assert "connect_over_cdp" not in source
-    assert "remote-debugging" not in source
-    assert "portable_browser_cdp" not in source
 
 
 def test_computer_scenario_requires_harness_fixture_identity() -> None:
@@ -384,7 +377,7 @@ def test_computer_scenario_passes_expected_capabilities_to_status_oracle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A CUA-only Agent must not be validated as a Browser-capable Agent."""
+    """A CUA-only Agent must not be validated as browser-capable."""
     scenarios = _scenarios()
     observed: list[tuple[str, ...] | None] = []
 
@@ -469,7 +462,7 @@ def test_computer_scenario_checks_tools_before_device_status(
     class InventorySession(_CuaScenarioSession):
         async def list_tools(self) -> tuple[str, ...]:
             operations.append("tools-list")
-            return scenarios.CUA_MCP_TOOLS
+            return scenarios.CUA_DESKTOP_MCP_TOOLS
 
         async def call(
             self,
@@ -499,6 +492,177 @@ def test_computer_scenario_checks_tools_before_device_status(
     )
 
     assert operations[:2] == ["tools-list", "relay_device_status"]
+
+
+def test_cua_browser_subpath_is_integrated_in_the_general_cua_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    scenarios = _scenarios()
+    prepare_pids: list[object] = []
+    prepare_arguments: list[dict[str, object]] = []
+    launch_calls: list[dict[str, object]] = []
+
+    class BrowserSession(_CuaScenarioSession):
+        fail_navigation = False
+        fail_prepare = False
+
+        async def list_tools(self) -> tuple[str, ...]:
+            return scenarios.CUA_MCP_TOOLS
+
+        async def call(
+            self,
+            tool_name: str,
+            arguments: dict[str, object],
+        ) -> _CuaScenarioResult:
+            if tool_name == "relay_cua_launch_app":
+                launch_calls.append(dict(arguments))
+                return _CuaScenarioResult(
+                    structured={
+                        "pid": 5000,
+                        "name": "chromium",
+                        "active": False,
+                        "windows": [],
+                    }
+                )
+            if tool_name == "relay_cua_start_session":
+                return _CuaScenarioResult()
+            if tool_name == "relay_cua_browser_prepare":
+                prepare_pids.append(arguments.get("pid"))
+                prepare_arguments.append(dict(arguments))
+                if self.fail_prepare:
+                    return _CuaScenarioResult(is_error=True)
+                return _CuaScenarioResult(
+                    structured={
+                        "status": "ok",
+                        "prepared": True,
+                        "prepared_pid": 5001,
+                    }
+                )
+            if tool_name == "relay_cua_get_browser_state":
+                if "target_id" in arguments:
+                    applied = bool(getattr(self, "browser_value", ""))
+                    return _CuaScenarioResult(
+                        structured={
+                            "target_id": "target-1",
+                            "tabs": [{"tab_id": "tab-1", "active": True}],
+                            "url": "http://127.0.0.1:1/",
+                            "text": (
+                                "Relay Desktop Fixture applied"
+                                if applied
+                                else "Relay Desktop Fixture"
+                            ),
+                            "elements": [
+                                {
+                                    "ref": "p1:0",
+                                    "role": "textbox",
+                                    "name": "Name",
+                                    "value": getattr(self, "browser_value", ""),
+                                    "editable": True,
+                                    "enabled": True,
+                                    "clickable": False,
+                                },
+                                {
+                                    "ref": "p1:1",
+                                    "role": "button",
+                                    "name": "Apply",
+                                    "value": "",
+                                    "editable": False,
+                                    "enabled": True,
+                                    "clickable": True,
+                                },
+                            ],
+                        }
+                    )
+                return _CuaScenarioResult(
+                    structured={
+                        "pid": 5001,
+                        "window_id": 77,
+                        "target_id": "target-1",
+                        "tabs": [{"tab_id": "tab-1", "active": True}],
+                    }
+                )
+            if tool_name == "relay_cua_browser_type":
+                self.browser_value = str(arguments.get("text", ""))
+                return _CuaScenarioResult()
+            if tool_name in {
+                "relay_cua_browser_navigate",
+                "relay_cua_browser_click",
+                "relay_cua_end_session",
+                "relay_cua_kill_app",
+            }:
+                return _CuaScenarioResult(
+                    is_error=(
+                        tool_name == "relay_cua_browser_navigate"
+                        and self.fail_navigation
+                    )
+                )
+            return await super().call(tool_name, arguments)
+
+    _install_cua_scenario_fakes(
+        monkeypatch,
+        scenarios,
+        session_type=BrowserSession,
+    )
+    runtime = _cua_runtime(
+        scenarios,
+        tmp_path,
+        device_id="portable-cua-browser-test",
+        run_id="portable-cua-browser-run",
+        browser_launch_path="/usr/bin/chromium",
+    )
+    scenarios.run_cua_scenario(
+        runtime,
+        "relay-value",
+        expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+        expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+        include_browser=True,
+    )
+    assert prepare_pids == [5000]
+    assert len(launch_calls) == 1
+    launch_arguments = launch_calls[0]["additional_arguments"]
+    assert isinstance(launch_arguments, list)
+    assert "http://127.0.0.1:1/" in launch_arguments
+    assert "--app=http://127.0.0.1:1/" not in launch_arguments
+    assert "--new-window" in launch_arguments
+    assert launch_calls[0]["launch_path"] == "/usr/bin/chromium"
+    assert "name" not in launch_calls[0]
+    assert prepare_arguments[0]["window_id"] == 77
+    assert prepare_arguments[0]["strategy"] == {"kind": "existing_profile"}
+    assert "allow_launch" not in prepare_arguments[0]
+    assert "profile" not in prepare_arguments[0]
+
+
+    BrowserSession.fail_navigation = True
+    failure_phase: list[str] = []
+    with pytest.raises(ValueError, match="relay_cua_browser_navigate"):
+        scenarios.run_cua_scenario(
+            runtime,
+            "relay-value",
+            failure_phase,
+            expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+            include_browser=True,
+        )
+
+    assert failure_phase[-1] == "browser-navigate"
+
+    BrowserSession.fail_navigation = False
+    BrowserSession.fail_prepare = True
+    failure_phase = []
+    with pytest.raises(ValueError, match="relay_cua_browser_prepare"):
+        scenarios.run_cua_scenario(
+            runtime,
+            "relay-value",
+            failure_phase,
+            expected_cua_app=_LINUX_COMPUTER_IDENTITY[0],
+            expected_cua_window_title=_LINUX_COMPUTER_IDENTITY[1],
+            include_browser=True,
+        )
+
+    assert failure_phase[-1] == "browser-prepare-provider-error"
+    assert "field_count=0 status_ok=False" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("inventory_kind", ["missing", "extra", "reordered"])

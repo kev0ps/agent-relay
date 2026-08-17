@@ -26,17 +26,17 @@ Install [`uv`](https://docs.astral.sh/uv/), clone the repository, then run:
 uv sync --locked --group dev
 ```
 
-Use synthetic fixtures, temporary workspaces and temporary browser profiles.
-Never use personal credentials, sessions, files, profiles or external websites
-as test data.
+Use synthetic fixtures and temporary workspaces. CUA browser scenarios must use
+temporary provider state and local fixtures; never use personal credentials,
+sessions, files, desktops, or external websites as test data.
 
 ## Local checks
 
 Run the narrowest relevant tests first. Before requesting review, run:
 
 ```sh
-uv run --frozen pytest -q -m "not integration"
-uv run --frozen pytest -q -m integration
+uv run --frozen python -m pytest -q -m "not integration"
+uv run --frozen python -m pytest -q -m integration
 uv run --frozen ruff check .
 uv lock --check
 git diff --check
@@ -47,11 +47,11 @@ pull request and identify the exact CI evidence still required.
 
 ## Change rules
 
-- Keep the MCP, Terminal, Browser and CUA-provider surfaces closed and typed.
-- Do not add generic shell execution, arbitrary paths, unrestricted browser
-  passthrough, screenshots or coordinates to the public CUA API.
-- Preserve authentication, origin allowlists, stale-element rejection, bounded
-  outputs, timeouts, cancellation and process cleanup.
+- Keep the MCP, Terminal, and unified CUA surfaces closed and typed.
+- Do not add generic shell execution, arbitrary paths, unrestricted CUA
+  passthrough, screenshots, or unrestricted coordinates to the public API.
+- Preserve authentication, descriptor policy, stale-element rejection,
+  bounded outputs, timeouts, cancellation, and process cleanup.
 - Add or update tests when behavior or a public contract changes.
 - Keep documentation claims narrower than the evidence. A preflight, mock,
   driver response or unit test is not product E2E proof.

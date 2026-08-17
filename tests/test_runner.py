@@ -273,6 +273,9 @@ def test_fake_git_on_path_is_ignored(
     assert "fake-git" not in result.stderr
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows uses its native system PATH search"
+)
 def test_git_search_skips_relative_default_path_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

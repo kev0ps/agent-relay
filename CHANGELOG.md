@@ -14,7 +14,7 @@ The project is currently pre-1.0 and has no formal release tag.
 - Contributor guide and security-reporting policy.
 - YAML-first Server and Agent configuration with a private `.env` store and
   copyable tool profiles.
-- Linux and Windows Terminal and Browser E2E gates.
+- Linux and Windows Terminal and CUA E2E gates.
 - Linux CUA E2E and an experimental Windows CUA candidate gate.
 - AMD64 and ARM64 Docker image contract and CLI smoke validation.
 
@@ -29,10 +29,9 @@ The project is currently pre-1.0 and has no formal release tag.
   up to 15 seconds and records each attempt in its status log.
 - Runtime diagnostics use `[INFO]`, `[WARNING]`, and `[DEBUG]` prefixes, and
   validated tool calls emit only their internal tool name.
-- Browser, CUA, Terminal and System invocations now share the generic v2
-  provider route and bounded descriptor/result validation.
-- Browser exposes structured locators instead of Relay-generated element IDs;
-  CUA publishes only explicitly selected driver descriptors.
+- CUA, Terminal and System invocations now share the generic v2 provider route
+  and bounded descriptor/result validation. CUA publishes only explicitly
+  selected driver descriptors, including its browser tools.
 - Documentation now distinguishes delivered, experimental and unsupported
   capabilities.
 - Documentation is organized around setup, tools, protocol, security, and one

@@ -15,16 +15,6 @@ VALID_PROFILES = (
         None,
     ),
     (
-        "linux-browser",
-        "Linux Browser smoke scenario passed.\n",
-        "browser-events.jsonl",
-        {
-            "event": "submitted",
-            "run_id": "linux-browser-0123456789abcdef01234567",
-            "value": "relay-gh-browser-linux-browser-0123456789abcdef01234567",
-        },
-    ),
-    (
         "linux-cua",
         "Linux CUA smoke scenario passed.\n",
         "computer-events.jsonl",
@@ -39,16 +29,6 @@ VALID_PROFILES = (
         "Windows MCP end-to-end scenario passed.\n",
         None,
         None,
-    ),
-    (
-        "windows-browser",
-        "Windows Browser smoke scenario passed.\n",
-        "browser-events.jsonl",
-        {
-            "event": "submitted",
-            "run_id": "windows-browser-0123456789abcdef01234567",
-            "value": "relay-gh-browser-windows-browser-0123456789abcdef01234567",
-        },
     ),
     (
         "windows-cua",
@@ -96,10 +76,8 @@ def test_validator_accepts_each_success_profile(
     ("profile", "failure"),
     (
         ("linux-terminal", "Linux E2E failed at scenario-start: bounded failure.\n"),
-        ("linux-browser", "Linux Browser E2E failed at scenario-start: bounded failure.\n"),
         ("linux-cua", "Linux CUA E2E failed at scenario-start: bounded failure.\n"),
         ("windows-terminal", "Windows E2E failed at scenario-start: bounded failure.\n"),
-        ("windows-browser", "Windows Browser E2E failed at scenario-start: bounded failure.\n"),
         ("windows-cua", "Windows CUA E2E failed at scenario-start: bounded failure.\n"),
     ),
 )
@@ -157,22 +135,6 @@ def test_validator_rejects_oversized_or_symlinked_evidence(tmp_path: Path) -> No
         validator.validate_evidence("linux-terminal", evidence)
 
 
-def test_validator_rejects_malformed_optional_event_on_failure(tmp_path: Path) -> None:
-    validator = _load_validator()
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    (evidence / "output.log").write_text(
-        "Linux Browser E2E cleanup failed.\n", encoding="utf-8"
-    )
-    (evidence / "browser-events.jsonl").write_text(
-        '{"event":"submitted","run_id":"wrong","value":"wrong","extra":true}\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(validator.EvidenceValidationError):
-        validator.validate_evidence("linux-browser", evidence)
-
-
 def test_validator_requires_success_marker_and_correlated_event(tmp_path: Path) -> None:
     validator = _load_validator()
 
@@ -184,16 +146,6 @@ def test_validator_requires_success_marker_and_correlated_event(tmp_path: Path) 
     with pytest.raises(validator.EvidenceValidationError):
         validator.validate_evidence("linux-terminal", terminal)
 
-    browser = tmp_path / "browser"
-    browser.mkdir()
-    (browser / "output.log").write_text(
-        "Windows Browser smoke scenario passed.\n", encoding="utf-8"
-    )
-    (browser / "success.json").write_text(
-        '{"status":"passed"}\n', encoding="utf-8"
-    )
-    with pytest.raises(validator.EvidenceValidationError):
-        validator.validate_evidence("windows-browser", browser)
 
 
 def test_validator_rejects_unbounded_output_text(tmp_path: Path) -> None:

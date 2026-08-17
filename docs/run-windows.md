@@ -66,7 +66,8 @@ The script:
 - preserves an existing Agent section and tool allowlists;
 - creates a local Server configuration when requested and no configuration file
   exists, then adds an Agent section only when one is missing;
-- enables no tools in a newly created Agent section.
+- enables no tools in a newly created Agent section; CUA access defaults to
+  `none` and is selected with `--cua-access none|standard|full`.
 
 Set `AGENT_RELAY_SETUP=local`, `server`, `agent`, or `skip` to select the
 installer onboarding mode. The `agent` mode asks for the remote URL and masked
@@ -80,10 +81,10 @@ in YAML or explicit process environment variables.
 is intended for development until a release process exists. Override the
 managed Python with `AGENT_RELAY_PYTHON_VERSION` when necessary.
 
-The CI-only `AGENT_RELAY_SYNC_ROOT` and `AGENT_RELAY_SYNC_PROFILE` variables
-also let the same bootstrapper install the locked development/test profile.
-They are not set by the public one-line installer, so end users do not receive
-pytest, Browser, or Computer Use test dependencies by default.
+The CI-only `AGENT_RELAY_SYNC_ROOT` variable lets the same bootstrapper install
+the locked development/test environment. It is not set by the public one-line
+installer; the standard runtime already includes the CUA provider and its
+bundled driver.
 
 The Linux installer uses the same variables:
 
@@ -128,10 +129,14 @@ agent-relay server
 agent-relay agent
 ```
 
-## Optional capabilities and limits
+## CUA and limits
 
-Browser requires the browser dependency and Chromium installation. Windows
-Computer Use remains experimental and is not installed by this bootstrapper.
-Windows CUA remains experimental and is not part of the one-line installation.
+The one-line installation includes `cua-driver`, resolves its executable
+automatically, and discovers the provider catalogue when the Agent starts.
+Every descriptor is exposed as `relay_cua_<name>` and remains disabled until
+explicitly enabled or included in the selected `standard`/`full` profile.
+Windows CUA remains experimental because its full hosted UI Automation evidence
+is still a CI candidate. Browser descriptors use the same CUA path; there is no
+separate wrapper; CUA owns those descriptors directly.
 Do not expose a plaintext `ws://` deployment to the public Internet; use a
 trusted firewalled LAN or an externally terminated WSS endpoint.

@@ -50,21 +50,6 @@ PROFILES: dict[str, EvidenceProfile] = {
         ),
         maximum_file_bytes=4096,
     ),
-    "linux-browser": EvidenceProfile(
-        success_line="Linux Browser smoke scenario passed.",
-        output_pattern=_output_pattern(
-            success="Linux Browser smoke scenario passed.",
-            cleanup="Linux Browser E2E cleanup failed.",
-            failure_prefix="Linux Browser E2E failed at scenario-",
-        ),
-        maximum_file_bytes=524288,
-        event_name="browser-events.jsonl",
-        event_kind="submitted",
-        event_run_pattern=re.compile(r"linux-browser-[0-9a-f]{24}"),
-        event_value_pattern=re.compile(
-            r"relay-gh-browser-linux-browser-[0-9a-f]{24}"
-        ),
-    ),
     "linux-cua": EvidenceProfile(
         success_line="Linux CUA smoke scenario passed.",
         output_pattern=_output_pattern(
@@ -86,21 +71,6 @@ PROFILES: dict[str, EvidenceProfile] = {
             failure_prefix="Windows E2E failed at scenario-",
         ),
         maximum_file_bytes=4096,
-    ),
-    "windows-browser": EvidenceProfile(
-        success_line="Windows Browser smoke scenario passed.",
-        output_pattern=_output_pattern(
-            success="Windows Browser smoke scenario passed.",
-            cleanup="Windows Browser E2E cleanup failed.",
-            failure_prefix="Windows Browser E2E failed at scenario-",
-        ),
-        maximum_file_bytes=524288,
-        event_name="browser-events.jsonl",
-        event_kind="submitted",
-        event_run_pattern=re.compile(r"windows-browser-[0-9a-f]{24}"),
-        event_value_pattern=re.compile(
-            r"relay-gh-browser-windows-browser-[0-9a-f]{24}"
-        ),
     ),
     "windows-cua": EvidenceProfile(
         success_line="Windows CUA smoke scenario passed.",

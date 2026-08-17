@@ -10,6 +10,7 @@ inventory on every call (the server-side contract requires it).
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -271,6 +272,46 @@ def test_mcp_session_tools_list_has_a_bounded_transport_timeout() -> None:
         asyncio.run(session.list_tools())
 
 
+def test_browser_cua_scenario_requests_driver_compatible_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _load_mcp_client()
+    scenarios = importlib.import_module("tests.e2e.scenarios")
+    captured: dict[str, object] = {}
+
+    class StopSession:
+        def __init__(self, *_args, **kwargs) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            raise AssertionError("session construction captured")
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+    monkeypatch.setattr(scenarios._mcp, "MCPClientSession", StopSession)
+    runtime = scenarios.RuntimeConfig(
+        mcp_url="http://127.0.0.1:8123/mcp",
+        control_token="token",
+        device_id="device",
+        run_id="run-id",
+        fixture_url="http://127.0.0.1:8124/",
+        fixtures_root="/tmp/fixtures",
+    )
+    with pytest.raises(AssertionError, match="session construction captured"):
+        asyncio.run(
+            scenarios._run_cua_scenario_async(
+                runtime,
+                "value",
+                expected_cua_app="app",
+                expected_cua_window_title="title",
+                include_browser=True,
+            )
+        )
+
+    assert captured["http_timeout"] == 30.0
+
+
 def test_call_tool_validates_url_is_loopback() -> None:
     """``call_tool`` must refuse non-loopback URLs to preserve the
     security invariant (no non-loopback plaintext WebSocket/MCP)."""
@@ -354,14 +395,6 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
                         "relay_device_status",
                         "relay_system_ping",
                         "relay_terminal_exec",
-                        "relay_browser_list_tabs",
-                        "relay_browser_navigate",
-                        "relay_browser_snapshot",
-                        "relay_browser_fill",
-                        "relay_browser_click",
-                        "relay_browser_scroll",
-                        "relay_browser_type",
-                        "relay_browser_back",
                         "relay_cua_list_windows",
                         "relay_cua_get_window_state",
                         "relay_cua_click",

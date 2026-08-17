@@ -12,7 +12,11 @@ from pydantic import ValidationError
 
 from ..json_bounds import JsonBoundsError, JsonValue, validate_json_bounds
 from ..output_models import ProviderToolResult
-from ..provider_tools import ProviderToolCatalog, ProviderToolDescriptor
+from ..provider_tools import (
+    MAX_PROVIDER_TOOLS,
+    ProviderToolCatalog,
+    ProviderToolDescriptor,
+)
 
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROVIDER_CLOSE_TIMEOUT_SECONDS = 3.0
@@ -71,7 +75,28 @@ def validate_timeout(value: float, *, label: str) -> float:
 
 def bounded_descriptors(
     values: Sequence[ProviderToolDescriptor | Mapping[str, object]],
+    *,
+    aggregate: bool = True,
 ) -> tuple[ProviderToolDescriptor, ...]:
+    if not aggregate:
+        try:
+            descriptors = tuple(
+                ProviderToolDescriptor.model_validate(value) for value in values
+            )
+            if len(descriptors) > MAX_PROVIDER_TOOLS:
+                raise ValueError
+            internal_names = {
+                (descriptor.provider_name, descriptor.tool_name)
+                for descriptor in descriptors
+            }
+            public_names = {descriptor.public_name for descriptor in descriptors}
+            if len(internal_names) != len(descriptors) or len(public_names) != len(
+                descriptors
+            ):
+                raise ValueError
+        except (ValidationError, JsonBoundsError, TypeError, ValueError):
+            raise ProviderToolError("invalid provider tool inventory") from None
+        return descriptors
     try:
         catalog = ProviderToolCatalog.model_validate({"tools": list(values)})
     except (ValidationError, JsonBoundsError, TypeError, ValueError):

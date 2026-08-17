@@ -15,7 +15,7 @@ import time
 from collections.abc import Coroutine, Mapping, Sequence
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, AsyncContextManager, Callable, Literal, Protocol, cast
+from typing import Any, AsyncContextManager, Callable, Protocol, cast
 from urllib.parse import urlparse
 
 import websockets
@@ -35,7 +35,6 @@ from .capabilities.base import (
     CommandFailedError,
     LocalCapability,
 )
-from .capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS, BrowserStartupError
 from .capabilities.system import SYSTEM_PROVIDER_DESCRIPTORS, SystemCapability
 from .capabilities.terminal import (
     TERMINAL_PROVIDER_DESCRIPTORS,
@@ -43,7 +42,6 @@ from .capabilities.terminal import (
     TerminalCapability,
 )
 from .catalog import (
-    CUA_REFERENCE_TOOL_NAMES,
     CatalogError,
     CatalogService,
     CatalogSnapshot,
@@ -120,41 +118,23 @@ def safe_server_target(value: str) -> str:
     return f"{parsed.scheme}://{display_host}{display_port}"
 
 
-def _selected_cua_tool_names(settings: AgentSettings) -> frozenset[str] | None:
-    if settings.tools_allowlist is None:
-        return None
-    selected: set[str] = set()
-    for public_name in settings.tools_allowlist:
-        internal_name = PUBLIC_TO_INTERNAL.get(public_name, "")
-        if internal_name.startswith("cua."):
-            selected.add(internal_name.removeprefix("cua."))
-        elif public_name.startswith("relay_cua_"):
-            selected.add(public_name.removeprefix("relay_cua_"))
-    return frozenset(selected)
-
-
 def _configured_computer_provider(
     settings: AgentSettings,
 ) -> ProviderToolClient | None:
-    if settings.computer_driver_path is None:
-        return None
-    allowed_tool_names = _selected_cua_tool_names(settings)
-    if allowed_tool_names == frozenset():
-        return None
     from .capabilities.computer import ComputerCapability
 
-    assert settings.computer_allowed_app_name is not None
-    assert settings.computer_allowed_window_title is not None
-    return ComputerCapability(
-        settings.computer_driver_path,
-        settings.computer_allowed_app_name,
-        settings.computer_allowed_window_title,
-        startup_timeout_seconds=settings.computer_startup_timeout_seconds,
-        action_timeout_seconds=settings.computer_action_timeout_seconds,
-        shutdown_timeout_seconds=settings.computer_shutdown_timeout_seconds,
-        max_elements=settings.computer_max_elements,
-        allowed_tool_names=allowed_tool_names,
-    )
+    try:
+        return ComputerCapability(
+            settings.computer_allowed_app_name,
+            settings.computer_allowed_window_title,
+            startup_timeout_seconds=settings.computer_startup_timeout_seconds,
+            action_timeout_seconds=settings.computer_action_timeout_seconds,
+            shutdown_timeout_seconds=settings.computer_shutdown_timeout_seconds,
+            max_elements=settings.computer_max_elements,
+        )
+    except (AttributeError, ImportError, OSError, TypeError, ValueError):
+        _debug_log("cua provider construction failed")
+        return None
 
 
 class AgentSettings(BaseModel):
@@ -181,13 +161,6 @@ class AgentSettings(BaseModel):
     # ``None`` preserves the programmatic API's historical all-configured
     # behavior. YAML always supplies a tuple, including an empty tuple.
     tools_allowlist: tuple[str, ...] | None = None
-    browser_user_data_dir: Path | None = None
-    browser_allowed_origins: tuple[str, ...] = ()
-    browser_origin_policy: Literal["allowlist", "any"] = "allowlist"
-    browser_headless: bool = False
-    browser_startup_timeout_seconds: float = Field(default=30, gt=0, le=60)
-    browser_action_timeout_seconds: float = Field(default=10, gt=0, le=30)
-    computer_driver_path: Path | None = None
     computer_allowed_app_name: str | None = Field(default=None, min_length=1, max_length=128)
     computer_allowed_window_title: str | None = Field(default=None, min_length=1, max_length=256)
     computer_startup_timeout_seconds: float = Field(default=15, gt=0, le=30)
@@ -252,18 +225,6 @@ class AgentSettings(BaseModel):
             raise ValueError("workspace must be an absolute existing non-symlink directory")
         return value.resolve(strict=True)
 
-    @field_validator("browser_user_data_dir")
-    @classmethod
-    def local_browser_user_data_dir(cls, value: Path | None) -> Path | None:
-        if value is None:
-            return None
-        value = value.expanduser()
-        if not value.is_absolute():
-            raise ValueError("browser user data directory must be absolute")
-        if value.exists() and (value.is_symlink() or not value.is_dir()):
-            raise ValueError("browser user data directory must be a directory")
-        return value
-
     @model_validator(mode="after")
     def secure_url_and_ranges(self) -> AgentSettings:
         if self.agent_id is None:
@@ -279,20 +240,7 @@ class AgentSettings(BaseModel):
         result_budget = min(MAX_RESULT_JSON_BYTES, self.max_ws_message_bytes) - 2048
         if self.stdout_limit + self.stderr_limit > result_budget:
             raise ValueError("combined output limits exceed the protocol message budget")
-        if self.browser_user_data_dir is None:
-            if self.browser_origin_policy != "allowlist" or self.browser_allowed_origins:
-                raise ValueError("partial browser configuration")
-        elif self.browser_origin_policy == "allowlist" and not self.browser_allowed_origins:
-            raise ValueError("allowlist browser configuration requires origins")
-        elif self.browser_origin_policy == "any" and self.browser_allowed_origins:
-            raise ValueError("any browser origin policy cannot include an allowlist")
-        if self.browser_allowed_origins:
-            from .capabilities.browser import normalize_origin
-            self.browser_allowed_origins = tuple(
-                dict.fromkeys(normalize_origin(origin) for origin in self.browser_allowed_origins)
-            )
         computer_values = (
-            self.computer_driver_path,
             self.computer_allowed_app_name,
             self.computer_allowed_window_title,
         )
@@ -300,9 +248,6 @@ class AgentSettings(BaseModel):
             value is not None for value in computer_values
         ):
             raise ValueError("partial computer configuration")
-        if self.computer_driver_path is not None:
-            from .capabilities.computer import validate_driver_executable
-            self.computer_driver_path = validate_driver_executable(self.computer_driver_path)
         return self
 
     @classmethod
@@ -333,10 +278,6 @@ _AGENT_OPTION_FIELDS = (
     "command_timeout_seconds",
     "stdout_limit",
     "stderr_limit",
-    "browser_origin_policy",
-    "browser_headless",
-    "browser_startup_timeout_seconds",
-    "browser_action_timeout_seconds",
     "computer_startup_timeout_seconds",
     "computer_action_timeout_seconds",
     "computer_shutdown_timeout_seconds",
@@ -355,13 +296,6 @@ def _strict_bool(value: str) -> bool:
     if normalized not in {"true", "false"}:
         raise ValueError("invalid boolean option")
     return normalized == "true"
-
-
-def _strict_browser_origin_policy(value: str) -> str:
-    normalized = value.strip().lower()
-    if normalized not in {"allowlist", "any"}:
-        raise ValueError("invalid browser origin policy")
-    return normalized
 
 
 def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
@@ -393,10 +327,6 @@ def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> N
         "command_timeout_seconds": float,
         "stdout_limit": int,
         "stderr_limit": int,
-        "browser_origin_policy": _strict_browser_origin_policy,
-        "browser_headless": _strict_bool,
-        "browser_startup_timeout_seconds": float,
-        "browser_action_timeout_seconds": float,
         "computer_startup_timeout_seconds": float,
         "computer_action_timeout_seconds": float,
         "computer_shutdown_timeout_seconds": float,
@@ -407,18 +337,6 @@ def _apply_agent_options(values: dict[str, object], env: Mapping[str, str]) -> N
         if raw is not None:
             values[field] = converters[field](raw)
 
-    browser_user_data_dir = _environment_option(env, "browser_user_data_dir")
-    if browser_user_data_dir is not None:
-        values["browser_user_data_dir"] = Path(browser_user_data_dir)
-    browser_origins = _environment_option(env, "browser_allowed_origins")
-    if browser_origins is not None:
-        values["browser_allowed_origins"] = tuple(
-            item.strip() for item in browser_origins.split(",") if item.strip()
-        )
-
-    computer_path = _environment_option(env, "computer_driver_path")
-    if computer_path is not None:
-        values["computer_driver_path"] = Path(computer_path)
     for field in (
         "computer_allowed_app_name",
         "computer_allowed_window_title",
@@ -457,7 +375,10 @@ def _canonical_agent_values(
     }
     if not defer_tool_validation:
         invalid_tools = [
-            item for item in tools_allowlist if item not in PUBLIC_TO_INTERNAL
+            item
+            for item in tools_allowlist
+            if item not in PUBLIC_TO_INTERNAL
+            and not re.fullmatch(r"relay_cua_[A-Za-z0-9_]+", item)
         ]
         if invalid_tools:
             raise ValueError("invalid Agent tool allowlist")
@@ -676,28 +597,6 @@ class RelayAgent:
             if capabilities is None
             else list(capabilities)
         )
-        # Bind Computer to the allowlisted desktop before Browser creates an
-        # additional Chromium context/window that is also visible to AT-SPI.
-        if (
-            capabilities is None
-            and settings.computer_driver_path
-            and "cua" not in supplied_provider_clients
-        ):
-            computer_provider = _configured_computer_provider(settings)
-            if computer_provider is not None:
-                configured_capabilities.append(cast(LocalCapability, computer_provider))
-        if capabilities is None and settings.browser_user_data_dir is not None:
-            from .capabilities.browser import BrowserCapability
-            configured_capabilities.append(
-                BrowserCapability(
-                    settings.browser_user_data_dir,
-                    settings.browser_allowed_origins,
-                    origin_policy=settings.browser_origin_policy,
-                    headless=settings.browser_headless,
-                    startup_timeout_seconds=settings.browser_startup_timeout_seconds,
-                    action_timeout_seconds=settings.browser_action_timeout_seconds,
-                )
-            )
         allowed_tools: set[str] | None = None
         selected_catalog: CatalogSnapshot | None = None
         selected_provider_names: set[str] = set()
@@ -716,6 +615,14 @@ class RelayAgent:
                 descriptor.provider_name
                 for descriptor in selected_catalog.selected_descriptors
             }
+            if (
+                capabilities is None
+                and "cua" in selected_provider_names
+                and "cua" not in supplied_provider_clients
+            ):
+                cua_provider = _configured_computer_provider(settings)
+                if cua_provider is not None:
+                    configured_capabilities.append(cast(LocalCapability, cua_provider))
             configured_capabilities = [
                 capability
                 for capability in configured_capabilities
@@ -765,18 +672,18 @@ class RelayAgent:
             selected_catalog,
             self._capabilities,
             effective_provider_clients,
+            configured_capabilities,
         )
         self._provider_close_objects = {
             id(client): client for client in effective_provider_clients.values()
         }
         if selected_catalog is not None:
-            canonical_names = (
-                "system.ping",
-                "terminal.exec",
-                *(f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES),
-            )
+            canonical_names = ("system.ping", "terminal.exec")
             canonical_order = {
                 name: position for position, name in enumerate(canonical_names)
+            }
+            selection_order = {
+                name: position for position, name in enumerate(settings.tools_allowlist or ())
             }
             selected_entries = tuple(
                 entry
@@ -788,11 +695,15 @@ class RelayAgent:
             ordered_entries = sorted(
                 enumerate(selected_entries),
                 key=lambda item: (
+                    0
+                    if f"{item[1].descriptor.provider_name}.{item[1].descriptor.tool_name}"
+                    in canonical_order
+                    else 1,
                     canonical_order.get(
                         f"{item[1].descriptor.provider_name}.{item[1].descriptor.tool_name}",
-                        len(canonical_order) + item[0],
+                        selection_order.get(item[1].public_name, len(selection_order)),
                     ),
-                    item[0],
+                    selection_order.get(item[1].public_name, item[0]),
                 ),
             )
             self._announcement_descriptors = tuple(
@@ -847,9 +758,6 @@ class RelayAgent:
                         _operator_agent_info("WebSocket connection established")
                         _debug_agent_phase("connected")
                         await self.run_session(socket)
-                except BrowserStartupError:
-                    _debug_log("agent browser startup failed")
-                    raise
                 except asyncio.CancelledError:
                     raise
                 except ProviderUnavailableError:
@@ -897,6 +805,8 @@ class RelayAgent:
         indexed: dict[ToolName, LocalCapability] = {}
         for capability in capabilities:
             if not capability.tools:
+                if getattr(capability, "requires_catalog", False):
+                    continue
                 raise ValueError("unsupported local capability")
             for tool in capability.tools:
                 if allowed_tools is not None and tool not in allowed_tools:
@@ -915,6 +825,7 @@ class RelayAgent:
         catalog: CatalogSnapshot | None,
         capabilities: Mapping[str, LocalCapability],
         provider_clients: Mapping[str, ProviderToolClient],
+        capability_objects: Sequence[LocalCapability] = (),
     ) -> dict[str, tuple[ProviderToolClient, ProviderToolDescriptor | None]]:
         routes: dict[str, tuple[ProviderToolClient, ProviderToolDescriptor | None]] = {}
         if catalog is None:
@@ -926,7 +837,6 @@ class RelayAgent:
                 for descriptor in (
                     *SYSTEM_PROVIDER_DESCRIPTORS,
                     *TERMINAL_PROVIDER_DESCRIPTORS,
-                    *BROWSER_PROVIDER_DESCRIPTORS,
                 )
             }
             wrapper_descriptors: dict[int, tuple[ProviderToolDescriptor, ...]] = {}
@@ -956,11 +866,18 @@ class RelayAgent:
 
         wrapper_descriptors: dict[int, list[ProviderToolDescriptor]] = {}
         wrapper_capabilities: dict[int, LocalCapability] = {}
+        dynamic_capabilities = {
+            getattr(capability, "provider_name", ""): capability
+            for capability in capability_objects
+            if getattr(capability, "requires_catalog", False)
+        }
         for descriptor in catalog.selected_descriptors:
             wire_name = f"{descriptor.provider_name}.{descriptor.tool_name}"
             if descriptor.provider_name in provider_clients:
                 continue
-            capability = capabilities.get(wire_name)
+            capability = capabilities.get(wire_name) or dynamic_capabilities.get(
+                descriptor.provider_name
+            )
             if capability is None:
                 continue
             capability_id = id(capability)
@@ -1237,9 +1154,13 @@ class RelayAgent:
                 "command_failed",
                 "configured command failed",
             )
-        except Exception:
+        except Exception as error:
             if message.request_id in cancelled_requests:
                 return
+            _debug_log(
+                "agent invocation failed: "
+                f"tool={message.tool_name} exception={type(error).__name__}"
+            )
             await self._send_error(socket, message.request_id, "agent_error", "local action failed")
 
     async def _receive(self, socket: TextSocket) -> object:
@@ -1281,10 +1202,27 @@ async def _run_with_signal_handlers(agent: RelayAgent) -> None:
 def _runtime_catalog_environment(settings: AgentSettings) -> dict[str, str]:
     """Expose only non-secret provider configuration to catalog discovery."""
     environment: dict[str, str] = {}
-    if settings.browser_user_data_dir is not None:
-        environment["RELAY_AGENT_BROWSER_USER_DATA_DIR"] = str(
-            settings.browser_user_data_dir
+    if settings.computer_allowed_app_name is not None:
+        environment["RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME"] = (
+            settings.computer_allowed_app_name
         )
+    if settings.computer_allowed_window_title is not None:
+        environment["RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE"] = (
+            settings.computer_allowed_window_title
+        )
+    environment.update(
+        {
+            "RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS": str(
+                settings.computer_startup_timeout_seconds
+            ),
+            "RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS": str(
+                settings.computer_action_timeout_seconds
+            ),
+            "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS": str(
+                settings.computer_shutdown_timeout_seconds
+            ),
+        }
+    )
     return environment
 
 
@@ -1367,8 +1305,6 @@ def main(
         asyncio.run(_run_with_runtime_catalog(settings, catalog))
     except (ConfigurationError, ValueError):
         parser.error("invalid agent configuration")
-    except BrowserStartupError:
-        parser.exit(1, "agent browser startup failed\n")
 
 
 if __name__ == "__main__":

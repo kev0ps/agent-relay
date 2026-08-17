@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Literal
 
 from pydantic import ValidationError
 
-from .capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS
 from .capabilities.system import SYSTEM_PROVIDER_DESCRIPTORS
 from .capabilities.terminal import TERMINAL_PROVIDER_DESCRIPTORS
 from .diagnostics import debug as _debug_log
@@ -27,92 +25,10 @@ def _debug_cua_discovery_failure(provider_name: str, category: str) -> None:
         _debug_log(f"cua provider discovery failed: category={category}")
 
 
-CUA_REFERENCE_TOOL_NAMES: tuple[str, ...] = (
-    "list_apps",
-    "list_windows",
-    "get_window_state",
-    "get_accessibility_tree",
-    "get_desktop_state",
-    "get_screen_size",
-    "get_cursor_position",
-    "get_config",
-    "get_recording_state",
-    "get_agent_cursor_state",
-    "launch_app",
-    "kill_app",
-    "bring_to_front",
-    "click",
-    "double_click",
-    "right_click",
-    "drag",
-    "type_text",
-    "press_key",
-    "hotkey",
-    "set_value",
-    "scroll",
-    "move_cursor",
-    "zoom",
-    "page",
-    "get_browser_state",
-    "browser_prepare",
-    "browser_navigate",
-    "browser_click",
-    "browser_type",
-    "browser_dialog",
-    "browser_set_input_files",
-    "browser_download",
-    "browser_pointer",
-    "start_recording",
-    "stop_recording",
-    "replay_trajectory",
-    "set_config",
-    "start_session",
-    "end_session",
-    "set_agent_cursor_enabled",
-    "set_agent_cursor_motion",
-    "check_permissions",
-    "health_report",
-    "check_for_update",
-    "install_ffmpeg",
-    "verify_state",
-    "set_agent_cursor_theme",
-    "escalate_session",
-    "get_session_state",
-)
-
-
-def _cua_reference_descriptor(tool_name: str) -> ProviderToolDescriptor:
-    return ProviderToolDescriptor(
-        provider_name="cua",
-        tool_name=tool_name,
-        public_name=tool_name,
-        description=f"reference CUA provider tool: {tool_name}",
-        input_schema={
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-        risk="interaction",
-    )
-
-
-CUA_REFERENCE_DESCRIPTORS: tuple[ProviderToolDescriptor, ...] = tuple(
-    _cua_reference_descriptor(name) for name in CUA_REFERENCE_TOOL_NAMES
-)
-
 DEFAULT_RESERVED_PUBLIC_NAMES = frozenset(
     {
         "relay_system_ping",
         "relay_terminal_exec",
-        "relay_browser_list_tabs",
-        "relay_browser_navigate",
-        "relay_browser_snapshot",
-        "relay_browser_fill",
-        "relay_browser_click",
-        "relay_browser_scroll",
-        "relay_browser_type",
-        "relay_browser_back",
-        *(f"relay_cua_{name}" for name in CUA_REFERENCE_TOOL_NAMES),
         "relay_device_status",
     }
 )
@@ -193,7 +109,36 @@ class CatalogPolicy:
         }
     )
     blocked_name_fragments: frozenset[str] = frozenset(
-        {"execute_javascript", "arbitrary_code", "module_path", "executable_path"}
+        {
+            "execute_javascript",
+            "arbitrary_code",
+            "module_path",
+            "executable_path",
+            "javascript",
+            "script",
+        }
+    )
+    cua_interaction_names: frozenset[str] = frozenset(
+        {
+            "launch_app",
+            "bring_to_front",
+            "set_window_frame",
+            "invoke_menu",
+            "click",
+            "double_click",
+            "right_click",
+            "drag",
+            "type_text",
+            "press_key",
+            "hotkey",
+            "scroll",
+            "move_cursor",
+            "zoom",
+            "browser_prepare",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+        }
     )
     cua_read_only_names: frozenset[str] = frozenset(
         {
@@ -217,8 +162,10 @@ class CatalogPolicy:
             "start_recording",
             "stop_recording",
             "replay_trajectory",
+            "clipboard_write",
             "browser_set_input_files",
             "browser_download",
+            "browser_dialog",
         }
     )
     cua_admin_names: frozenset[str] = frozenset(
@@ -241,6 +188,11 @@ class CatalogPolicy:
             "get_desktop_state",
             "get_screen_size",
             "get_cursor_position",
+            "get_accessibility_tree",
+            "debug_window_info",
+            "clipboard_read",
+            "browser_pointer",
+            "screenshot",
         }
     )
 
@@ -255,12 +207,18 @@ class CatalogPolicy:
         if descriptor.provider_name == "cua":
             if name in self.cua_blocked_names:
                 return "blocked"
+            if name in self.cua_interaction_names:
+                return "interaction"
             if name in self.cua_read_only_names:
                 return "read_only"
             if name in self.cua_destructive_names:
                 return "destructive"
             if name in self.cua_admin_names:
                 return "admin"
+            # Dynamic provider inventories are untrusted metadata. A new CUA
+            # tool must be classified explicitly before it can cross the
+            # Agent allowlist boundary; visibility is retained for diagnostics.
+            return "blocked"
         return descriptor.risk
 
 
@@ -391,7 +349,9 @@ class CatalogService:
             else:
                 try:
                     raw_tools = await provider.client.list_tools()
-                    descriptors = bounded_descriptors(raw_tools)
+                    descriptors = bounded_descriptors(
+                        raw_tools, aggregate=provider.name != "cua"
+                    )
                 except ProviderToolError as exc:
                     if "invalid provider tool inventory" in str(exc):
                         _debug_cua_discovery_failure(provider.name, "invalid-inventory")
@@ -452,8 +412,6 @@ def _local_reference_tools() -> dict[str, tuple[ProviderToolDescriptor, ...]]:
     return {
         "system": SYSTEM_PROVIDER_DESCRIPTORS,
         "terminal": TERMINAL_PROVIDER_DESCRIPTORS,
-        "browser": BROWSER_PROVIDER_DESCRIPTORS,
-        "cua": CUA_REFERENCE_DESCRIPTORS,
     }
 
 
@@ -469,14 +427,9 @@ def _in_process_catalog_client(
 
 def _configured_cua_catalog_client(
     env: Mapping[str, str],
-    *,
-    allowed_tool_names: Collection[str] | None = None,
 ) -> ProviderToolClient | None:
-    driver_path = env.get("RELAY_AGENT_COMPUTER_DRIVER_PATH")
     app_name = env.get("RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME")
     window_title = env.get("RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE")
-    if not driver_path or not app_name or not window_title:
-        return None
 
     def number(name: str, default: float) -> float:
         try:
@@ -488,7 +441,6 @@ def _configured_cua_catalog_client(
         from .capabilities.computer import ComputerCapability
 
         capability = ComputerCapability(
-            Path(driver_path),
             app_name,
             window_title,
             startup_timeout_seconds=number(
@@ -501,7 +453,6 @@ def _configured_cua_catalog_client(
                 "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS", 3.0
             ),
             environ=dict(env),
-            allowed_tool_names=allowed_tool_names,
         )
     except (OSError, TypeError, ValueError) as error:
         category = (
@@ -531,40 +482,24 @@ def local_provider_registrations(
 
     System and Terminal are exposed through real in-process provider clients,
     so ``CatalogService`` obtains their current bounded inventory through
-    ``tools/list``. Browser remains unavailable until a runtime provider client
-    is supplied. A configured CUA driver is started only for an ephemeral
-    ``tools/list`` discovery session and is closed before this function returns.
+    ``tools/list``. CUA is always initialized through its installed Python
+    package and is started only for an ephemeral ``tools/list`` discovery
+    session when no runtime provider is supplied.
     """
     effective_env = {} if env is None else dict(env)
     tools = _local_reference_tools()
-    selected_cua_tools = _selected_cua_tool_names(allowlist)
     runtime_providers = {} if providers is None else dict(providers)
-    unknown = set(runtime_providers) - set(tools)
+    unknown = set(runtime_providers) - {"system", "terminal", "cua"}
     if unknown:
         raise CatalogError(f"unknown local provider: {sorted(unknown)[0]}")
     registrations: list[ProviderRegistration] = []
-    for provider_name in ("system", "terminal", "browser", "cua"):
-        descriptors = tools[provider_name]
+    for provider_name in ("system", "terminal", "cua"):
+        descriptors = tools.get(provider_name, ())
         client = runtime_providers.get(provider_name)
         if client is None and provider_name in {"system", "terminal"}:
             client = _in_process_catalog_client(descriptors)
-        if (
-            client is None
-            and provider_name == "browser"
-            and effective_env.get("RELAY_AGENT_BROWSER_USER_DATA_DIR")
-        ):
-            # Browser descriptors are static, but availability is still tied to
-            # an explicitly configured profile. The Agent starts the real
-            # Playwright provider before announcing the selected descriptors.
-            client = _in_process_catalog_client(descriptors)
-        if (
-            client is None
-            and provider_name == "cua"
-            and (selected_cua_tools is None or selected_cua_tools)
-        ):
-            client = _configured_cua_catalog_client(
-                effective_env, allowed_tool_names=selected_cua_tools
-            )
+        if client is None and provider_name == "cua":
+            client = _configured_cua_catalog_client(effective_env)
         registrations.append(
             ProviderRegistration(
                 provider_name,
@@ -593,18 +528,6 @@ def discover_local_catalog(
         local_provider_registrations(env, providers, allowlist=allowlist)
     )
     return asyncio.run(service.discover(() if allowlist is None else allowlist))
-
-
-def _selected_cua_tool_names(
-    allowlist: Sequence[str] | None,
-) -> frozenset[str] | None:
-    if allowlist is None:
-        return None
-    return frozenset(
-        descriptor.tool_name
-        for descriptor in CUA_REFERENCE_DESCRIPTORS
-        if public_tool_name("cua", descriptor.tool_name) in allowlist
-    )
 
 
 def public_tool_name(provider_name: str, tool_name: str) -> str:
@@ -694,8 +617,6 @@ ProviderCatalog = CatalogSnapshot
 
 
 __all__ = [
-    "CUA_REFERENCE_DESCRIPTORS",
-    "CUA_REFERENCE_TOOL_NAMES",
     "DEFAULT_RESERVED_PUBLIC_NAMES",
     "CatalogEntry",
     "CatalogError",

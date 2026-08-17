@@ -34,14 +34,6 @@ from typing import Any
 # the portable oracle must therefore validate the actual wire order rather
 # than the scenario execution order.
 _CONNECTED_CAPABILITIES: tuple[str, ...] = (
-    "browser.back",
-    "browser.click",
-    "browser.fill",
-    "browser.list_tabs",
-    "browser.navigate",
-    "browser.scroll",
-    "browser.snapshot",
-    "browser.type",
     "cua.click",
     "cua.get_window_state",
     "cua.list_windows",
@@ -253,65 +245,6 @@ def validate_terminal(result: Any, *, command_id: str, expected: str) -> None:
         raise ValueError("invalid terminal response schema")
 
 
-# --- Browser inventory oracle ------------------------------------------------
-
-
-def _exact_str(value: Any, *, nonempty: bool = False, maximum: int = 4096) -> bool:
-    """Strict string check: bounded length, exact ``str`` type.
-
-    The portable oracle does NOT permit ``str`` subclasses (no
-    ``StringView`` etc.) and bounds the length so a malicious payload
-    cannot grow the validation memory.
-    """
-    return (
-        type(value) is str
-        and len(value) <= maximum
-        and (not nonempty or bool(value))
-    )
-
-
-def validate_list_tabs(result: Any) -> None:
-    """Validate the Browser provider's handle-free tab inventory."""
-    payload = _structured(result, "relay_browser_list_tabs")
-    if set(payload) != {"tabs"}:
-        raise ValueError("invalid relay_browser_list_tabs response schema")
-    tabs = payload["tabs"]
-    if type(tabs) is not list or len(tabs) != 1:
-        raise ValueError("invalid relay_browser_list_tabs response schema")
-    tab = tabs[0]
-    if (
-        type(tab) is not dict
-        or set(tab) != {"title", "url"}
-        or not _exact_str(tab["title"], maximum=256)
-        or not _exact_str(tab["url"], maximum=2048, nonempty=True)
-        or "element_id" in tab
-        or "handle" in tab
-    ):
-        raise ValueError("invalid relay_browser_list_tabs response schema")
-
-
-_BROWSER_ACTION_KEYS: frozenset[str] = frozenset({"success", "title", "url"})
-
-
-def validate_browser_action(
-    result: Any,
-    *,
-    tool_name: str,
-    fixture_url: str,
-    fixture_title: str,
-) -> None:
-    """Validate a handle-free Browser action result."""
-    payload = _structured(result, tool_name)
-    if set(payload) != set(_BROWSER_ACTION_KEYS):
-        raise ValueError(f"invalid {tool_name} response schema")
-    if (
-        payload["success"] is not True
-        or payload["url"] != fixture_url
-        or payload["title"] != fixture_title
-    ):
-        raise ValueError(f"invalid {tool_name} response schema")
-
-
 # --- Generic CUA provider oracles -------------------------------------------
 
 _CUA_WINDOW_REQUIRED_KEYS: frozenset[str] = frozenset(
@@ -326,6 +259,19 @@ _CUA_MAX_ELEMENTS: int = 256
 
 def _bounded_int(value: Any) -> bool:
     return type(value) is int and -(2**31) <= value <= 2**31
+
+
+def _exact_str(
+    value: Any,
+    *,
+    nonempty: bool = False,
+    maximum: int,
+) -> bool:
+    return (
+        type(value) is str
+        and len(value) <= maximum
+        and (not nonempty or bool(value))
+    )
 
 
 def validate_cua_list_windows(
@@ -444,80 +390,267 @@ def validate_cua_action(result: Any, *, tool_name: str) -> None:
         raise ValueError(f"invalid {tool_name} response schema")
 
 
-# --- Browser snapshot oracle -------------------------------------------------
-
-_SNAPSHOT_KEYS: frozenset[str] = frozenset({"url", "title", "text", "elements"})
-_SNAPSHOT_ELEMENT_KEYS: frozenset[str] = frozenset(
-    {"locator", "role", "name", "value", "editable", "enabled", "clickable"}
-)
-_SNAPSHOT_TEXT_REQUIRED_MARKERS: tuple[str, ...] = (
-    "Relay Browser Fixture",
-    "Name",
-    "Submit",
-)
-_SNAPSHOT_MAX_TEXT_LEN: int = 4096
-_SNAPSHOT_MAX_ELEMENTS: int = 12
+def validate_cua_browser_success(result: Any, *, tool_name: str) -> None:
+    """Validate a successful CUA browser lifecycle/action envelope."""
+    if not hasattr(result, "isError") or result.isError is not False:
+        raise ValueError(f"invalid {tool_name} response schema")
+    extra = getattr(result, "model_extra", None)
+    if bool(extra):
+        raise ValueError(f"invalid {tool_name} response schema")
 
 
-def validate_snapshot(
+def validate_cua_browser_launch(result: Any) -> int:
+    """Return the PID explicitly created by CUA 0.19 ``launch_app``."""
+    payload = _structured(result, "relay_cua_launch_app")
+    pid = payload.get("pid")
+    if not _bounded_int(pid) or pid <= 0:
+        raise ValueError("invalid relay_cua_launch_app process identity")
+    name = payload.get("name")
+    if not _exact_str(name, nonempty=True, maximum=256):
+        raise ValueError("invalid relay_cua_launch_app process name")
+    if "active" in payload and type(payload["active"]) is not bool:
+        raise ValueError("invalid relay_cua_launch_app active state")
+    if "windows" in payload and not isinstance(payload["windows"], list):
+        raise ValueError("invalid relay_cua_launch_app windows")
+    if "running" in payload and payload["running"] is not True:
+        raise ValueError("invalid relay_cua_launch_app process state")
+    return pid
+
+
+def validate_cua_browser_prepare(result: Any) -> int:
+    """Return the browser PID accepted by CUA ``browser_prepare``."""
+    payload = _structured(result, "relay_cua_browser_prepare")
+    prepared_pid = payload.get("prepared_pid")
+    if (
+        payload.get("status") != "ok"
+        or payload.get("prepared") is not True
+        or not _bounded_int(prepared_pid)
+        or prepared_pid <= 0
+    ):
+        raise ValueError("invalid relay_cua_browser_prepare response schema")
+    return prepared_pid
+
+
+def validate_cua_browser_binding(
     result: Any,
     *,
-    fixture_url: str,
-    fixture_title: str,
-    diagnostic_phase: list[str] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Validate a Browser snapshot and return fresh structured locators."""
-    if diagnostic_phase is not None:
-        diagnostic_phase.append("snapshot-structured")
-    payload = _structured(result, "relay_browser_snapshot")
-    if set(payload) != set(_SNAPSHOT_KEYS) or payload["url"] != fixture_url or payload["title"] != fixture_title:
-        raise ValueError("invalid relay_browser_snapshot response schema")
-    if (
-        not _exact_str(payload["text"], maximum=_SNAPSHOT_MAX_TEXT_LEN)
-        or any(marker not in payload["text"] for marker in _SNAPSHOT_TEXT_REQUIRED_MARKERS)
-        or type(payload["elements"]) is not list
-        or len(payload["elements"]) > _SNAPSHOT_MAX_ELEMENTS
-    ):
-        raise ValueError("invalid relay_browser_snapshot response schema")
-    textboxes: list[dict[str, Any]] = []
-    buttons: list[dict[str, Any]] = []
-    for index, element in enumerate(payload["elements"]):
-        if diagnostic_phase is not None:
-            diagnostic_phase.append(f"snapshot-element-{index}")
-        if (
-            type(element) is not dict
-            or set(element) != set(_SNAPSHOT_ELEMENT_KEYS)
-            or type(element["locator"]) is not dict
-            or "element_id" in element
-            or "handle" in element
-            or not _exact_str(element["role"], nonempty=True, maximum=64)
-            or not _exact_str(element["name"], maximum=256)
-            or (element["value"] is not None and not _exact_str(element["value"], maximum=2048))
-            or type(element["editable"]) is not bool
-            or type(element["enabled"]) is not bool
-            or type(element["clickable"]) is not bool
-        ):
-            raise ValueError("invalid relay_browser_snapshot element schema")
-        locator = element["locator"]
-        if (
-            set(locator) - {"by", "role", "name", "value", "label", "placeholder", "text", "test_id", "exact", "index"}
-            or locator.get("by") not in {"role", "label", "placeholder", "text", "test_id"}
-        ):
-            raise ValueError("invalid relay_browser_snapshot locator schema")
-        if "index" in locator and (type(locator["index"]) is not int or locator["index"] < 0):
-            raise ValueError("invalid relay_browser_snapshot locator schema")
-        if element["role"] == "textbox" and element["name"] == "Name" and element["editable"] and element["enabled"]:
-            textboxes.append(locator)
-        if element["role"] == "button" and element["name"] == "Submit" and element["clickable"] and element["enabled"]:
-            buttons.append(locator)
-    if len(textboxes) != 1 or len(buttons) != 1:
-        raise ValueError("invalid relay_browser_snapshot controls")
-    return textboxes[0], buttons[0]
+    expected_pid: int,
+    expected_window_id: int,
+) -> tuple[str, str]:
+    """Validate an exact browser binding and return one active tab."""
+    payload = _structured(result, "relay_cua_get_browser_state")
+    if "pid" in payload and payload["pid"] != expected_pid:
+        raise ValueError("invalid relay_cua_get_browser_state process identity")
+    if "window_id" in payload and payload["window_id"] != expected_window_id:
+        raise ValueError("invalid relay_cua_get_browser_state window identity")
+    target_id = payload.get("target_id")
+    tabs = payload.get("tabs")
+    if not _exact_str(target_id, nonempty=True, maximum=256) or not isinstance(tabs, list):
+        raise ValueError("invalid relay_cua_get_browser_state binding schema")
+    active_tabs: list[str] = []
+    for tab in tabs:
+        if not isinstance(tab, dict):
+            raise ValueError("invalid relay_cua_get_browser_state tab schema")
+        tab_id = tab.get("tab_id")
+        if not _exact_str(tab_id, nonempty=True, maximum=256):
+            raise ValueError("invalid relay_cua_get_browser_state tab identity")
+        active = tab.get("active")
+        if active is True:
+            active_tabs.append(tab_id)
+    if len(active_tabs) != 1:
+        raise ValueError("invalid relay_cua_get_browser_state active tab")
+    return target_id, active_tabs[0]
 
+
+def _contains_browser_text(value: Any, expected: str) -> bool:
+    if isinstance(value, str):
+        return expected in value
+    if isinstance(value, dict):
+        return any(_contains_browser_text(child, expected) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_browser_text(child, expected) for child in value)
+    return False
+
+
+def validate_cua_browser_state(
+    result: Any,
+    *,
+    expected_url: str,
+    expected_text: str | None = None,
+) -> None:
+    """Prove the local page URL and optional marker through CUA state."""
+    payload = _structured(result, "relay_cua_get_browser_state")
+    normalized_url = expected_url.rstrip("/")
+    if not (
+        _contains_browser_text(payload, expected_url)
+        or _contains_browser_text(payload, normalized_url)
+    ) or (
+        expected_text is not None
+        and not _contains_browser_text(payload, expected_text)
+    ):
+        raise ValueError("invalid relay_cua_get_browser_state page state")
+
+
+def validate_cua_browser_controls(
+    result: Any,
+    *,
+    expected_url: str,
+    expected_text: str | None = None,
+) -> tuple[str, str]:
+    """Return exactly one editable field ref and one Apply button ref.
+
+    Browser refs are opaque, session-scoped values minted by the provider. The
+    oracle accepts only the bounded DOM-ref shape and rejects native handles,
+    locators, or accessibility element tokens crossing the browser boundary.
+    """
+    payload = _structured(result, "relay_cua_get_browser_state")
+    validate_cua_browser_state(
+        result,
+        expected_url=expected_url,
+        expected_text=expected_text,
+    )
+    semantic_snapshot = payload.get("snapshot")
+    semantic_refs = payload.get("refs")
+    if (
+        isinstance(semantic_snapshot, dict)
+        and semantic_snapshot.get("format") == "semantic_v2"
+        and isinstance(semantic_refs, list)
+    ):
+        if not 1 <= len(semantic_refs) <= 128:
+            raise ValueError("invalid semantic browser refs")
+        field_refs: list[str] = []
+        button_refs: list[str] = []
+        seen_refs: set[str] = set()
+        for ref_entry in semantic_refs:
+            if type(ref_entry) is not dict:
+                raise ValueError("invalid semantic browser ref")
+            allowed = {
+                "ref",
+                "role",
+                "name",
+                "value",
+                "states",
+                "actions",
+                "frame",
+                "visibility",
+            }
+            if set(ref_entry) - allowed:
+                raise ValueError("invalid semantic browser ref")
+            ref = ref_entry.get("ref")
+            role = ref_entry.get("role")
+            name = ref_entry.get("name")
+            states = ref_entry.get("states")
+            actions = ref_entry.get("actions")
+            if (
+                not isinstance(ref, str)
+                or not _exact_str(ref, nonempty=True, maximum=256)
+                or ref in seen_refs
+                or not isinstance(role, str)
+                or not _exact_str(role, nonempty=True, maximum=64)
+                or not (name is None or isinstance(name, str))
+                or (isinstance(name, str) and not _exact_str(name, maximum=256))
+                or type(states) is not dict
+                or type(actions) is not list
+                or len(states) > 32
+                or not all(
+                    _exact_str(state, nonempty=True, maximum=64)
+                    and (isinstance(value, (bool, int, float, str)) or value is None)
+                    for state, value in states.items()
+                )
+                or not all(_exact_str(action, nonempty=True, maximum=64) for action in actions)
+                or (
+                    "value" in ref_entry
+                    and ref_entry["value"] is not None
+                    and not _exact_str(ref_entry["value"], maximum=2048)
+                )
+                or not _exact_str(ref_entry.get("frame"), nonempty=True, maximum=64)
+                or not _exact_str(ref_entry.get("visibility"), nonempty=True, maximum=64)
+            ):
+                raise ValueError("invalid semantic browser ref")
+            seen_refs.add(ref)
+            normalized_role = role.casefold()
+            normalized_actions = {action.casefold() for action in actions}
+            if (
+                normalized_role in {"textbox", "combobox"}
+                and isinstance(name, str)
+                and name.casefold() == "name"
+                and "type" in normalized_actions
+            ):
+                field_refs.append(ref)
+            if (
+                normalized_role in {"button", "push button"}
+                and isinstance(name, str)
+                and name.casefold() == "apply"
+                and "click" in normalized_actions
+            ):
+                button_refs.append(ref)
+        if len(field_refs) != 1 or len(button_refs) != 1:
+            raise ValueError("invalid semantic browser fixture controls")
+        return field_refs[0], button_refs[0]
+
+    elements = payload.get("elements")
+    if type(elements) is not list or not 1 <= len(elements) <= 64:
+        raise ValueError("invalid relay_cua_get_browser_state elements")
+    field_refs: list[str] = []
+    button_refs: list[str] = []
+    seen_refs: set[str] = set()
+    for element in elements:
+        if type(element) is not dict:
+            raise ValueError("invalid relay_cua_get_browser_state element")
+        allowed = {
+            "ref",
+            "role",
+            "name",
+            "value",
+            "editable",
+            "enabled",
+            "clickable",
+        }
+        if set(element) - allowed:
+            raise ValueError("invalid relay_cua_get_browser_state element")
+        ref = element.get("ref")
+        role = element.get("role")
+        name = element.get("name")
+        if (
+            not isinstance(ref, str)
+            or not _exact_str(ref, nonempty=True, maximum=256)
+            or ref in seen_refs
+            or not isinstance(role, str)
+            or not _exact_str(role, nonempty=True, maximum=64)
+            or not isinstance(name, str)
+            or not _exact_str(name, maximum=256)
+            or type(element.get("editable")) is not bool
+            or type(element.get("enabled")) is not bool
+            or type(element.get("clickable")) is not bool
+            or (
+                "value" in element
+                and not _exact_str(element["value"], maximum=2048)
+            )
+        ):
+            raise ValueError("invalid relay_cua_get_browser_state element")
+        seen_refs.add(ref)
+        normalized_role = role.casefold()
+        if (
+            normalized_role in {"textbox", "combobox"}
+            and name.casefold() == "name"
+            and element["editable"]
+            and element["enabled"]
+        ):
+            field_refs.append(ref)
+        if (
+            normalized_role in {"button", "push button"}
+            and name.casefold() == "apply"
+            and element["clickable"]
+            and element["enabled"]
+        ):
+            button_refs.append(ref)
+    if len(field_refs) != 1 or len(button_refs) != 1:
+        raise ValueError("invalid relay_cua_get_browser_state fixture controls")
+    return field_refs[0], button_refs[0]
 
 
 #
-# These oracles read JSONL files that the Browser/Computer fixtures
+# These oracles read JSONL files that the CUA fixtures
 # write on disk after each successful action. The files are the
 # independent side-effect proof that the harness uses to detect
 # "successful driver response without an actual mutation". The oracles
@@ -594,20 +727,11 @@ def _read_event(
             raise ValueError
         return raw
     except (OSError, UnicodeError, _json.JSONDecodeError, ValueError):
-        raise ValueError(f"invalid fixture event for {action}") from None
-
-
-def validate_fixture_event(path: _Path, *, run_id: str, value: str) -> bytes:
-    """Validate a Browser ``submitted`` fixture event."""
-    return _read_event(
-        path,
-        {"run_id": run_id, "event": "submitted", "value": value},
-        "relay_browser_click",
-    )
+        raise ValueError(f"invalid CUA event for {action}") from None
 
 
 def validate_cua_event(path: _Path, *, run_id: str, value: str) -> bytes:
-    """Validate a Computer ``applied`` fixture event."""
+    """Validate a Computer ``applied`` CUA event."""
     return _read_event(
         path,
         {"run_id": run_id, "event": "applied", "value": value},
@@ -615,10 +739,10 @@ def validate_cua_event(path: _Path, *, run_id: str, value: str) -> bytes:
     )
 
 
-def assert_no_fixture_event(path: _Path) -> None:
-    """Refuse any pre-existing fixture event at ``path``.
+def assert_no_cua_event(path: _Path) -> None:
+    """Refuse any pre-existing CUA event at ``path``.
 
-    Called before the Browser action that is supposed to produce the
+    Called before the CUA action that is supposed to produce the
     event. If a stale event from a previous run is still present, the
     oracle fails closed.
     """
@@ -626,13 +750,13 @@ def assert_no_fixture_event(path: _Path) -> None:
         _os.lstat(path)
     except FileNotFoundError:
         return
-    raise ValueError(f"fixture event exists before relay_browser_click at {path}")
+    raise ValueError(f"CUA event exists before relay_cua_click at {path}")
 
 
-def poll_fixture_event(
+def poll_cua_event(
     path: _Path, *, run_id: str, value: str, timeout: float
 ) -> None:
-    """Poll for a Browser fixture event, bounded by ``timeout`` seconds.
+    """Poll for a CUA CUA event, bounded by ``timeout`` seconds.
 
     Returns when two consecutive reads agree on the same valid event,
     or raises ``ValueError`` for a malformed event and ``TimeoutError``
@@ -649,7 +773,7 @@ def poll_fixture_event(
             previous_valid = None
         else:
             try:
-                current = validate_fixture_event(
+                current = validate_cua_event(
                     path, run_id=run_id, value=value
                 )
             except ValueError:
@@ -661,8 +785,8 @@ def poll_fixture_event(
         _time.sleep(_EVENT_POLL_INTERVAL_SECONDS)
     if appeared:
         raise ValueError(
-            f"invalid fixture event for relay_browser_click at {path}"
+            f"invalid CUA event for relay_cua_click at {path}"
         )
     raise TimeoutError(
-        f"fixture event absent for relay_browser_click at {path}"
+        f"CUA event absent for relay_cua_click at {path}"
     )

@@ -12,7 +12,6 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CancelledNotification, CancelledNotificationParams
 
-from agent_relay.capabilities.browser import BROWSER_PROVIDER_DESCRIPTORS
 from agent_relay.mcp_facade import (
     _close_tool_input_schemas,
     create_mcp_facade,
@@ -120,7 +119,7 @@ def test_dynamic_facade_only_lists_announced_agent_tools() -> None:
     run(scenario())
 
 
-def test_dynamic_facade_publishes_browser_locator_schema_without_static_wrapper() -> None:
+def test_dynamic_facade_publishes_cua_browser_schema_without_static_wrapper() -> None:
     async def scenario() -> None:
         registry = RelayRegistry(agent_token="agent-token")
         mcp = create_mcp_facade(
@@ -131,28 +130,42 @@ def test_dynamic_facade_publishes_browser_locator_schema_without_static_wrapper(
         socket = FakeSocket()
         await registry.register(
             socket,
-            Register(version=1, type="register", device_id="browser-one"),
+            Register(version=1, type="register", device_id="cua-one"),
         )
-        descriptor = next(
-            item for item in BROWSER_PROVIDER_DESCRIPTORS if item.tool_name == "fill"
-        ).model_copy(update={"public_name": "relay_browser_fill"})
+        descriptor = ProviderToolDescriptor(
+            provider_name="cua",
+            tool_name="browser_type",
+            public_name="relay_cua_browser_type",
+            description="CUA browser type",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "string"},
+                    "tab_id": {"type": "string"},
+                    "ref": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            risk="interaction",
+        )
         await registry.set_capabilities(
             socket,
             Capabilities(
                 version=1,
                 type="capabilities",
-                tools=["browser.fill"],
+                tools=["cua.browser_type"],
                 descriptors=[descriptor],
             ),
         )
         tools = mcp._tool_manager.list_tools()
         assert [tool.name for tool in tools] == [
             "relay_device_status",
-            "relay_browser_fill",
+            "relay_cua_browser_type",
         ]
-        browser_tool = tools[1]
-        assert "locator" in browser_tool.parameters["properties"]
-        assert "element_id" not in browser_tool.parameters["properties"]
+        cua_tool = tools[1]
+        assert "target_id" in cua_tool.parameters["properties"]
+        assert "element_id" not in cua_tool.parameters["properties"]
 
     run(scenario())
 

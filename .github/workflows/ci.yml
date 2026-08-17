@@ -21,7 +21,7 @@ jobs:
   python:
     name: Python quality and tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
@@ -39,11 +39,11 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/agent-relay.coverage
         run: >-
-          uv run --frozen pytest -q -m "not integration"
+          uv run --frozen python -m pytest -q -m "not integration"
           --cov=agent_relay --cov-report=term-missing
 
       - name: Run explicit integration suite
-        run: uv run --frozen pytest -q -m integration
+        run: uv run --frozen python -m pytest -q -m integration
 
       - name: Verify checks left the repository clean
         run: |
@@ -191,10 +191,10 @@ jobs:
           installer: "true"
 
       - name: Run Linux contract tests
-        run: uv run --frozen pytest -q tests/test_linux_e2e.py tests/test_runner.py
+        run: uv run --frozen python -m pytest -q tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Linux integration suite
-        run: uv run --frozen pytest -q -m integration
+        run: uv run --frozen python -m pytest -q -m integration
 
       - name: Run Linux Terminal MCP end-to-end scenario
         shell: bash
@@ -223,69 +223,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  e2e-linux-browser:
-    name: Linux Browser end-to-end
-    needs: python
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Verify checked-out commit
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Install locked Browser environment
-        uses: ./.github/actions/setup-python
-        with:
-          profile: browser
-
-      - name: Run Linux Browser contract tests
-        run: uv run --frozen pytest -q tests/test_linux_browser_e2e.py tests/test_browser_capability.py
-
-      - name: Install pinned Playwright Chromium and Linux dependencies
-        run: uv run --frozen playwright install --with-deps chromium
-
-      - name: Run Linux Browser end-to-end scenario
-        shell: bash
-        run: |
-          set -euo pipefail
-          evidence_dir="$GITHUB_WORKSPACE/linux-browser-evidence"
-          mkdir -p "$evidence_dir"
-          uv run --frozen python scripts/linux_browser_e2e.py \
-            --evidence-dir "$evidence_dir" \
-            --output-file "$evidence_dir/output.log"
-
-      - name: Validate bounded Linux Browser evidence
-        id: validate-linux-browser-evidence
-        if: always()
-        run: >-
-          python scripts/validate_e2e_evidence.py
-          --profile linux-browser
-          --evidence-dir linux-browser-evidence
-
-      - name: Upload bounded Linux Browser evidence
-        if: always() && steps.validate-linux-browser-evidence.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: linux-browser-e2e-evidence
-          path: linux-browser-evidence/**
-          if-no-files-found: warn
-          retention-days: 7
-
   e2e-linux-cua:
     name: Linux CUA end-to-end
     needs: python
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -308,18 +250,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             at-spi2-core dbus-x11 gir1.2-atspi-2.0 libatk-bridge2.0-0 \
-            libglib2.0-bin openbox x11-utils xdotool xterm xvfb
+            chromium libglib2.0-bin openbox x11-utils xdotool xterm xvfb wget
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
+            | sudo gpg --dearmor --yes -o /usr/share/keyrings/google-linux.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends google-chrome-stable
 
-      - name: Install locked Browser and Computer Use environment
+      - name: Verify Linux CUA browser prerequisite
+        run: |
+          set -euo pipefail
+          command -v google-chrome-stable
+          google-chrome-stable --version
+
+      - name: Install locked CUA environment
         uses: ./.github/actions/setup-python
-        with:
-          profile: computer
 
       - name: Prepare isolated Linux CUA driver state
         shell: bash
         run: |
           set -euo pipefail
-          driver="$(uv run --frozen python -c 'from cua_driver.wrapper import get_binary_path; print(get_binary_path())')"
+          driver="$(uv run --frozen python -c 'import cua_driver; print(cua_driver.get_binary_path())')"
           test -f "$driver"
           set +e
           timeout --signal=TERM --kill-after=5s 15s "$driver" --version >/dev/null 2>&1
@@ -329,14 +281,11 @@ jobs:
             printf 'cua-driver version probe failed with status=%s\n' "$driver_status" >&2
             exit "$driver_status"
           fi
-          driver_bin="$(dirname "$driver")"
           driver_home="$RUNNER_TEMP/agent-relay-cua-driver-home"
           mkdir -p "$driver_home"
           {
-            printf 'RELAY_AGENT_COMPUTER_DRIVER_PATH=%s\n' "$driver"
             printf 'CUA_DRIVER_RS_HOME=%s\n' "$driver_home"
             printf 'CUA_DRIVER_TELEMETRY_HOME=%s\n' "$driver_home"
-            printf 'CUA_DRIVER_RS_INSTALL_DIR=%s\n' "$driver_bin"
           } >> "$GITHUB_ENV"
 
       - name: Probe Linux CUA MCP JSON-RPC startup
@@ -347,13 +296,21 @@ jobs:
             uv run --frozen python scripts/probe_cua_driver.py --platform linux
 
       - name: Run Linux CUA contract tests
-        run: uv run --frozen pytest -q tests/test_linux_computer_e2e.py tests/test_computer_capability.py tests/test_desktop_fixture.py
-
-      - name: Install pinned Playwright Chromium and Linux dependencies
-        run: uv run --frozen playwright install --with-deps chromium
+        run: >-
+          uv run --frozen python -m pytest -q
+          tests/test_cua_catalog.py tests/test_cua_profiles.py
+          tests/test_computer_capability.py tests/test_desktop_fixture.py
+          tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py
+          tests/test_e2e_oracles.py
+          tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py
+          tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Linux CUA end-to-end scenario
         shell: bash
+        env:
+          # The scenario owns only a synthetic temporary Chromium profile. Keep
+          # the existing-profile grant opt-in and scoped to this graphical gate.
+          AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE: "1"
         run: |
           set -euo pipefail
           evidence_dir="$GITHUB_WORKSPACE/linux-cua-evidence"
@@ -410,7 +367,8 @@ jobs:
       - name: Run Windows test suite
         shell: pwsh
         run: >-
-          uv run --frozen pytest -q tests/test_windows_e2e.py
+          uv run --frozen python -m pytest -q tests/test_windows_e2e.py
+          tests/test_linux_e2e.py
           tests/test_installers.py tests/test_cli_uninstall.py
           tests/test_cli_config.py::test_init_agent_from_server_uses_the_effective_dotenv_token
           tests/test_runner.py
@@ -418,7 +376,7 @@ jobs:
 
       - name: Run Windows integration suite
         shell: pwsh
-        run: uv run --frozen pytest -q -m integration
+        run: uv run --frozen python -m pytest -q -m integration
 
       - name: Run Windows Terminal MCP end-to-end scenario
         shell: pwsh
@@ -482,9 +440,13 @@ jobs:
       - name: Install locked Python environment
         uses: ./.github/actions/setup-python
 
-      - name: Install pinned cua-driver for Windows UI Automation
+      - name: Verify automatic CUA driver resolution
         shell: pwsh
-        run: ./scripts/windows_install_cua_driver.ps1
+        run: |
+          $driver = (uv run --frozen python -c "import cua_driver; print(cua_driver.get_binary_path())").Trim()
+          if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) {
+            throw "cua-driver binary was not resolved automatically"
+          }
 
       - name: Probe Windows CUA daemon-backed MCP startup
         shell: pwsh
@@ -493,8 +455,13 @@ jobs:
       - name: Run Windows CUA contract tests
         shell: pwsh
         run: >-
-          uv run --frozen pytest -q tests/test_windows_computer_e2e.py tests/test_windows_e2e.py tests/test_runner.py
-          -k "not git_search_skips_relative_default_path_entries"
+          uv run --frozen python -m pytest -q
+          tests/test_cua_catalog.py tests/test_cua_profiles.py
+          tests/test_computer_capability.py tests/test_desktop_fixture.py
+          tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py
+          tests/test_e2e_oracles.py
+          tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py
+          tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
 
       - name: Run Windows CUA Agent Relay end-to-end scenario
         shell: pwsh
@@ -520,68 +487,5 @@ jobs:
         with:
           name: windows-cua-e2e-evidence
           path: windows-cua-evidence/**
-          if-no-files-found: warn
-          retention-days: 7
-
-  e2e-windows-browser:
-    name: Windows Browser end-to-end
-    needs: python
-    runs-on: windows-2025
-    timeout-minutes: 3
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Verify checked-out commit
-        shell: pwsh
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          $actual = (git rev-parse HEAD).Trim()
-          if ($actual -ne $env:EXPECTED_SHA) {
-            throw "Checked-out commit does not match the expected workflow SHA"
-          }
-
-      - name: Install locked Browser environment
-        uses: ./.github/actions/setup-python
-        with:
-          profile: browser
-
-      - name: Run Browser contract tests
-        shell: pwsh
-        run: uv run --frozen pytest -q tests/test_windows_browser_e2e.py tests/test_browser_capability.py
-
-      - name: Install pinned Playwright Chromium
-        shell: pwsh
-        run: uv run --frozen playwright install chromium
-
-      - name: Run Windows Browser end-to-end scenario
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE "browser-evidence"
-          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
-          uv run --frozen python scripts/windows_browser_e2e.py `
-            --evidence-dir $evidenceDir `
-            --output-file (Join-Path $evidenceDir "output.log")
-
-      - name: Validate bounded Windows Browser evidence
-        id: validate-windows-browser-evidence
-        if: always()
-        run: >-
-          python scripts/validate_e2e_evidence.py
-          --profile windows-browser
-          --evidence-dir browser-evidence
-
-      - name: Upload bounded Windows Browser evidence
-        if: always() && steps.validate-windows-browser-evidence.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: windows-browser-e2e-evidence
-          path: browser-evidence/**
           if-no-files-found: warn
           retention-days: 7

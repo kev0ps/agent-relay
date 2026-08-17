@@ -127,9 +127,12 @@ The public MCP inventory and copyable Agent allowlists are documented in
 [`tools.md`](tools.md).
 
 `terminal.exec` accepts only `pwd`, `whoami`, `python_version`, `git_status`,
-and `git_branch`. Browser tools use structured locators and an origin policy.
-CUA tools are discovered from a configured provider, selected individually,
-and restricted to the configured application and window.
+and `git_branch`. CUA tools are discovered dynamically from the standard
+provider, exposed publicly as `relay_cua_<name>`, and selected through the
+versioned `none`, `standard`, or `full` profiles or by individual name. Native
+and browser descriptors use the same validation, policy, logging, and execution
+path. An application or window target is required only by a descriptor that
+actually acts on one.
 
 There is no public generic invoke tool, shell text, caller-supplied path,
 arbitrary JavaScript, CDP passthrough, provider endpoint, screenshot or

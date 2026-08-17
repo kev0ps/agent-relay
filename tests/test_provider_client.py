@@ -32,6 +32,7 @@ from agent_relay.providers.in_process import InProcessProviderToolClient
 from agent_relay.providers.mcp_client import (
     McpProviderToolClient,
     NativeMcpSessionTransport,
+    _normalize_cua_schema_bounds,
     _schema_failure_category,
 )
 
@@ -66,9 +67,9 @@ _NESTED_ITEM_SCHEMA = {
 
 def descriptor(name: str = "snapshot") -> ProviderToolDescriptor:
     return ProviderToolDescriptor(
-        provider_name="browser",
+        provider_name="cua",
         tool_name=name,
-        public_name=f"browser:{name}",
+        public_name=f"cua:{name}",
         description="A locally owned test tool",
         input_schema={
             "type": "object",
@@ -122,38 +123,37 @@ def test_descriptors_cannot_serialize_execution_configuration() -> None:
 
 def test_provider_argument_schema_is_checked_before_call() -> None:
     tool = ProviderToolDescriptor(
-        provider_name="browser",
-        tool_name="fill",
-        public_name="relay_browser_fill",
-        description="fill a field",
+        provider_name="cua",
+        tool_name="browser_type",
+        public_name="relay_cua_browser_type",
+        description="type into a browser field",
         input_schema={
             "type": "object",
             "properties": {
-                "locator": {
-                    "type": "object",
-                    "properties": {"role": {"type": "string", "minLength": 1}},
-                    "required": ["role"],
-                    "additionalProperties": False,
-                },
-                "value": {"type": "string", "maxLength": 8},
+                "target_id": {"type": "string", "minLength": 1},
+                "tab_id": {"type": "string", "minLength": 1},
+                "ref": {"type": "string", "minLength": 1},
+                "text": {"type": "string", "maxLength": 8},
             },
-            "required": ["locator", "value"],
+            "required": ["target_id", "tab_id", "ref", "text"],
             "additionalProperties": False,
         },
         risk="interaction",
     )
 
     valid_arguments: dict[str, JsonValue] = {
-        "locator": {"role": "textbox"},
-        "value": "hello",
+        "target_id": "target",
+        "tab_id": "tab",
+        "ref": "p1:0",
+        "text": "hello",
     }
     assert validate_provider_arguments(tool, valid_arguments) == valid_arguments
     invalid_arguments: tuple[dict[str, JsonValue], ...] = (
         {},
-        {"locator": {"role": "textbox"}},
-        {"locator": {"role": "textbox"}, "value": "too long!"},
-        {"locator": {"role": "textbox"}, "value": "ok", "extra": True},
-        {"locator": {"role": "textbox"}, "value": 1},
+        {"target_id": "target", "tab_id": "tab", "ref": "p1:0"},
+        {"target_id": "target", "tab_id": "tab", "ref": "p1:0", "text": "too long!"},
+        {"target_id": "target", "tab_id": "tab", "ref": "p1:0", "text": "ok", "extra": True},
+        {"target_id": "target", "tab_id": "tab", "ref": "p1:0", "text": 1},
     )
     for invalid in invalid_arguments:
         with pytest.raises(ProviderToolError, match="do not match tool schema"):
@@ -798,6 +798,35 @@ def test_malformed_mcp_descriptor_is_inventory_error_without_sensitive_context()
     asyncio.run(scenario())
 
 
+def test_malformed_unselected_cua_descriptor_does_not_poison_inventory() -> None:
+    class MixedTransport(FakeMcpTransport):
+        async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+            del cursor
+            return {
+                "tools": [
+                    {
+                        "name": "capture",
+                        "description": "Capture the synthetic desktop",
+                        "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": False,
+                        },
+                    },
+                    {
+                        "name": "future_tool",
+                        "inputSchema": "wss://user:password@host/?token=very-secret",
+                    },
+                ]
+            }
+
+    async def scenario() -> None:
+        client = McpProviderToolClient(MixedTransport(), provider_name="cua")
+        tools = await client.list_tools()
+        assert [tool.tool_name for tool in tools] == ["capture"]
+
+    asyncio.run(scenario())
+
+
 def test_provider_description_is_bounded_before_descriptor_validation() -> None:
     class LongDescriptionTransport(FakeMcpTransport):
         async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
@@ -854,6 +883,98 @@ def test_cua_array_schema_gets_shared_bound_before_validation() -> None:
         modifier = properties["modifier"]
         assert isinstance(modifier, Mapping)
         assert modifier["maxItems"] == MAX_JSON_COLLECTION_ITEMS
+
+    asyncio.run(scenario())
+
+
+def test_cua_schema_normalization_closes_and_bounds_only_cua() -> None:
+    unbounded = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": {"type": "string"}},
+            "options": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "additionalProperties": True,
+    }
+    normalized = _normalize_cua_schema_bounds(unbounded)
+    assert isinstance(normalized, dict)
+    assert normalized["additionalProperties"] is False
+    item_schema = normalized["properties"]["items"]
+    assert item_schema["maxItems"] == MAX_JSON_COLLECTION_ITEMS
+    options_schema = normalized["properties"]["options"]
+    assert options_schema["maxProperties"] == MAX_JSON_COLLECTION_ITEMS
+
+    async def scenario() -> None:
+        class SchemaTransport(FakeMcpTransport):
+            async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+                del cursor
+                return {
+                    "tools": [
+                        {
+                            "name": "browser_navigate",
+                            "description": "navigate",
+                            "inputSchema": unbounded,
+                        }
+                    ]
+                }
+
+        cua = McpProviderToolClient(SchemaTransport(), provider_name="cua")
+        tools = await cua.list_tools()
+        assert tools[0].input_schema["additionalProperties"] is False
+        assert tools[0].input_schema["properties"]["items"]["maxItems"] == MAX_JSON_COLLECTION_ITEMS
+
+        generic = McpProviderToolClient(SchemaTransport(), provider_name="other")
+        with pytest.raises(ProviderToolError, match="invalid provider tool inventory"):
+            await generic.list_tools()
+
+    asyncio.run(scenario())
+
+
+def test_cua_open_object_schemas_are_closed_before_validation() -> None:
+    class OpenCuaSchemaTransport(FakeMcpTransport):
+        async def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+            return {
+                "tools": [
+                    {
+                        "name": "browser_prepare",
+                        "description": "prepare a browser",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "profile": {
+                                    "type": "object",
+                                    "properties": {"mode": {"type": "string"}},
+                                },
+                                "value": {"description": "JSON value"},
+                            },
+                        },
+                        "outputSchema": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "properties": {"status": {"type": "string"}},
+                        },
+                    }
+                ]
+            }
+
+    async def scenario() -> None:
+        client = McpProviderToolClient(
+            OpenCuaSchemaTransport(), provider_name="cua"
+        )
+        tools = await client.list_tools()
+        descriptor = tools[0]
+        assert descriptor.input_schema["additionalProperties"] is False
+        nested = descriptor.input_schema["properties"]["profile"]
+        assert isinstance(nested, Mapping)
+        assert nested["additionalProperties"] is False
+        value = descriptor.input_schema["properties"]["value"]
+        assert isinstance(value, Mapping)
+        assert "anyOf" in value
+        assert descriptor.output_schema is not None
+        assert descriptor.output_schema["additionalProperties"] is False
 
     asyncio.run(scenario())
 

@@ -79,14 +79,6 @@ def _good_status_payload(device_id: str, *, connected: bool) -> dict[str, Any]:
                 [
                     "system.ping",
                     "terminal.exec",
-                    "browser.list_tabs",
-                    "browser.navigate",
-                    "browser.snapshot",
-                    "browser.fill",
-                    "browser.click",
-                    "browser.scroll",
-                    "browser.type",
-                    "browser.back",
                     "cua.click",
                     "cua.get_window_state",
                     "cua.list_windows",
@@ -357,151 +349,6 @@ def test_validate_terminal_rejects_extra_keys() -> None:
         oracles.validate_terminal(result, command_id="git-branch", expected="main")
 
 
-# --- Browser provider oracles ----------------------------------------------
-
-
-def test_oracles_module_exposes_browser_contract() -> None:
-    oracles = _oracles()
-    for name in (
-        "validate_list_tabs",
-        "validate_browser_action",
-        "validate_snapshot",
-    ):
-        assert hasattr(oracles, name), f"missing {name}"
-
-
-def _good_list_tabs_payload() -> dict[str, Any]:
-    return {"tabs": [{"title": "", "url": "about:blank"}]}
-
-
-def test_validate_list_tabs_accepts_handle_free_inventory() -> None:
-    _oracles().validate_list_tabs(_make_call_tool_result(_good_list_tabs_payload()))
-
-
-def test_validate_list_tabs_rejects_public_handle_fields() -> None:
-    payload = _good_list_tabs_payload()
-    payload["tabs"][0]["tab_id"] = "opaque"
-    with pytest.raises(ValueError):
-        _oracles().validate_list_tabs(_make_call_tool_result(payload))
-
-
-def test_validate_list_tabs_rejects_extra_fields() -> None:
-    payload = _good_list_tabs_payload()
-    payload["tabs"][0]["screenshot"] = "raw-bytes"
-    with pytest.raises(ValueError):
-        _oracles().validate_list_tabs(_make_call_tool_result(payload))
-
-
-def _good_browser_action_payload(
-    *,
-    fixture_url: str = "http://127.0.0.1:8899/",
-    fixture_title: str = "Relay Browser Fixture",
-) -> dict[str, Any]:
-    return {"success": True, "title": fixture_title, "url": fixture_url}
-
-
-def test_validate_browser_action_accepts_locator_free_result() -> None:
-    _oracles().validate_browser_action(
-        _make_call_tool_result(_good_browser_action_payload()),
-        tool_name="relay_browser_navigate",
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-
-
-def test_validate_browser_action_rejects_provider_handles() -> None:
-    payload = _good_browser_action_payload()
-    payload["element_id"] = "opaque"
-    with pytest.raises(ValueError):
-        _oracles().validate_browser_action(
-            _make_call_tool_result(payload),
-            tool_name="relay_browser_click",
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-def test_validate_browser_action_rejects_error_result() -> None:
-    with pytest.raises(ValueError):
-        _oracles().validate_browser_action(
-            _make_call_tool_result(_good_browser_action_payload(), is_error=True),
-            tool_name="relay_browser_navigate",
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-def _good_snapshot_payload() -> dict[str, Any]:
-    return {
-        "url": "http://127.0.0.1:8899/",
-        "title": "Relay Browser Fixture",
-        "text": "Relay Browser Fixture\nName\nSubmit\n",
-        "elements": [
-            {
-                "locator": {"by": "role", "role": "textbox", "name": "Name"},
-                "role": "textbox",
-                "name": "Name",
-                "value": "",
-                "editable": True,
-                "enabled": True,
-                "clickable": False,
-            },
-            {
-                "locator": {"by": "role", "role": "button", "name": "Submit"},
-                "role": "button",
-                "name": "Submit",
-                "value": None,
-                "editable": False,
-                "enabled": True,
-                "clickable": True,
-            },
-        ],
-    }
-
-
-def test_validate_snapshot_returns_structured_locators() -> None:
-    textbox, button = _oracles().validate_snapshot(
-        _make_call_tool_result(_good_snapshot_payload()),
-        fixture_url="http://127.0.0.1:8899/",
-        fixture_title="Relay Browser Fixture",
-    )
-    assert textbox == {"by": "role", "role": "textbox", "name": "Name"}
-    assert button == {"by": "role", "role": "button", "name": "Submit"}
-
-
-def test_validate_snapshot_rejects_element_handles() -> None:
-    payload = _good_snapshot_payload()
-    payload["elements"][0]["element_id"] = "opaque"
-    with pytest.raises(ValueError):
-        _oracles().validate_snapshot(
-            _make_call_tool_result(payload),
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-def test_validate_snapshot_rejects_oversized_text() -> None:
-    payload = _good_snapshot_payload()
-    payload["text"] = "Relay Browser Fixture\nName\nSubmit\n" + ("x" * 5000)
-    with pytest.raises(ValueError):
-        _oracles().validate_snapshot(
-            _make_call_tool_result(payload),
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
-def test_validate_snapshot_requires_field_and_button_locators() -> None:
-    payload = _good_snapshot_payload()
-    payload["elements"] = [payload["elements"][1]]
-    with pytest.raises(ValueError):
-        _oracles().validate_snapshot(
-            _make_call_tool_result(payload),
-            fixture_url="http://127.0.0.1:8899/",
-            fixture_title="Relay Browser Fixture",
-        )
-
-
 # --- Generic CUA provider oracles -------------------------------------------
 
 
@@ -604,6 +451,94 @@ def test_validate_cua_action_accepts_bounded_result() -> None:
     )
 
 
+def test_validate_cua_browser_controls_returns_opaque_refs() -> None:
+    payload = {
+        "target_id": "target-1",
+        "tabs": [{"tab_id": "tab-1", "active": True}],
+        "url": "http://127.0.0.1:8898/",
+        "title": "Relay Desktop Fixture",
+        "text": "Relay Desktop Fixture Name Apply idle",
+        "elements": [
+            {
+                "ref": "p1:0",
+                "role": "textbox",
+                "name": "Name",
+                "value": "",
+                "editable": True,
+                "enabled": True,
+                "clickable": False,
+            },
+            {
+                "ref": "p1:1",
+                "role": "button",
+                "name": "Apply",
+                "value": "",
+                "editable": False,
+                "enabled": True,
+                "clickable": True,
+            },
+        ],
+    }
+    assert _oracles().validate_cua_browser_controls(
+        _make_call_tool_result(payload),
+        expected_url="http://127.0.0.1:8898/",
+    ) == ("p1:0", "p1:1")
+
+
+def test_validate_cua_browser_controls_rejects_native_handles() -> None:
+    payload = {
+        "target_id": "target-1",
+        "tabs": [{"tab_id": "tab-1", "active": True}],
+        "url": "http://127.0.0.1:8898/",
+        "text": "Relay Desktop Fixture Name Apply",
+        "elements": [
+            {
+                "ref": "p1:0",
+                "role": "textbox",
+                "name": "Name",
+                "editable": True,
+                "enabled": True,
+                "clickable": False,
+                "element_token": "native-handle",
+            },
+            {
+                "ref": "p1:1",
+                "role": "button",
+                "name": "Apply",
+                "editable": False,
+                "enabled": True,
+                "clickable": True,
+            },
+        ],
+    }
+    with pytest.raises(ValueError):
+        _oracles().validate_cua_browser_controls(
+            _make_call_tool_result(payload),
+            expected_url="http://127.0.0.1:8898/",
+        )
+
+
+def test_validate_cua_browser_launch_accepts_cua_019_shape() -> None:
+    assert _oracles().validate_cua_browser_launch(
+        _make_call_tool_result(
+            {
+                "pid": 4321,
+                "name": "chromium",
+                "active": False,
+                "windows": [],
+                "bundle_id": None,
+            }
+        )
+    ) == 4321
+
+
+def test_validate_cua_browser_launch_rejects_missing_native_name() -> None:
+    with pytest.raises(ValueError):
+        _oracles().validate_cua_browser_launch(
+            _make_call_tool_result({"pid": 4321, "active": False, "windows": []})
+        )
+
+
 def test_validate_cua_action_rejects_raw_screenshot_or_token() -> None:
     payload = {
         "path": "native_input",
@@ -621,13 +556,12 @@ def test_validate_cua_action_rejects_raw_screenshot_or_token() -> None:
 # --- Fixture event oracles --------------------------------------------------
 
 
-def test_oracles_module_exposes_fixture_event_helpers() -> None:
+def test_oracles_module_exposes_cua_event_helpers() -> None:
     oracles = _oracles()
     for name in (
-        "validate_fixture_event",
         "validate_cua_event",
-        "assert_no_fixture_event",
-        "poll_fixture_event",
+        "assert_no_cua_event",
+        "poll_cua_event",
     ):
         assert hasattr(oracles, name), f"missing {name}"
 
@@ -642,48 +576,6 @@ def _write_event(tmp_path, payload: dict[str, str]):
     return path
 
 
-def test_validate_fixture_event_accepts_well_formed_submitted_event(tmp_path) -> None:
-    oracles = _oracles()
-    path = _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
-    oracles.validate_fixture_event(path, run_id="run-1", value="abc")
-
-
-def test_validate_fixture_event_rejects_run_id_mismatch(tmp_path) -> None:
-    oracles = _oracles()
-    path = _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
-    with pytest.raises(ValueError):
-        oracles.validate_fixture_event(path, run_id="run-other", value="abc")
-
-
-def test_validate_fixture_event_rejects_value_mismatch(tmp_path) -> None:
-    oracles = _oracles()
-    path = _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
-    with pytest.raises(ValueError):
-        oracles.validate_fixture_event(path, run_id="run-1", value="different")
-
-
-def test_validate_fixture_event_rejects_extra_keys(tmp_path) -> None:
-    oracles = _oracles()
-    path = _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc", "leak": "x"})
-    with pytest.raises(ValueError):
-        oracles.validate_fixture_event(path, run_id="run-1", value="abc")
-
-
-def test_validate_fixture_event_rejects_missing_file(tmp_path) -> None:
-    oracles = _oracles()
-    with pytest.raises(ValueError):
-        oracles.validate_fixture_event(tmp_path / "absent.jsonl", run_id="run-1", value="abc")
-
-
-def test_validate_fixture_event_rejects_non_jsonl_content(tmp_path) -> None:
-    oracles = _oracles()
-
-    path: Path = tmp_path / "event.jsonl"
-    path.write_bytes(b"not a json object\n")
-    with pytest.raises(ValueError):
-        oracles.validate_fixture_event(path, run_id="run-1", value="abc")
-
-
 def test_validate_cua_event_accepts_well_formed_applied_event(tmp_path) -> None:
     oracles = _oracles()
     path = _write_event(tmp_path, {"run_id": "run-1", "event": "applied", "value": "abc"})
@@ -692,25 +584,24 @@ def test_validate_cua_event_accepts_well_formed_applied_event(tmp_path) -> None:
 
 def test_validate_cua_event_rejects_wrong_event_kind(tmp_path) -> None:
     oracles = _oracles()
-    # Submitted is for browser fixture, applied is for computer fixture.
-    path = _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
+    path = _write_event(tmp_path, {"run_id": "run-1", "event": "unexpected", "value": "abc"})
     with pytest.raises(ValueError):
         oracles.validate_cua_event(path, run_id="run-1", value="abc")
 
 
-def test_assert_no_fixture_event_passes_when_absent(tmp_path) -> None:
+def test_assert_no_cua_event_passes_when_absent(tmp_path) -> None:
     oracles = _oracles()
-    oracles.assert_no_fixture_event(tmp_path / "absent.jsonl")
+    oracles.assert_no_cua_event(tmp_path / "absent.jsonl")
 
 
-def test_assert_no_fixture_event_raises_when_present(tmp_path) -> None:
+def test_assert_no_cua_event_raises_when_present(tmp_path) -> None:
     oracles = _oracles()
-    _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
+    _write_event(tmp_path, {"run_id": "run-1", "event": "applied", "value": "abc"})
     with pytest.raises(ValueError):
-        oracles.assert_no_fixture_event(tmp_path / "event.jsonl")
+        oracles.assert_no_cua_event(tmp_path / "event.jsonl")
 
 
-def test_poll_fixture_event_returns_when_event_arrives(tmp_path) -> None:
+def test_poll_cua_event_returns_when_event_arrives(tmp_path) -> None:
     oracles = _oracles()
     import threading
     import time
@@ -719,26 +610,26 @@ def test_poll_fixture_event_returns_when_event_arrives(tmp_path) -> None:
 
     def write_later() -> None:
         time.sleep(0.05)
-        _write_event(tmp_path, {"run_id": "run-1", "event": "submitted", "value": "abc"})
+        _write_event(tmp_path, {"run_id": "run-1", "event": "applied", "value": "abc"})
 
     threading.Thread(target=write_later, daemon=True).start()
-    oracles.poll_fixture_event(path, run_id="run-1", value="abc", timeout=2.0)
+    oracles.poll_cua_event(path, run_id="run-1", value="abc", timeout=2.0)
 
 
-def test_poll_fixture_event_times_out_when_event_never_appears(tmp_path) -> None:
+def test_poll_cua_event_times_out_when_event_never_appears(tmp_path) -> None:
     oracles = _oracles()
 
     path: Path = tmp_path / "event.jsonl"
     with pytest.raises(TimeoutError):
-        oracles.poll_fixture_event(path, run_id="run-1", value="abc", timeout=0.2)
+        oracles.poll_cua_event(path, run_id="run-1", value="abc", timeout=0.2)
 
 
-def test_poll_fixture_event_rejects_invalid_event_when_present(tmp_path) -> None:
+def test_poll_cua_event_rejects_invalid_event_when_present(tmp_path) -> None:
     oracles = _oracles()
     # An invalid event (wrong run_id) appears immediately.
-    _write_event(tmp_path, {"run_id": "run-other", "event": "submitted", "value": "abc"})
+    _write_event(tmp_path, {"run_id": "run-other", "event": "applied", "value": "abc"})
     with pytest.raises(ValueError):
-        oracles.poll_fixture_event(tmp_path / "event.jsonl", run_id="run-1", value="abc", timeout=0.5)
+        oracles.poll_cua_event(tmp_path / "event.jsonl", run_id="run-1", value="abc", timeout=0.5)
 
 
 def test_validate_status_accepts_connected_status_payload_shape() -> None:
@@ -751,14 +642,6 @@ def test_validate_status_accepts_connected_status_payload_shape() -> None:
             [
                 "system.ping",
                 "terminal.exec",
-                "browser.list_tabs",
-                "browser.navigate",
-                "browser.snapshot",
-                "browser.fill",
-                "browser.click",
-                "browser.scroll",
-                "browser.type",
-                "browser.back",
                 "cua.click",
                 "cua.get_window_state",
                 "cua.list_windows",

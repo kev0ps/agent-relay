@@ -19,16 +19,26 @@ best-effort.
 ## Provider and public-tool boundaries
 
 The MCP facade publishes the server-local `relay_device_status` tool plus only
-selected descriptors from the connected Agent catalogue. Browser descriptors use
-structured locators resolved by Playwright; no DOM handles, element IDs, CDP
-methods, cookies, headers, or profile paths cross the Relay boundary.
+selected descriptors from the connected Agent catalogue. All desktop and
+browser descriptors come from the same CUA MCP provider. The Relay validates
+the executable returned by `cua_driver.get_binary_path()`, the environment,
+JSON-RPC frames, descriptors, arguments, and bounded results. Raw browser DOM
+handles, native accessibility/window handles, cookies, headers, and profile
+paths do not cross the Relay boundary.
 
-CUA descriptors come from a configured MCP stdio driver. The Relay validates the
-driver path, environment, JSON-RPC frames, descriptors, arguments, and bounded
-results. It does not pass Relay credentials to the driver and does not expose
-screenshots, coordinates, raw accessibility trees, process/window handles,
-arbitrary driver commands, or tools that were not selected by policy. Provider
-snapshot tokens are treated as opaque and stale tokens fail closed.
+The browser protocol does carry bounded opaque identifiers needed for a
+session-scoped follow-up: `target_id`, `tab_id`, and provider snapshot `ref`
+values. They are validated as opaque CUA identifiers and are not raw DOM,
+accessibility, process, or native window handles; stale or mismatched values
+fail closed.
+
+CUA tools are discovered dynamically, but discovery is not authorization:
+newly discovered descriptors are disabled until explicitly selected, while
+security-blocked descriptors remain blocked. The Relay does not pass its
+credentials to the provider and does not expose screenshots, unrestricted
+coordinates, raw accessibility trees, process/window handles, arbitrary
+driver commands, or tools that policy rejected. Provider snapshot tokens are
+opaque and stale tokens fail closed.
 
 The authenticated direct control endpoint is the generic v2 route documented in
 [`protocol.md`](protocol.md). It accepts only a strict `InvokeMessage`
@@ -89,9 +99,9 @@ application does not terminate TLS, and the project prescribes no particular TLS
 endpoint or proxy implementation.
 
 `RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` remain advanced
-settings for DNS names and reverse proxies. The latter validates Web browser
-origins and is not a client-IP allowlist. Neither replaces a LAN firewall or
-external TLS boundary.
+settings for DNS names and reverse proxies. They validate HTTP metadata and
+are not client-IP allowlists. Neither replaces a LAN firewall or external TLS
+boundary.
 
 ## Manual rotation
 

@@ -18,12 +18,19 @@ from urllib.parse import urlparse
 import yaml
 
 from .catalog import (
-    CUA_REFERENCE_TOOL_NAMES,
     CatalogEntry,
     CatalogError,
     CatalogSnapshot,
 )
 from .catalog import discover_local_catalog as _discover_local_catalog
+from .cua_profiles import (
+    ALL_PROFILE_PUBLIC_NAMES,
+    CuaAccessLevel,
+    ReportedCuaAccess,
+    cua_access_for_allowlist,
+    is_cua_public_name,
+    profile_public_names,
+)
 from .protocol import TOOL_ORDER
 
 CONFIG_DIR_NAME = ".agent-relay"
@@ -37,25 +44,28 @@ SERVER_LOCAL_TOOL = "relay_device_status"
 PUBLIC_TO_INTERNAL: dict[str, str] = {
     "relay_system_ping": "system.ping",
     "relay_terminal_exec": "terminal.exec",
-    "relay_browser_list_tabs": "browser.list_tabs",
-    "relay_browser_navigate": "browser.navigate",
-    "relay_browser_snapshot": "browser.snapshot",
-    "relay_browser_fill": "browser.fill",
-    "relay_browser_click": "browser.click",
-    "relay_browser_scroll": "browser.scroll",
-    "relay_browser_type": "browser.type",
-    "relay_browser_back": "browser.back",
-    **{
-        f"relay_cua_{name}": f"cua.{name}"
-        for name in CUA_REFERENCE_TOOL_NAMES
-    },
 }
 INTERNAL_TO_PUBLIC = {value: key for key, value in PUBLIC_TO_INTERNAL.items()}
 PUBLIC_TOOL_NAMES = tuple(PUBLIC_TO_INTERNAL)
 
 
+def _is_dynamic_cua_public_name(value: object) -> bool:
+    return is_cua_public_name(value)
+
+
+def _is_public_agent_tool(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and (value in PUBLIC_TO_INTERNAL or _is_dynamic_cua_public_name(value))
+    )
+
+
 class ConfigError(ValueError):
     """A safe, user-facing configuration error with no secret interpolation."""
+
+
+class CuaAccessCancelled(ConfigError):
+    """The operator declined a requested Full CUA access change."""
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,15 @@ class ValidationReport:
 
 
 @dataclass(frozen=True)
+class CuaToolSummary:
+    access: ReportedCuaAccess
+    enabled: int
+    available: int
+    blocked: int
+    new_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ServerRuntime:
     settings: Any
     host: str
@@ -115,16 +134,7 @@ _AGENT_DEFAULTS: dict[str, Any] = {
     "relay_url": "ws://127.0.0.1:8000/ws/agent",
     "workspace": "./workspace",
     "tools": {"allowlist": []},
-    "browser": {
-        "user_data_dir": None,
-        "origin_policy": "allowlist",
-        "allowed_origins": [],
-        "headless": False,
-        "startup_timeout_seconds": 30.0,
-        "action_timeout_seconds": 10.0,
-    },
     "computer": {
-        "driver_path": None,
         "allowed_app_name": None,
         "allowed_window_title": None,
         "startup_timeout_seconds": 15.0,
@@ -165,13 +175,6 @@ _CONFIG_KEYS: dict[str, frozenset[str]] = {
             "allow_insecure_ws",
             "workspace",
             "tools.allowlist",
-            "browser.user_data_dir",
-            "browser.origin_policy",
-            "browser.allowed_origins",
-            "browser.headless",
-            "browser.startup_timeout_seconds",
-            "browser.action_timeout_seconds",
-            "computer.driver_path",
             "computer.allowed_app_name",
             "computer.allowed_window_title",
             "computer.startup_timeout_seconds",
@@ -195,33 +198,13 @@ def _tool_specs() -> tuple[ToolSpec, ...]:
     descriptions = {
         "system.ping": "fixed local health check",
         "terminal.exec": "fixed allowlisted terminal command",
-        "browser.list_tabs": "list browser tabs",
-        "browser.navigate": "navigate a browser tab",
-        "browser.snapshot": "read provider-native browser content",
-        "browser.fill": "fill a freshly resolved browser locator",
-        "browser.click": "click a freshly resolved browser locator",
-        "browser.scroll": "scroll a browser page",
-        "browser.type": "type into a freshly resolved browser locator",
-        "browser.back": "navigate browser history backward",
     }
-    descriptions.update(
-        {
-            f"cua.{name}": f"provider-native CUA tool: {name}"
-            for name in CUA_REFERENCE_TOOL_NAMES
-        }
-    )
-    internal_names = (*TOOL_ORDER, *(f"cua.{name}" for name in CUA_REFERENCE_TOOL_NAMES))
+    internal_names = TOOL_ORDER
     specs = [
         ToolSpec(
             name=INTERNAL_TO_PUBLIC[internal],
             internal_name=internal,
-            source=(
-                "browser"
-                if internal.startswith("browser.")
-                else "cua"
-                if internal.startswith("cua.")
-                else "builtin"
-            ),
+            source="builtin",
             description=descriptions[internal],
         )
         for internal in internal_names
@@ -668,21 +651,8 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dic
     ):
         if (value := _env_value(env, "RELAY_AGENT_" + field.upper())) is not None:
             runtime[field] = value
-    browser = section.setdefault("browser", {})
-    for env_key, field in (
-        ("RELAY_AGENT_BROWSER_USER_DATA_DIR", "user_data_dir"),
-        ("RELAY_AGENT_BROWSER_ORIGIN_POLICY", "origin_policy"),
-        ("RELAY_AGENT_BROWSER_HEADLESS", "headless"),
-        ("RELAY_AGENT_BROWSER_STARTUP_TIMEOUT_SECONDS", "startup_timeout_seconds"),
-        ("RELAY_AGENT_BROWSER_ACTION_TIMEOUT_SECONDS", "action_timeout_seconds"),
-    ):
-        if (value := _env_value(env, env_key)) is not None:
-            browser[field] = _env_bool(env, env_key, browser.get(field)) if field == "headless" else value
-    if (value := _env_value(env, "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS")) is not None:
-        browser["allowed_origins"] = [item.strip() for item in value.split(",") if item.strip()]
     computer = section.setdefault("computer", {})
     for env_key, field in (
-        ("RELAY_AGENT_COMPUTER_DRIVER_PATH", "driver_path"),
         ("RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME", "allowed_app_name"),
         ("RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE", "allowed_window_title"),
         ("RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS", "startup_timeout_seconds"),
@@ -730,26 +700,9 @@ def discover_local_catalog(
     agent = _effective_agent(document, effective_env)
     catalog_env = dict(effective_env)
 
-    browser = agent.get("browser", {})
-    if isinstance(browser, Mapping):
-        if browser.get("user_data_dir") is not None:
-            catalog_env.setdefault(
-                "RELAY_AGENT_BROWSER_USER_DATA_DIR", str(browser["user_data_dir"])
-            )
-        if browser.get("origin_policy") is not None:
-            catalog_env.setdefault(
-                "RELAY_AGENT_BROWSER_ORIGIN_POLICY", str(browser["origin_policy"])
-            )
-        origins = browser.get("allowed_origins")
-        if isinstance(origins, list):
-            catalog_env.setdefault(
-                "RELAY_AGENT_BROWSER_ALLOWED_ORIGINS", ",".join(str(item) for item in origins)
-            )
-
     computer = agent.get("computer", {})
     if isinstance(computer, Mapping):
         computer_env_fields = (
-            ("driver_path", "RELAY_AGENT_COMPUTER_DRIVER_PATH"),
             ("allowed_app_name", "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME"),
             ("allowed_window_title", "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE"),
             (
@@ -1097,9 +1050,9 @@ def _validate_agent(
             for name in allowlist:
                 if name == SERVER_LOCAL_TOOL:
                     issues.append(ValidationIssue("ERROR", "relay_device_status is server-local and cannot be selected"))
-                elif name not in PUBLIC_TO_INTERNAL:
+                elif not _is_public_agent_tool(name):
                     issues.append(ValidationIssue("ERROR", f"unknown Agent tool: {name}"))
-                elif not _tool_is_available(
+                elif name in PUBLIC_TO_INTERNAL and not _tool_is_available(
                     next(spec for spec in TOOL_SPECS if spec.name == name),
                     {"agent": section},
                     path,
@@ -1107,7 +1060,6 @@ def _validate_agent(
                     issues.append(ValidationIssue("ERROR", f"Agent tool is unavailable: {name}"))
         if not allowlist:
             issues.append(ValidationIssue("INFO", "no tools enabled"))
-    _validate_agent_browser(section.get("browser"), path, issues)
     _validate_agent_computer(section.get("computer"), path, issues)
     try:
         _validate_runtime(section.get("runtime"), server=False)
@@ -1116,54 +1068,15 @@ def _validate_agent(
     return ValidationReport("agent", tuple(issues))
 
 
-def _validate_agent_browser(raw: object, path: Path, issues: list[ValidationIssue]) -> None:
-    if not isinstance(raw, Mapping):
-        issues.append(ValidationIssue("ERROR", "browser section must be a mapping"))
-        return
-    user_data_dir = raw.get("user_data_dir")
-    origins = raw.get("allowed_origins", [])
-    policy = raw.get("origin_policy", "allowlist")
-    try:
-        _parse_bool(raw.get("headless"))
-    except ConfigError:
-        issues.append(ValidationIssue("ERROR", "browser.headless must be boolean"))
-    if policy not in {"allowlist", "any"}:
-        issues.append(ValidationIssue("ERROR", "browser.origin_policy is invalid"))
-    if not isinstance(origins, list) or any(not isinstance(item, str) for item in origins):
-        issues.append(ValidationIssue("ERROR", "browser.allowed_origins must be a list"))
-    if user_data_dir is None:
-        if origins or policy == "any":
-            issues.append(ValidationIssue("ERROR", "browser settings require user_data_dir"))
-        return
-    try:
-        browser_path = _relative_path(user_data_dir, path)
-        if browser_path.exists() and (browser_path.is_symlink() or not browser_path.is_dir()):
-            raise ConfigError("browser user_data_dir must be a directory")
-    except ConfigError as exc:
-        issues.append(ValidationIssue("ERROR", f"browser user_data_dir is invalid ({exc})"))
-    if policy == "allowlist" and not origins:
-        issues.append(ValidationIssue("ERROR", "browser allowlist requires allowed_origins"))
-    if policy == "any":
-        issues.append(ValidationIssue("WARNING", "browser origin policy any allows all supported HTTP(S) origins"))
-    if policy == "any" and origins:
-        issues.append(ValidationIssue("ERROR", "browser any policy cannot include allowed_origins"))
-
-
 def _validate_agent_computer(raw: object, path: Path, issues: list[ValidationIssue]) -> None:
+    del path
     if not isinstance(raw, Mapping):
         issues.append(ValidationIssue("ERROR", "computer section must be a mapping"))
         return
-    values = [raw.get("driver_path"), raw.get("allowed_app_name"), raw.get("allowed_window_title")]
+    values = [raw.get("allowed_app_name"), raw.get("allowed_window_title")]
     if any(value is not None for value in values):
         if not all(isinstance(value, str) and value for value in values):
             issues.append(ValidationIssue("ERROR", "computer configuration must provide all policy fields"))
-            return
-        try:
-            driver_path = _relative_path(values[0], path)
-            if driver_path.is_symlink() or not driver_path.is_file() or not os.access(driver_path, os.X_OK):
-                raise ConfigError("computer driver must be an executable file")
-        except ConfigError as exc:
-            issues.append(ValidationIssue("ERROR", f"computer driver is invalid ({exc})"))
 
 
 def validate_document(
@@ -1233,6 +1146,160 @@ def _existing_allowlist(section: Mapping[str, Any]) -> list[str]:
     return allowlist
 
 
+def _validate_cua_profile_catalog(
+    level: CuaAccessLevel,
+    catalog: CatalogSnapshot | None,
+) -> tuple[str, ...]:
+    """Validate an explicit profile against the current CUA inventory."""
+    try:
+        names = profile_public_names(level)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from None
+    if level == "none":
+        return names
+    if catalog is None:
+        raise ConfigError("CUA catalog is unavailable; cannot apply the requested profile")
+    entries = {
+        entry.public_name: entry
+        for entry in catalog.entries
+        if entry.provider_name == "cua"
+    }
+    missing = [name for name in names if name not in entries]
+    if missing:
+        raise ConfigError(
+            f"CUA {level} profile is not available in the current catalog: {missing[0]}"
+        )
+    unavailable = [name for name in names if entries[name].status == "unavailable"]
+    if unavailable:
+        raise ConfigError(
+            f"CUA {level} profile contains unavailable tool: {unavailable[0]}"
+        )
+    # The profile is versioned and explicit, but policy remains authoritative:
+    # a policy-blocked descriptor is omitted from the resulting allowlist even
+    # when the maintained profile contains its name.
+    names = tuple(name for name in names if entries[name].status != "blocked")
+    try:
+        catalog.validate_allowlist(names)
+    except CatalogError as exc:
+        raise ConfigError(str(exc)) from None
+    return names
+
+
+def validate_cua_profile(
+    level: str,
+    catalog: CatalogSnapshot | None,
+) -> tuple[str, ...]:
+    """Validate a CLI/onboarding CUA profile and return public names."""
+    if level not in {"none", "standard", "full"}:
+        raise ConfigError(f"unknown CUA access level: {level}")
+    return _validate_cua_profile_catalog(level, catalog)  # type: ignore[arg-type]
+
+
+def confirm_cua_access(
+    level: str,
+    catalog: CatalogSnapshot | None,
+    *,
+    assume_yes: bool = False,
+) -> None:
+    """Validate and, for Full, obtain the one required operator confirmation."""
+    names = validate_cua_profile(level, catalog)
+    if level != "full":
+        if assume_yes:
+            raise ConfigError("--yes is only valid with --cua-access full")
+        return
+    if assume_yes:
+        return
+    if not sys.stdin.isatty():
+        raise ConfigError("full CUA access requires --yes when stdin is non-interactive")
+    entries = {entry.public_name: entry for entry in (catalog.entries if catalog else ())}
+    sensitive = sorted(
+        {
+            entry.risk
+            for name in names
+            if (entry := entries.get(name)) is not None
+            and entry.risk in {"destructive", "admin"}
+        }
+    )
+    print("Full CUA access enables all non-blocked desktop and browser tools.")
+    if sensitive:
+        print(f"Sensitive categories: {', '.join(sensitive)}.")
+    try:
+        answer = input("Enable Full CUA access? [y/N] ")
+    except (EOFError, OSError) as exc:
+        raise ConfigError("could not read the Full CUA confirmation") from exc
+    if answer.strip().lower() not in {"y", "yes"}:
+        raise CuaAccessCancelled("CUA access update cancelled")
+
+
+def apply_cua_access(
+    allowlist: list[str] | tuple[str, ...],
+    level: str,
+    catalog: CatalogSnapshot | None,
+    *,
+    assume_yes: bool = False,
+) -> list[str]:
+    """Return a stable allowlist after atomically replacing only its CUA part."""
+    names = validate_cua_profile(level, catalog)
+    if level == "full":
+        confirm_cua_access(level, catalog, assume_yes=assume_yes)
+    elif assume_yes:
+        raise ConfigError("--yes is only valid with --cua-access full")
+    non_cua = [name for name in allowlist if not _is_dynamic_cua_public_name(name)]
+    result = non_cua + list(names)
+    if catalog is not None:
+        try:
+            catalog.validate_allowlist(result)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
+    else:
+        invalid = [
+            name
+            for name in result
+            if (
+                name == SERVER_LOCAL_TOOL
+                or not _is_public_agent_tool(name)
+                or (
+                    name in PUBLIC_TO_INTERNAL
+                    and not _tool_is_available(
+                        next(spec for spec in TOOL_SPECS if spec.name == name),
+                        {},
+                        Path("."),
+                    )
+                )
+            )
+        ]
+        if invalid:
+            raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
+    return result
+
+
+def update_cua_access(
+    path: str | Path | None,
+    level: str,
+    *,
+    catalog: CatalogSnapshot | None = None,
+    assume_yes: bool = False,
+) -> bool:
+    """Apply a CUA profile in one YAML write; return False only on no-op."""
+    config_path = _config_path(path)
+    document = _load_yaml(config_path)
+    _reject_legacy_secret_sections(document)
+    section = document.get("agent")
+    if not isinstance(section, Mapping):
+        raise ConfigError("agent configuration is not initialized")
+    current = _existing_allowlist(section)
+    updated = apply_cua_access(current, level, catalog, assume_yes=assume_yes)
+    if updated == current:
+        return True
+    agent_section = copy.deepcopy(dict(section))
+    tools = dict(agent_section.get("tools", {}))
+    tools["allowlist"] = updated
+    agent_section["tools"] = tools
+    document["agent"] = agent_section
+    _write_config(config_path, document)
+    return True
+
+
 def _validate_existing_static_allowlist(
     section: Mapping[str, Any],
     path: Path,
@@ -1243,11 +1310,14 @@ def _validate_existing_static_allowlist(
         for name in allowlist
         if (
             name == SERVER_LOCAL_TOOL
-            or name not in PUBLIC_TOOLS
-            or not _tool_is_available(
+            or not _is_public_agent_tool(name)
+            or (
+                name in PUBLIC_TO_INTERNAL
+                and not _tool_is_available(
                 next(spec for spec in TOOL_SPECS if spec.name == name),
                 section,
                 path,
+                )
             )
         )
     ]
@@ -1268,10 +1338,14 @@ def init_config(
     relay_url: str | None = None,
     workspace: str | Path | None = None,
     allow_insecure_ws: bool | None = None,
+    cua_access: str | None = None,
+    assume_yes: bool = False,
 ) -> Path:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
     _reject_token_file_environment(effective_env)
+    if scope == "server" and (cua_access is not None or assume_yes):
+        raise ConfigError("CUA access options are only valid for Agent configuration")
     document = _load_yaml(config_path, required=False)
     _reject_legacy_secret_sections(document)
     dotenv_file = config_path.parent / DOTENV_FILENAME
@@ -1332,38 +1406,50 @@ def init_config(
         if "RELAY_AGENT_TOKEN" in effective_env and not effective_env["RELAY_AGENT_TOKEN"]:
             raise ConfigError("agent token is empty")
         if tools is not None:
-            if catalog is not None:
-                try:
-                    catalog.validate_allowlist(tools)
-                except CatalogError as exc:
-                    raise ConfigError(str(exc)) from None
-            else:
-                invalid = [
-                    name
-                    for name in tools
-                    if (
-                        name == SERVER_LOCAL_TOOL
-                        or name not in PUBLIC_TOOLS
-                        or not _tool_is_available(
+            requested_tools = list(tools)
+            if cua_access is not None and any(
+                _is_dynamic_cua_public_name(name) for name in requested_tools
+            ):
+                raise ConfigError(
+                    "--tools cannot include relay_cua_* when --cua-access is used"
+                )
+        elif existing is None:
+            requested_tools = []
+        else:
+            requested_tools = _existing_allowlist(section)
+
+        if cua_access is not None:
+            requested_tools = apply_cua_access(
+                requested_tools,
+                cua_access,
+                catalog,
+                assume_yes=assume_yes,
+            )
+        if catalog is not None:
+            try:
+                catalog.validate_allowlist(requested_tools)
+            except CatalogError as exc:
+                raise ConfigError(str(exc)) from None
+        else:
+            invalid = [
+                name
+                for name in requested_tools
+                if (
+                    name == SERVER_LOCAL_TOOL
+                    or not _is_public_agent_tool(name)
+                    or (
+                        name in PUBLIC_TO_INTERNAL
+                        and not _tool_is_available(
                             next(spec for spec in TOOL_SPECS if spec.name == name),
                             section,
                             config_path,
                         )
                     )
-                ]
-                if invalid:
-                    raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
-            section.setdefault("tools", {})["allowlist"] = list(tools)
-        elif existing is None:
-            section.setdefault("tools", {})["allowlist"] = []
-        elif catalog is not None:
-            allowlist = _existing_allowlist(section)
-            try:
-                catalog.select(allowlist)
-            except CatalogError as exc:
-                raise ConfigError(str(exc)) from None
-        else:
-            _validate_existing_static_allowlist(section, config_path)
+                )
+            ]
+            if invalid:
+                raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
+        section.setdefault("tools", {})["allowlist"] = requested_tools
         workspace = _relative_path(section["workspace"], config_path)
         _ensure_private_directory(workspace)
         section["workspace"] = _relative_config_value(section["workspace"], config_path)
@@ -1405,7 +1491,11 @@ def select_tools_interactively(
             document = {}
     print("Select Agent tools (comma-separated numbers; empty enables none):")
     if catalog is not None:
-        entries = list(catalog.entries)
+        entries = [
+            entry
+            for entry in catalog.entries
+            if not _is_dynamic_cua_public_name(entry.public_name)
+        ]
         for index, entry in enumerate(entries, start=1):
             print(
                 f"  {index}. {entry.public_name} [{entry.risk}] "
@@ -1451,12 +1541,7 @@ def select_tools_interactively(
 
 
 def _tool_is_available(spec: ToolSpec, document: Mapping[str, Any], path: Path) -> bool:
-    """Report only providers with an owned runtime catalog client.
-
-    Optional Browser/Computer settings are not provider discovery. Their
-    availability is supplied by ``CatalogSnapshot`` after a real
-    ``ProviderToolClient.list_tools`` call.
-    """
+    """Report availability for the fixed in-process tools."""
     del document, path
     return spec.internal_name in {"system.ping", "terminal.exec"}
 
@@ -1546,15 +1631,19 @@ def update_tool(
                 catalog.validate_allowlist([name])
             except CatalogError as exc:
                 raise ConfigError(str(exc)) from None
-    elif name not in PUBLIC_TOOLS:
+    elif not _is_public_agent_tool(name):
         raise ConfigError(f"unknown Agent tool: {name}")
     config_path = _config_path(path)
     document = _load_yaml(config_path)
     _reject_legacy_secret_sections(document)
     if "agent" not in document or not isinstance(document["agent"], Mapping):
         raise ConfigError("agent configuration is not initialized")
-    if catalog is None and not _tool_is_available(
-        next(spec for spec in TOOL_SPECS if spec.name == name), document, config_path
+    if (
+        catalog is None
+        and name in PUBLIC_TO_INTERNAL
+        and not _tool_is_available(
+            next(spec for spec in TOOL_SPECS if spec.name == name), document, config_path
+        )
     ):
         raise ConfigError(f"tool is unavailable: {name}")
     agent = dict(document["agent"])
@@ -1642,7 +1731,7 @@ def set_value(
     if canonical not in _CONFIG_KEYS[scope]:
         raise ConfigError(f"unknown {scope} configuration key: {key}")
     parsed_value: Any = _parse_value(value)
-    if canonical in {"tools.allowlist", "browser.allowed_origins"} and isinstance(parsed_value, str):
+    if canonical == "tools.allowlist" and isinstance(parsed_value, str):
         parsed_value = [item.strip() for item in parsed_value.split(",") if item.strip()]
     if canonical == "tools.allowlist" and isinstance(parsed_value, list):
         if catalog is not None:
@@ -1656,11 +1745,14 @@ def set_value(
                 for item in parsed_value
                 if (
                     item == SERVER_LOCAL_TOOL
-                    or item not in PUBLIC_TOOLS
-                    or not _tool_is_available(
+                    or not _is_public_agent_tool(item)
+                    or (
+                        item in PUBLIC_TO_INTERNAL
+                        and not _tool_is_available(
                         next(spec for spec in TOOL_SPECS if spec.name == item),
                         section,
                         config_path,
+                        )
                     )
                 )
             ]
@@ -1753,7 +1845,6 @@ def load_agent_settings(
         raise ConfigError(_invalid_configuration_message("agent", report))
     section = _effective_agent(document, effective_env)
     identity = section["identity"]["id"]
-    browser = section["browser"]
     computer = section["computer"]
     runtime = section["runtime"]
     token = _secret_value(document, "agent", "agent", config_path, effective_env)
@@ -1781,21 +1872,6 @@ def load_agent_settings(
         command_timeout_seconds=float(runtime["command_timeout_seconds"]),
         stdout_limit=int(runtime["stdout_limit"]),
         stderr_limit=int(runtime["stderr_limit"]),
-        browser_user_data_dir=(
-            _relative_path(browser["user_data_dir"], config_path)
-            if browser.get("user_data_dir") is not None
-            else None
-        ),
-        browser_allowed_origins=tuple(browser["allowed_origins"]),
-        browser_origin_policy=browser["origin_policy"],
-        browser_headless=_parse_bool(browser["headless"]),
-        browser_startup_timeout_seconds=float(browser["startup_timeout_seconds"]),
-        browser_action_timeout_seconds=float(browser["action_timeout_seconds"]),
-        computer_driver_path=(
-            _relative_path(computer["driver_path"], config_path)
-            if computer.get("driver_path") is not None
-            else None
-        ),
         computer_allowed_app_name=computer["allowed_app_name"],
         computer_allowed_window_title=computer["allowed_window_title"],
         computer_startup_timeout_seconds=float(computer["startup_timeout_seconds"]),
@@ -1847,17 +1923,99 @@ def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | Non
     )
 
 
+def cua_tool_summary(
+    path: str | Path | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    catalog: CatalogSnapshot,
+) -> CuaToolSummary:
+    """Summarize CUA without expanding its full inventory in compact output."""
+    config_path = _config_path(path)
+    effective_env = os.environ if env is None else env
+    try:
+        document = _load_yaml(config_path)
+    except ConfigError:
+        if not (
+            effective_env.get("RELAY_URL")
+            and effective_env.get("RELAY_AGENT_WORKSPACE")
+        ):
+            raise
+        document = {"agent": _default_document("agent")}
+    _reject_legacy_secret_sections(document)
+    agent = _effective_agent(document, effective_env)
+    tools = agent.get("tools", {})
+    allowlist = list(tools.get("allowlist", []) if isinstance(tools, Mapping) else [])
+    selected = catalog.select(allowlist)
+    cua_entries = tuple(
+        entry for entry in selected.entries if entry.provider_name == "cua"
+    )
+    selected_names = {
+        name for name in allowlist if _is_dynamic_cua_public_name(name)
+    }
+    access = cua_access_for_allowlist(allowlist)
+    if access == "custom" and selected_names:
+        selected_cua = tuple(
+            name for name in allowlist if _is_dynamic_cua_public_name(name)
+        )
+        for level in ("standard", "full"):
+            try:
+                expected = tuple(
+                    name
+                    for name in profile_public_names(level)
+                    if catalog.entry(name).status != "blocked"
+                )
+            except CatalogError:
+                continue
+            if selected_cua == expected:
+                access = level
+                break
+    return CuaToolSummary(
+        access=access,
+        enabled=sum(entry.status == "enabled" for entry in cua_entries),
+        available=sum(entry.status in {"enabled", "disabled"} for entry in cua_entries),
+        blocked=sum(entry.status == "blocked" for entry in cua_entries),
+        new_names=tuple(
+            entry.public_name
+            for entry in cua_entries
+            if entry.status == "disabled"
+            and entry.public_name not in selected_names
+            and entry.public_name not in ALL_PROFILE_PUBLIC_NAMES
+        ),
+    )
+
+
 def render_tools(
     path: str | Path | None,
     *,
     env: Mapping[str, str] | None = None,
     catalog: CatalogSnapshot | None = None,
+    show_all: bool = False,
 ) -> str:
+    statuses = tool_statuses(path, env=env, catalog=catalog)
     rows = ["Tool\tSource\tStatus\tRisk\tDescription"]
-    for spec, status in tool_statuses(path, env=env, catalog=catalog):
+    if catalog is not None and not show_all:
+        statuses = [
+            (spec, status)
+            for spec, status in statuses
+            if not _is_dynamic_cua_public_name(spec.name)
+        ]
+    for spec, status in statuses:
         rows.append(
             f"{spec.name}\t{spec.source}\t{status}\t{spec.risk}\t{spec.description}"
         )
+    if catalog is not None and not show_all:
+        summary = cua_tool_summary(path, env=env, catalog=catalog)
+        rows.append(
+            "CUA\tcua\t"
+            f"{summary.access}\tinteraction\t"
+            f"{summary.enabled} enabled, {summary.available} available, "
+            f"{summary.blocked} blocked, {len(summary.new_names)} new tools not selected"
+        )
+        if summary.new_names:
+            rows.append(
+                "CUA new\tcua\tdisabled\tinteraction\t"
+                + ", ".join(summary.new_names)
+            )
     return "\n".join(rows)
 
 

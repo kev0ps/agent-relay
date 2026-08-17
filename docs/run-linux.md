@@ -54,15 +54,16 @@ uv run --frozen agent-relay config init server
 uv run --frozen agent-relay config set server host 127.0.0.1
 
 # Reuse the effective Server Agent token source without printing it.
-# The Agent starts with zero enabled tools.
-uv run --frozen agent-relay config init agent --from-server --no-tools
+# New installations default to CUA access none.
+uv run --frozen agent-relay config init agent --from-server --cua-access none
 ```
 
 `config init server` creates the shared YAML file and a private `.env` beside it.
 `config init agent` creates or reuses the persistent Agent identity, creates
 `./workspace` relative to the configuration file, and reads the effective
-Server Agent token without echoing it. To select tools
-interactively, omit `--no-tools`; submitting an empty selection is valid.
+Server Agent token without echoing it. CUA is disabled by default. Select
+`none`, `standard`, or `full` with `--cua-access`; `full` requires confirmation
+or `--yes` in automation.
 
 The same setup can be guided by the onboarding command:
 
@@ -72,23 +73,26 @@ uv run --frozen agent-relay onboard
 
 It offers Local Server + Agent, Server-only, and Agent connected to a remote
 Server. `--role server`, `--role agent`, and `--role local` select a flow for
-automation or installer integration. Use `--non-interactive` with an explicit
-role and one-time secret-file/stdin import options; values are copied into `.env`
-and never printed. Validation is
+automation or installer integration. Use `--cua-access none|standard|full` to
+choose the explicit CUA profile; the normal onboarding default is `none`.
+Use `--non-interactive` with an explicit role and one-time secret-file/stdin
+import options; values are copied into `.env` and never printed. Validation is
 offline unless `--check` is explicitly selected for the remote Agent flow.
 
-The initial Agent tool allowlist is empty. Select tools interactively during
-initialization or enable them explicitly:
+The initial CUA allowlist is empty. Select non-CUA Relay tools interactively or
+enable individual tools/profiles explicitly:
 
 ```sh
 uv run --frozen agent-relay tools enable relay_system_ping
 uv run --frozen agent-relay tools enable relay_terminal_exec
+uv run --frozen agent-relay tools cua-access standard
+uv run --frozen agent-relay tools list --all
 uv run --frozen agent-relay config validate server
 uv run --frozen agent-relay config validate agent
 uv run --frozen agent-relay doctor
 ```
 
-For complete copyable Terminal, Browser, CUA, and combined allowlists, see
+For complete copyable Terminal and CUA allowlists, see
 [`tools.md`](tools.md).
 
 Tokens are neither displayed nor placed in the repository. They are stored in a
@@ -145,9 +149,6 @@ agent:
   workspace: ./workspace
   tools:
     allowlist: []
-  browser:
-    origin_policy: allowlist
-    allowed_origins: []
 ```
 
 Relative paths are resolved from the directory containing `config.yaml`. Token
@@ -156,10 +157,11 @@ only `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN`. For Docker, canonical
 `RELAY_*` environment variables override `.env`; legacy `AGENT_RELAY_*`
 variables are not supported.
 
-The Browser `origin_policy` defaults to `allowlist`; `any` is an explicit,
-warning-producing choice during configuration and permits only HTTP(S) pages.
-It still rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
-`about:` navigation, malformed URLs, and other non-Web schemes.
+The standard CUA provider is initialized and discovered automatically. The
+catalogue is target-independent; set the optional `computer` target fields
+only when a selected descriptor acts on a particular application or window.
+Each discovered CUA descriptor is exposed as `relay_cua_<name>` and starts
+disabled.
 
 ## Control invocations
 
@@ -190,8 +192,9 @@ mcp_servers:
 ```
 
 Terminal execution accepts only `pwd`, `whoami`, `python_version`,
-`git_status`, or `git_branch`. Browser and Computer Use are advertised only
-when their local configuration and provider prerequisites are complete.
+`git_status`, or `git_branch`. CUA desktop and browser descriptors are
+advertised after provider discovery and are routable only when explicitly
+enabled.
 
 ## Stop, logs, and diagnostics
 
@@ -249,10 +252,9 @@ GitHub Actions builds the production image for both `linux/amd64` and
 `agent-relay` entrypoint, and the absence of published ports, then smoke-tested
 with the root `--help` and `--version` commands.
 
-These jobs validate packaging and startup only. They do not run Browser or
-Computer Use, do not create a two-container desktop topology, and do not upload
-runtime UI evidence. Linux Terminal, Browser, and Xvfb/AT-SPI Computer
-Use jobs are the current repeatable Linux paths. Windows Computer Use has a
-hosted candidate job, but remains experimental until its complete
-fixture-backed UI Automation sequence is repeatable. See [`e2e.md`](e2e.md) for
-the full Linux and Windows validation matrix.
+These jobs validate packaging and startup only. They do not create a
+two-container desktop topology or upload runtime UI evidence. Linux Terminal
+and unified Xvfb/AT-SPI CUA jobs are the current repeatable Linux paths.
+Windows CUA has a hosted candidate job, but remains experimental until its
+complete fixture-backed UI Automation sequence is repeatable. See
+[`e2e.md`](e2e.md) for the full Linux and Windows validation matrix.

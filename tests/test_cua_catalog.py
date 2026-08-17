@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from agent_relay.agent import AgentSettings, RelayAgent
 from agent_relay.catalog import (
     CatalogError,
     CatalogService,
@@ -22,16 +20,13 @@ CUA_NAMES = (
     "list_apps",
     "list_windows",
     "get_window_state",
-    "get_accessibility_tree",
-    "get_desktop_state",
-    "get_screen_size",
-    "get_cursor_position",
-    "get_config",
-    "get_recording_state",
-    "get_agent_cursor_state",
+    "verify_state",
     "launch_app",
     "kill_app",
     "bring_to_front",
+    "set_window_frame",
+    "invoke_menu",
+    "debug_window_info",
     "click",
     "double_click",
     "right_click",
@@ -41,7 +36,21 @@ CUA_NAMES = (
     "hotkey",
     "set_value",
     "scroll",
+    "clipboard_read",
+    "clipboard_write",
+    "get_screen_size",
+    "get_desktop_state",
+    "get_cursor_position",
     "move_cursor",
+    "set_agent_cursor_enabled",
+    "set_agent_cursor_motion",
+    "get_agent_cursor_state",
+    "set_agent_cursor_theme",
+    "check_permissions",
+    "health_report",
+    "get_config",
+    "set_config",
+    "get_accessibility_tree",
     "zoom",
     "page",
     "get_browser_state",
@@ -55,20 +64,14 @@ CUA_NAMES = (
     "browser_pointer",
     "start_recording",
     "stop_recording",
+    "get_recording_state",
     "replay_trajectory",
-    "set_config",
-    "start_session",
-    "end_session",
-    "set_agent_cursor_enabled",
-    "set_agent_cursor_motion",
-    "check_permissions",
-    "health_report",
-    "check_for_update",
     "install_ffmpeg",
-    "verify_state",
-    "set_agent_cursor_theme",
+    "start_session",
     "escalate_session",
     "get_session_state",
+    "end_session",
+    "check_for_update",
 )
 
 
@@ -108,35 +111,6 @@ class FakeCuaProvider:
         self.closed = True
 
 
-class SelectedCuaCapability:
-    provider_name = "cua"
-    requires_catalog = True
-    tools = frozenset({"cua.click"})
-
-    async def start(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-
-    async def aclose(self) -> None:
-        return None
-
-    async def wait_unavailable(self) -> None:
-        await asyncio.Event().wait()
-
-    async def list_tools(self) -> Sequence[ProviderToolDescriptor]:
-        return ()
-
-    async def call_tool(
-        self, tool_name: str, arguments: Mapping[str, JsonValue]
-    ) -> ProviderToolResult:
-        return ProviderToolResult(
-            content=[ProviderTextContent(type="text", text=tool_name)],
-            structured_content=dict(arguments),
-        )
-
-
 def discover(provider: FakeCuaProvider):
     registrations = local_provider_registrations(providers={"cua": provider})
     return asyncio.run(CatalogService(registrations).discover())
@@ -146,7 +120,7 @@ def test_all_fifty_runtime_cua_tools_are_candidates_but_not_selected() -> None:
     snapshot = discover(FakeCuaProvider())
 
     cua_entries = tuple(entry for entry in snapshot.entries if entry.provider_name == "cua")
-    assert len(cua_entries) == 50
+    assert len(cua_entries) == 55
     assert snapshot.selected_public_names == ()
     assert {entry.public_name for entry in cua_entries} == {
         f"relay_cua_{name}" for name in CUA_NAMES
@@ -179,13 +153,14 @@ def test_cua_policy_classifies_risks_and_requires_explicit_selection() -> None:
         snapshot.validate_allowlist(("relay_cua_page",))
 
 
-def test_cua_inventory_accepts_a_new_tool_without_protocol_changes() -> None:
+def test_cua_inventory_keeps_unknown_tools_visible_but_blocked() -> None:
     provider = FakeCuaProvider((*CUA_NAMES, "future_tool"))
     snapshot = discover(provider)
 
     cua_entries = tuple(entry for entry in snapshot.entries if entry.provider_name == "cua")
-    assert len(cua_entries) == 51
-    assert snapshot.entry("relay_cua_future_tool").status == "disabled"
+    assert len(cua_entries) == 56
+    assert snapshot.entry("relay_cua_future_tool").status == "blocked"
+    assert snapshot.entry("relay_cua_future_tool").risk == "blocked"
     assert snapshot.selected_public_names == ()
 
 
@@ -203,28 +178,14 @@ def test_cua_provider_result_preserves_generic_mcp_content_and_arguments() -> No
     assert provider.calls == [("click", {"element": "opaque"})]
 
 
-def test_selected_future_cua_tool_routes_without_static_capability_edit(
-    tmp_path: Path,
-) -> None:
+def test_unknown_cua_tool_cannot_be_selected_or_routed() -> None:
     provider = FakeCuaProvider((*CUA_NAMES, "future_tool"))
     snapshot = discover(provider)
-    selected = snapshot.select(("relay_cua_future_tool",))
-    capability = SelectedCuaCapability()
-    agent = RelayAgent(
-        AgentSettings(
-            server_url="ws://localhost/ws/agent",
-            device_id="d",
-            agent_token="agent-token",
-            workspace=tmp_path,
-            tools_allowlist=("relay_cua_future_tool",),
-        ),
-        capabilities=[capability],  # type: ignore[arg-type]
-        catalog=selected,
-    )
 
-    route = agent._provider_routes["cua.future_tool"]
-    assert route[0] is capability
-    assert agent._announcement_tools == ("cua.future_tool",)
+    with pytest.raises(CatalogError, match="blocked Agent tool"):
+        snapshot.select(("relay_cua_future_tool",)).validate_allowlist(
+            ("relay_cua_future_tool",)
+        )
 
 
 def test_configured_cua_driver_is_used_for_ephemeral_catalog_discovery(
@@ -265,7 +226,6 @@ def test_configured_cua_driver_is_used_for_ephemeral_catalog_discovery(
     )
     registrations = local_provider_registrations(
         env={
-            "RELAY_AGENT_COMPUTER_DRIVER_PATH": "/opt/cua-driver",
             "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": "Fixture",
             "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": "Fixture Window",
         }

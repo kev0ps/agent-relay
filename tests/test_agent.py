@@ -64,13 +64,7 @@ def test_environment_tool_validation_can_be_deferred_to_runtime_catalog(
     environment, _ = _canonical_agent_environment(tmp_path)
     environment["RELAY_AGENT_TOOLS"] = "relay_cua_provider_added_later"
 
-    with pytest.raises(ConfigurationError):
-        AgentSettings.from_environment(environment)
-
-    settings = AgentSettings.from_environment(
-        environment,
-        defer_tool_validation=True,
-    )
+    settings = AgentSettings.from_environment(environment)
     assert settings.tools_allowlist == ("relay_cua_provider_added_later",)
 
 
@@ -556,100 +550,6 @@ def test_canonical_agent_transport_policy(
     assert settings.server_url == url
 
 
-def test_computer_settings_are_disabled_by_default_and_all_or_none(
-    tmp_path: Path,
-) -> None:
-    base = dict(
-        server_url="ws://localhost/ws/agent",
-        device_id="d",
-        agent_token="secret",
-        workspace=tmp_path,
-    )
-    settings = AgentSettings(**base)
-    assert settings.computer_driver_path is None
-    assert settings.computer_startup_timeout_seconds == 15
-    with pytest.raises(ConfigurationError):
-        AgentSettings(**base, computer_driver_path=tmp_path / "missing")
-    driver = tmp_path / "cua-driver"
-    driver.write_text("#!/bin/sh\n")
-    driver.chmod(0o755)
-    with pytest.raises(ConfigurationError):
-        AgentSettings(**base, computer_driver_path=driver)
-    configured = AgentSettings(
-        **base,
-        computer_driver_path=driver,
-        computer_allowed_app_name="Fixture",
-        computer_allowed_window_title="Relay Desktop Fixture",
-    )
-    agent = RelayAgent(configured)
-    assert not any(tool.startswith("cua.") for tool in agent._capabilities)
-    with pytest.raises(ConfigurationError):
-        AgentSettings(
-            server_url="wss://relay.example/not-agent",
-            device_id="device-a",
-            agent_token="secret-token",
-            workspace=tmp_path / "missing",
-        )
-
-
-def test_catalogless_agent_does_not_start_cua_before_browser(
-    tmp_path: Path,
-) -> None:
-    driver = tmp_path / "cua-driver"
-    driver.write_text("#!/bin/sh\n")
-    driver.chmod(0o755)
-    agent = RelayAgent(
-        AgentSettings(
-            server_url="ws://localhost/ws/agent",
-            device_id="d",
-            agent_token="secret",
-            workspace=tmp_path,
-            browser_user_data_dir=tmp_path / "browser-profile",
-            browser_allowed_origins=("http://127.0.0.1:8899",),
-            computer_driver_path=driver,
-            computer_allowed_app_name="relay-desktop-fixture",
-            computer_allowed_window_title="Relay Desktop Fixture",
-        )
-    )
-    starts: list[str] = []
-    for ident in agent._unique_capabilities:
-        capability = agent._capability_objects[ident]
-
-        async def start(name: str = type(capability).__name__) -> None:
-            starts.append(name)
-
-        capability.start = start  # type: ignore[method-assign]
-
-    asyncio.run(agent._start_capabilities())
-
-    assert starts == [
-        "SystemCapability",
-        "TerminalCapability",
-        "BrowserCapability",
-    ]
-
-
-def test_catalogless_agent_never_indexes_blocked_cua_tools(tmp_path: Path) -> None:
-    driver = tmp_path / "cua-driver"
-    driver.write_text("#!/bin/sh\n")
-    driver.chmod(0o755)
-    agent = RelayAgent(
-        AgentSettings(
-            server_url="ws://localhost/ws/agent",
-            device_id="d",
-            agent_token="secret",
-            workspace=tmp_path,
-            tools_allowlist=("relay_cua_page",),
-            computer_driver_path=driver,
-            computer_allowed_app_name="Fixture",
-            computer_allowed_window_title="Relay Desktop Fixture",
-        )
-    )
-
-    assert "cua.page" not in agent._capabilities
-    assert not any(tool.startswith("cua.") for tool in agent._capabilities)
-
-
 @pytest.mark.parametrize(
     "url, accepted",
     [
@@ -706,123 +606,6 @@ def test_configuration_failures_never_echo_agent_token(tmp_path: Path) -> None:
     assert secret not in str(error.value)
 
 
-@pytest.mark.parametrize("profile_path", [Path("relative/profile"), Path(""), Path(".")])
-def test_browser_configuration_requires_absolute_profile_path(
-    tmp_path: Path, profile_path: Path
-) -> None:
-    with pytest.raises(ConfigurationError) as error:
-        AgentSettings(
-            server_url="ws://localhost/ws/agent",
-            device_id="d",
-            agent_token="secret",
-            workspace=tmp_path,
-            browser_user_data_dir=profile_path,
-            browser_allowed_origins=("http://127.0.0.1:8899",),
-        )
-    assert str(error.value) == "invalid agent configuration"
-
-
-def test_browser_configuration_rejects_existing_profile_file(tmp_path: Path) -> None:
-    profile_file = tmp_path / "profile-file"
-    profile_file.write_text("not a directory", encoding="utf-8")
-    with pytest.raises(ConfigurationError):
-        AgentSettings(
-            server_url="ws://localhost/ws/agent",
-            device_id="d",
-            agent_token="secret",
-            workspace=tmp_path,
-            browser_user_data_dir=profile_file,
-            browser_allowed_origins=("http://127.0.0.1:8899",),
-        )
-
-
-def test_browser_origin_policy_any_does_not_require_an_allowlist(tmp_path: Path) -> None:
-    settings = AgentSettings(
-        server_url="ws://localhost/ws/agent",
-        device_id="d",
-        agent_token="secret",
-        workspace=tmp_path,
-        browser_user_data_dir=tmp_path / "browser-profile",
-        browser_origin_policy="any",
-    )
-
-    assert settings.browser_origin_policy == "any"
-    assert settings.browser_allowed_origins == ()
-
-
-def test_browser_origin_policy_rejects_ambiguous_or_partial_configuration(
-    tmp_path: Path,
-) -> None:
-    base = dict(
-        server_url="ws://localhost/ws/agent",
-        device_id="d",
-        agent_token="secret",
-        workspace=tmp_path,
-    )
-    with pytest.raises(ConfigurationError):
-        AgentSettings(**base, browser_origin_policy="any")
-    with pytest.raises(ConfigurationError):
-        AgentSettings(
-            **base,
-            browser_user_data_dir=tmp_path / "browser-profile",
-            browser_origin_policy="any",
-            browser_allowed_origins=("http://127.0.0.1:8899",),
-        )
-    with pytest.raises(ConfigurationError):
-        AgentSettings(
-            **base,
-            browser_user_data_dir=tmp_path / "browser-profile",
-            browser_origin_policy="unsupported",
-        )
-
-
-def test_browser_origin_policy_any_is_loaded_from_environment(tmp_path: Path) -> None:
-    environment, _ = _canonical_agent_environment(tmp_path)
-    profile = tmp_path / "browser-profile"
-    environment.update(
-        {
-            "RELAY_AGENT_BROWSER_USER_DATA_DIR": str(profile),
-            "RELAY_AGENT_BROWSER_ORIGIN_POLICY": " any ",
-        }
-    )
-
-    settings = _load_canonical_agent_settings(environment)
-
-    assert settings.browser_origin_policy == "any"
-    assert settings.browser_allowed_origins == ()
-
-
-@pytest.mark.parametrize(
-    "origin",
-    [
-        "*",
-        "http://*.example.com",
-        "ws://127.0.0.1:8899",
-        "http://user@127.0.0.1:8899",
-        "http://127.0.0.1:8899/path",
-        "http://127.0.0.1:8899/?query=x",
-        "http://127.0.0.1:8899/#fragment",
-    ],
-)
-def test_browser_allowed_origins_are_exact_and_partial_config_is_rejected(
-    tmp_path: Path, origin: str
-) -> None:
-    base = dict(
-        server_url="ws://localhost/ws/agent",
-        device_id="d",
-        agent_token="secret",
-        workspace=tmp_path,
-    )
-    with pytest.raises(ConfigurationError):
-        AgentSettings(**base, browser_user_data_dir=tmp_path / "browser-profile")
-    with pytest.raises(ConfigurationError):
-        AgentSettings(
-            **base,
-            browser_user_data_dir=tmp_path / "browser-profile",
-            browser_allowed_origins=(origin,),
-        )
-
-
 def test_environment_and_cli_configuration_errors_never_echo_agent_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -872,19 +655,15 @@ def test_agent_main_uses_supplied_catalog_before_starting_runtime(
     assert observed == [snapshot]
 
 
-def test_runtime_catalog_reuses_one_started_cua_provider(
+def test_runtime_catalog_starts_one_cua_provider_without_selecting_unknown_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    driver = tmp_path / "cua-driver"
-    driver.write_text("#!/bin/sh\n", encoding="utf-8")
-    driver.chmod(0o755)
     settings = AgentSettings(
         server_url="ws://localhost/ws/agent",
         device_id="catalog-agent",
         agent_token="[REDACTED]",
         workspace=tmp_path,
-        tools_allowlist=("relay_cua_provider_added_later",),
-        computer_driver_path=driver,
+        tools_allowlist=(),
         computer_allowed_app_name="Fixture",
         computer_allowed_window_title="Fixture Window",
     )
@@ -902,7 +681,7 @@ def test_runtime_catalog_reuses_one_started_cua_provider(
                 ProviderToolDescriptor(
                     provider_name="cua",
                     tool_name="provider_added_later",
-                    public_name="provider_added_later",
+                    public_name="relay_cua_provider_added_later",
                     description="provider-added tool",
                     input_schema={
                         "type": "object",
@@ -940,10 +719,10 @@ def test_runtime_catalog_reuses_one_started_cua_provider(
 
     assert provider.starts == 1
     assert provider.closes == 1
-    assert observed[0]._provider_routes["cua.provider_added_later"][0] is provider
+    assert "cua.provider_added_later" not in observed[0]._provider_routes
     assert tuple(
         descriptor.public_name for descriptor in observed[0]._announcement_descriptors
-    ) == ("relay_cua_provider_added_later",)
+    ) == ()
     assert id(provider) not in observed[0]._unique_capabilities
 
 
@@ -1584,79 +1363,6 @@ def test_capability_start_failure_never_opens_websocket_or_advertises(tmp_path: 
         agent._sleep_or_stop = stop_after_retry  # type: ignore[method-assign]
         await agent.run()
         assert opened == 0
-
-    asyncio.run(scenario())
-
-
-def test_browser_advertisement_is_canonical_and_only_after_start(tmp_path: Path) -> None:
-    class BrowserCapability(_Capability):
-        def __init__(self) -> None:
-            super().__init__("browser.list_tabs")
-            self.tools = frozenset({
-                "browser.list_tabs", "browser.navigate", "browser.snapshot",
-                                    "browser.fill", "browser.click", "browser.scroll", "browser.type", "browser.back",
-            })
-            self.started = False
-
-        async def start(self) -> None:
-            self.started = True
-
-    async def scenario() -> None:
-        browser = BrowserCapability()
-        socket = _Socket([json.dumps({"version": 1, "type": "registered", "device_id": "d"})])
-        agent: RelayAgent
-
-        def connector(*_: object, **__: object) -> _Connection:
-            assert browser.started
-            return _Connection(socket)
-
-        agent = RelayAgent(
-            AgentSettings(server_url="ws://localhost/ws/agent", device_id="d", agent_token="token", workspace=tmp_path, heartbeat_interval_seconds=60),
-            capabilities=[browser], connector=connector,
-        )
-        task = asyncio.create_task(agent.run())
-        while len(socket.sent) < 2:
-            await asyncio.sleep(0)
-        agent.stop()
-        await task
-        assert socket.sent[1]["tools"] == [
-            "browser.list_tabs", "browser.navigate", "browser.snapshot",
-                                "browser.fill", "browser.click", "browser.scroll", "browser.type", "browser.back",
-        ]
-
-    asyncio.run(scenario())
-
-
-def test_capability_unavailable_cancels_active_browser_action_without_result(tmp_path: Path) -> None:
-    class BlockingBrowser(_Capability):
-        cancelled = False
-
-        async def invoke(self, message: InvokeMessage) -> dict[str, object]:
-            self.invocations.append(message)  # type: ignore[arg-type]
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-
-    async def scenario() -> None:
-        browser = BlockingBrowser("browser.list_tabs")
-        socket = _Socket([
-            json.dumps({"version": 1, "type": "registered", "device_id": "d"}),
-            json.dumps({"version": 2, "type": "invoke", "request_id": "r", "tool_name": "browser.list_tabs", "arguments": {}}),
-        ])
-        agent = RelayAgent(
-            AgentSettings(server_url="ws://localhost/ws/agent", device_id="d", agent_token="token", workspace=tmp_path, heartbeat_interval_seconds=60),
-            capabilities=[browser],
-        )
-        task = asyncio.create_task(agent.run_session(socket))
-        while not browser.invocations:
-            await asyncio.sleep(0)
-        browser.unavailable.set()
-        with pytest.raises(ConnectionError):
-            await task
-        assert browser.cancelled
-        assert not any(item.get("request_id") == "r" for item in socket.sent)
 
     asyncio.run(scenario())
 

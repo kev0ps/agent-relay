@@ -1,17 +1,20 @@
 # Agent Relay tools
 
-This document lists the complete public tool surface currently implemented and
-tested by Agent Relay. The configuration examples are ready to copy into the
-`agent.tools.allowlist` section of `config.yaml`.
+CUA is Agent Relay's only desktop and browser provider. Agent Relay installs
+`cua-driver` as a standard dependency, resolves its bundled executable through
+`cua_driver.get_binary_path()`, starts the provider, and discovers its complete
+MCP catalogue at runtime. Discovery does not require an application, window,
+or manually supplied path.
 
-Agent Relay starts with an empty allowlist. Enabling a tool grants local
-authority, so select the smallest profile that meets the deployment's needs.
-Run `agent-relay config validate agent` after changing the list.
+The Agent starts with CUA access `none`. Every discovered CUA tool is visible
+to local catalogue and diagnostics commands, but remains disabled until the
+operator explicitly enables it. A tool rejected by security policy remains
+blocked and cannot be enabled. A newer driver catalogue therefore never grants
+new authority by itself.
 
-## Complete tested allowlist
+## Public names
 
-This is the complete set of Agent-executed tools covered by the current
-repository contracts:
+Built-in Relay tools keep their stable names:
 
 ```yaml
 agent:
@@ -19,28 +22,31 @@ agent:
     allowlist:
       - relay_system_ping
       - relay_terminal_exec
-      - relay_browser_list_tabs
-      - relay_browser_navigate
-      - relay_browser_snapshot
-      - relay_browser_fill
-      - relay_browser_click
-      - relay_browser_scroll
-      - relay_browser_type
-      - relay_browser_back
-      - relay_cua_list_windows
-      - relay_cua_get_window_state
-      - relay_cua_click
-      - relay_cua_type_text
 ```
 
-This block is exhaustive for the surface Agent Relay currently exercises as a
-project. It is not a promise that every tool is available on every machine:
-Browser and CUA have additional runtime prerequisites described below.
-Replace the existing `agent.tools.allowlist` mapping while preserving the other
-keys in the Agent section.
+Every CUA descriptor named `<name>` is exposed as:
 
-`relay_device_status` is deliberately absent. It is always implemented by the
-Relay Server and cannot be selected in the Agent allowlist.
+```text
+relay_cua_<name>
+```
+
+This applies equally to native desktop and browser operations. For example,
+when the installed driver advertises them, the public names are:
+
+```text
+relay_cua_list_windows
+relay_cua_get_window_state
+relay_cua_click
+relay_cua_type_text
+relay_cua_browser_prepare
+relay_cua_browser_navigate
+relay_cua_get_browser_state
+relay_cua_browser_click
+relay_cua_browser_type
+```
+
+`browser_*` here is a CUA descriptor name, not an Agent Relay capability or a
+separate browser implementation. No legacy Browser-prefixed aliases exist.
 
 ## Copyable profiles
 
@@ -63,28 +69,7 @@ agent:
       - relay_terminal_exec
 ```
 
-### Browser
-
-```yaml
-agent:
-  tools:
-    allowlist:
-      - relay_browser_list_tabs
-      - relay_browser_navigate
-      - relay_browser_snapshot
-      - relay_browser_fill
-      - relay_browser_click
-      - relay_browser_scroll
-      - relay_browser_type
-      - relay_browser_back
-```
-
-The Browser profile requires the `browser` dependency extra, a Playwright
-Chromium installation, a dedicated User Data Dir, and either an explicit HTTP(S)
-origin allowlist or the deliberate `any` origin policy. Non-Web schemes remain
-blocked.
-
-### Computer Use
+### Representative CUA desktop and browser tools
 
 ```yaml
 agent:
@@ -94,64 +79,77 @@ agent:
       - relay_cua_get_window_state
       - relay_cua_click
       - relay_cua_type_text
+      - relay_cua_browser_prepare
+      - relay_cua_browser_navigate
+      - relay_cua_get_browser_state
+      - relay_cua_browser_click
+      - relay_cua_browser_type
 ```
 
-The CUA profile requires a configured compatible MCP stdio driver, an exact
-allowed application name and window title, and matching descriptors returned by
-the driver's runtime `tools/list`. Windows CUA remains experimental.
+The browser tools are ordinary CUA tools. They share the same catalogue,
+activation, schema validation, policy, logging, and execution path as native
+desktop tools. A target application or window is supplied only for a CUA
+operation whose descriptor needs one; catalogue discovery itself is target
+independent.
+
+`relay_device_status` is deliberately absent. It is implemented by the Relay
+Server and cannot be selected in the Agent allowlist.
 
 ## Tool reference
 
-| Public MCP tool | Internal route | Availability | Purpose and boundary |
-|---|---|---|---|
-| `relay_device_status` | Server-local | Always | Read safe connection and invocation state; no Agent dispatch |
-| `relay_system_ping` | `system.ping` | Built in, selectable | Verify a real bounded Agent round trip |
-| `relay_terminal_exec` | `terminal.exec` | Built in, selectable | Run one fixed command ID without a shell or arguments |
-| `relay_browser_list_tabs` | `browser.list_tabs` | Browser configured | List bounded tab title and URL records |
-| `relay_browser_navigate` | `browser.navigate` | Browser configured | Navigate to a URL accepted by the origin policy |
-| `relay_browser_snapshot` | `browser.snapshot` | Browser configured | Read bounded page text and structured locators |
-| `relay_browser_fill` | `browser.fill` | Browser configured | Fill a freshly resolved structured locator |
-| `relay_browser_click` | `browser.click` | Browser configured | Click a freshly resolved structured locator |
-| `relay_browser_scroll` | `browser.scroll` | Browser configured | Scroll only `up` or `down` |
-| `relay_browser_type` | `browser.type` | Browser configured | Type bounded text into a structured locator |
-| `relay_browser_back` | `browser.back` | Browser configured | Navigate one history entry backward |
-| `relay_cua_list_windows` | `cua.list_windows` | Driver descriptor selected | List bounded windows visible to the configured provider |
-| `relay_cua_get_window_state` | `cua.get_window_state` | Driver descriptor selected | Read a bounded semantic snapshot and fresh element tokens |
-| `relay_cua_click` | `cua.click` | Driver descriptor selected | Click one semantic element in the exact allowed window |
-| `relay_cua_type_text` | `cua.type_text` | Driver descriptor selected | Type bounded text into one semantic element |
+| Public MCP tool | Internal route | Boundary |
+|---|---|---|
+| `relay_device_status` | Server-local | Read connection and invocation state; no Agent dispatch |
+| `relay_system_ping` | `system.ping` | Fixed bounded Agent round trip |
+| `relay_terminal_exec` | `terminal.exec` | Fixed command IDs; no shell or caller arguments |
+| `relay_cua_<name>` | `cua.<name>` | The exact descriptor, schema, and policy returned by CUA |
 
-`relay_terminal_exec` accepts exactly these command IDs:
+The catalogue may contain tools that are disabled or blocked. Only selected,
+available descriptors are announced to the MCP client and routable by the
+Agent. Dynamic descriptor names and schemas are never copied into a static
+Relay catalogue.
 
-```text
-pwd
-whoami
-python_version
-git_status
-git_branch
-```
-
-It does not accept command text, arguments, environment variables, a working
-directory, or an executable path.
-
-## Dynamically discovered CUA tools
-
-The configured CUA provider may return additional descriptors through
-`tools/list`. Agent Relay maps a selected descriptor named `<name>` to the
-public form `relay_cua_<name>`, but discovery is not authorization. A descriptor
-must be available, accepted by local policy, and explicitly selected before it
-is announced.
-
-Additional provider tools are therefore not included in the copyable tested
-allowlist above. Their names and schemas depend on the installed provider
-version, and some categories—arbitrary code execution, process administration,
-configuration changes, recording, unrestricted coordinates, screenshots, or
-generic passthrough—remain blocked by policy.
-
-Use the CLI to inspect the effective local catalogue:
+Use the CLI to inspect the effective catalogue:
 
 ```sh
-uv run --frozen agent-relay tools list
+agent-relay tools list
+agent-relay tools list --all
 ```
 
-Only the tools announced by the connected Agent appear dynamically through the
-MCP facade.
+The compact form lists Relay's non-CUA tools individually and summarizes CUA
+access, enabled/available/blocked counts, and newly discovered tools. `--all`
+expands the individual CUA entries. The maintained exact profiles are selected
+without adding a YAML level field:
+
+```sh
+agent-relay tools cua-access none
+agent-relay tools cua-access standard
+agent-relay tools cua-access full --yes
+```
+
+`full` asks for confirmation interactively and requires `--yes` when stdin is
+not interactive. `none` removes only CUA names; `standard` and `full` replace
+only the CUA portion and preserve the non-CUA allowlist. A manual CUA change
+that does not exactly match a maintained profile is shown as `custom`. Newly
+discovered CUA tools stay disabled and do not enter a profile automatically.
+
+Enable individual names returned by `tools list --all`, then validate:
+
+```sh
+agent-relay tools enable relay_cua_browser_navigate
+agent-relay config validate agent
+```
+
+The standard installation installs no separate browser dependency and asks for
+no manually configured driver location. The CUA package owns driver resolution
+and Agent Relay only accepts the executable path returned by its package API.
+
+For first-run configuration, use the same access choice directly:
+
+```sh
+agent-relay config init agent --cua-access standard
+agent-relay onboard --role local --cua-access standard
+```
+
+`--tools` may accompany `--cua-access` only when it contains no
+`relay_cua_*` name. `--no-tools` is exclusive with `--cua-access`.

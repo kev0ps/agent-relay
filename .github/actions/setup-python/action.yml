@@ -1,11 +1,7 @@
 name: Set up locked Python environment
-description: Set up a locked Python profile or bootstrap the Agent Relay runtime
+description: Set up the locked Agent Relay Python environment or bootstrap the runtime
 
 inputs:
-  profile:
-    description: Closed dependency profile (base, browser, or computer)
-    required: false
-    default: "base"
   installer:
     description: Run the Agent Relay user installer and expose its command for a native E2E harness
     required: false
@@ -31,15 +27,7 @@ runs:
     - name: Install locked dependencies
       if: inputs.installer != 'true'
       shell: bash
-      env:
-        RELAY_CI_DEPENDENCY_PROFILE: ${{ inputs.profile }}
-      run: |
-        case "$RELAY_CI_DEPENDENCY_PROFILE" in
-          "base") uv sync --locked ;;
-          "browser") uv sync --locked --extra browser ;;
-          "computer") uv sync --locked --extra browser --extra computer ;;
-          *) exit 1 ;;
-        esac
+      run: uv sync --locked
 
     - name: Install Agent Relay runtime through the Linux bootstrapper
       if: inputs.installer == 'true' && runner.os == 'Linux'
@@ -48,7 +36,6 @@ runs:
         AGENT_RELAY_SETUP: skip
         AGENT_RELAY_SKIP_PATH_UPDATE: "1"
         AGENT_RELAY_SYNC_ROOT: ${{ github.workspace }}
-        AGENT_RELAY_SYNC_PROFILE: ${{ inputs.profile }}
       run: |
         set -euo pipefail
         archive_source="$RUNNER_TEMP/agent-relay-source.tar.gz"
@@ -80,7 +67,6 @@ runs:
         AGENT_RELAY_SETUP: skip
         AGENT_RELAY_SKIP_PATH_UPDATE: "1"
         AGENT_RELAY_SYNC_ROOT: ${{ github.workspace }}
-        AGENT_RELAY_SYNC_PROFILE: ${{ inputs.profile }}
       run: |
         $ErrorActionPreference = "Stop"
         $archiveSource = Join-Path $env:RUNNER_TEMP "agent-relay-source.zip"

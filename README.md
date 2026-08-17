@@ -28,8 +28,7 @@ passthrough, caller-supplied filesystem path, or open-ended `execute()` method.
 | Device status | Check whether the configured device is connected | Server-local status only |
 | System | Send a bounded ping through the real Relay Agent | Fixed request and response schema |
 | Terminal | Run a handful of useful workspace commands | Fixed command IDs, no shell or caller-supplied arguments |
-| Browser | Read and interact with an allowlisted web app | Allowed origins and bounded structured locators; no Playwright handles |
-| CUA | Discover and invoke selected desktop-driver tools | Exact app/window identity; bounded provider snapshots; no screenshots or coordinates |
+| CUA | Discover and invoke selected desktop and browser tools | Exact descriptor policy; bounded provider snapshots; no screenshots or unrestricted coordinates |
 
 Terminal access is deliberately narrow:
 
@@ -41,9 +40,11 @@ git_status
 git_branch
 ```
 
-Browser and CUA stay disabled until their local configuration is complete. CUA
-descriptors are discovered from the configured MCP stdio driver; only selected
-descriptors are indexed, announced and routable.
+CUA 0.19.3 is installed and initialized automatically on a new installation.
+Its complete descriptor catalogue is discovered from the bundled MCP provider;
+every descriptor is visible to catalogue diagnostics but CUA access defaults to
+`none` until an explicit profile or individual tool selection. A target
+application or window is needed only by an operation that actually acts on one.
 
 The complete tested tool list and copyable `config.yaml` profiles are in
 **[Agent Relay tools](docs/tools.md)**.
@@ -65,8 +66,7 @@ Hermes or another MCP client
              |
              +-- system
              +-- constrained terminal
-             +-- allowlisted browser
-             `-- selected CUA provider tools
+             `-- selected CUA desktop/browser tools
 ```
 
 The server keeps the live device registry and exposes the MCP tools. The Relay
@@ -163,13 +163,19 @@ variables override YAML values when both are present. Agent Relay's `.env`
 contains only `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN`; URL, workspace, and
 tool settings remain YAML or explicit process environment overrides.
 
-This layout is a deliberate breaking change for the next version. Existing
-installations using `secrets/` or `*_TOKEN_FILE` must copy the token values into
-the adjacent `.env`, run `config validate`, and only then remove the old files.
-Agent Relay does not migrate or delete those files automatically.
+This layout is for new installations. Agent Relay is not published yet and
+does not provide a migration path for older layouts.
 
-Browser and Computer Use require separate local dependencies and configuration;
-they are not enabled by the base one-line installation.
+The standard installation includes `cua-driver`. Agent Relay resolves the
+driver only through `cua_driver.get_binary_path()`; no manually configured
+driver location, browser extra, or separate browser runtime is used. Select an
+exact CUA profile or an individual `relay_cua_<name>` tool explicitly:
+
+```sh
+agent-relay tools cua-access standard
+agent-relay tools cua-access full --yes
+agent-relay tools list --all
+```
 
 For a user-scoped installation created by the bootstrapper, remove only the
 `agent-relay` command and its uv tool environment with:
@@ -245,13 +251,11 @@ access:
   canonical environment overrides take precedence;
 - messages, outputs, timeouts and collections are typed and bounded;
 - terminal commands come from a fixed allowlist and run without a shell;
-- browser access uses an exact origin allowlist by default; the optional
-  `any` browser origin policy permits only `http://` and `https://` pages and
-  still rejects `file://`, `javascript:`, `data:`, `chrome://`, `edge://`,
-  and other non-Web schemes;
-- CUA uses selected generic driver descriptors and bounded snapshot metadata;
-  Relay does not expose screenshots, coordinates, raw accessibility trees,
-  process/window handles, or driver execution controls;
+- CUA supplies both desktop and browser descriptors through one dynamic
+  catalogue. New descriptors remain disabled until explicit selection and
+  policy-blocked descriptors cannot be enabled;
+- Relay does not expose screenshots, unrestricted coordinates, raw
+  accessibility trees, process/window handles, or driver execution controls;
 - the Docker production image builds as non-root for AMD64 and ARM64 and passes
   image-contract and CLI smoke checks.
 
@@ -270,9 +274,9 @@ LAN/test network. The project prescribes no specific TLS endpoint or proxy
 implementation.
 
 `RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` remain advanced
-settings for DNS names and reverse proxies. `ALLOWED_ORIGINS` applies to Web
-browser origins, not client source IPs. Neither setting replaces a LAN firewall
-or an external TLS boundary.
+settings for DNS names and reverse proxies. They validate HTTP metadata, not
+client source IPs. Neither setting replaces a LAN firewall or an external TLS
+boundary.
 
 Read the **[security model and honest limitations](docs/security.md)** before a
 private deployment. Report suspected vulnerabilities through the
@@ -291,22 +295,24 @@ The current automated test design covers:
 - installed CLI Server/Agent topology gates on both platforms;
 - the official MCP facade;
 - constrained terminal behavior;
-- Linux Terminal, Browser and CUA-provider E2E gates;
-- Windows Terminal and headless Browser E2E gates;
-- Browser locator and generic CUA-provider API contracts;
+- Linux Terminal and unified CUA desktop/browser-subpath E2E gates;
+- Windows Terminal and unified CUA desktop candidate gates;
+- dynamic CUA catalogue, policy, activation, and provider API contracts;
 - AMD64/ARM64 image build and CLI smoke tests;
 - strict schemas, authentication, bounded outputs and deterministic local
   fixtures.
 
 Windows Computer Use/UI Automation remains experimental until the complete
 hosted Agent Relay/MCP/UIA proof is repeatable.
-A container runtime is not used as product proof for Browser or Computer Use.
+A container runtime is not used as product proof for CUA desktop or browser
+operations.
 
 Still outside the validated product boundary:
 
 - a packaged, versioned native Windows release and service deployment procedure;
 - multiple devices, RBAC and automatic credential rotation;
-- arbitrary shell commands, files, browser profiles or desktop control;
+- arbitrary shell commands, files, personal sessions, or unrestricted desktop
+  control;
 - personal sessions, secrets, purchases, uploads and external form submissions;
 - public internet exposure without a trusted private TLS/WSS layer.
 
@@ -338,8 +344,8 @@ speculative roadmap; implementation history remains available through Git.
 
 For a local check:
 ```sh
-uv run --frozen pytest -q -m "not integration"
-uv run --frozen pytest -q -m integration
+uv run --frozen python -m pytest -q -m "not integration"
+uv run --frozen python -m pytest -q -m integration
 uv run --frozen ruff check .
 uv lock --check
 git diff --check

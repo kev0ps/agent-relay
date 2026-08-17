@@ -29,6 +29,8 @@ class OnboardingOptions:
     workspace: str | None = None
     tools: str | None = None
     no_tools: bool = False
+    cua_access: Literal["none", "standard", "full"] | None = None
+    yes: bool = False
     token_file: Path | None = None
     token_stdin: bool = False
     allow_insecure_ws: bool | None = None
@@ -47,6 +49,8 @@ class OnboardingOptions:
             workspace=args.workspace,
             tools=args.tools,
             no_tools=args.no_tools,
+            cua_access=args.cua_access,
+            yes=args.yes,
             token_file=args.token_file,
             token_stdin=args.token_stdin,
             allow_insecure_ws=args.allow_insecure_ws,
@@ -188,12 +192,17 @@ def _selected_tools(
     options: OnboardingOptions,
     catalog: CatalogSnapshot | None,
 ) -> list[str]:
-    if options.tools is not None and options.no_tools:
-        raise config.ConfigError("--tools and --no-tools are mutually exclusive")
+    _validate_tool_options(options)
     if options.no_tools:
         return []
     if options.tools is not None:
         selected = [item.strip() for item in options.tools.split(",") if item.strip()]
+        if options.cua_access is not None and any(
+            config.is_cua_public_name(item) for item in selected
+        ):
+            raise config.ConfigError(
+                "--tools cannot include relay_cua_* when --cua-access is used"
+            )
         if catalog is not None:
             try:
                 catalog.validate_allowlist(selected)
@@ -211,6 +220,44 @@ def _selected_tools(
     if options.non_interactive:
         return []
     return config.select_tools_interactively({}, path, catalog=catalog)
+
+
+def _validate_tool_options(options: OnboardingOptions) -> None:
+    """Reject ambiguous tool/profile combinations before touching YAML."""
+    if options.tools is not None and options.no_tools:
+        raise config.ConfigError("--tools and --no-tools are mutually exclusive")
+    if options.no_tools and options.cua_access is not None:
+        raise config.ConfigError("--no-tools is exclusive with --cua-access")
+    if options.tools is not None and options.cua_access is not None:
+        selected = [item.strip() for item in options.tools.split(",") if item.strip()]
+        if any(config.is_cua_public_name(item) for item in selected):
+            raise config.ConfigError(
+                "--tools cannot include relay_cua_* when --cua-access is used"
+            )
+    if options.yes and options.cua_access != "full":
+        raise config.ConfigError("--yes is only valid with --cua-access full")
+
+
+def _cua_access_value(
+    options: OnboardingOptions,
+    prompter: _Prompter,
+) -> Literal["none", "standard", "full"]:
+    if options.yes and options.cua_access != "full":
+        raise config.ConfigError("--yes is only valid with --cua-access full")
+    if options.cua_access is not None:
+        return options.cua_access
+    if prompter.non_interactive:
+        return "none"
+    print("CUA access (desktop and browser):")
+    print("  1. None (default)")
+    print("  2. Standard (common interaction and browser tools)")
+    print("  3. Full (all non-blocked CUA tools)")
+    choice = prompter.required("Choose CUA access [1]: ", default="1")
+    levels = {"1": "none", "2": "standard", "3": "full"}
+    try:
+        return levels[choice]  # type: ignore[return-value]
+    except KeyError as exc:
+        raise config.ConfigError("CUA access selection is invalid") from exc
 
 
 def _agent_token(options: OnboardingOptions, prompter: _Prompter) -> str:
@@ -281,6 +328,20 @@ def _configure_local(
     *,
     catalog: CatalogSnapshot | None,
 ) -> int:
+    agent_created = not _section_exists(path, "agent") or options.force
+    prepared_tools: list[str] | None = None
+    prepared_cua_access: Literal["none", "standard", "full"] | None = None
+    cua_confirmation_done = False
+    if agent_created:
+        prepared_tools = _selected_tools(path, options, catalog)
+        prepared_cua_access = _cua_access_value(options, prompter)
+        config.confirm_cua_access(
+            prepared_cua_access,
+            catalog,
+            assume_yes=options.yes,
+        )
+        cua_confirmation_done = prepared_cua_access == "full"
+
     server_created = not _section_exists(path, "server") or options.force
     if server_created:
         host, port, allow_insecure_ws = _server_values(
@@ -300,26 +361,33 @@ def _configure_local(
     else:
         print("Existing Server configuration found; leaving it unchanged.")
 
-    agent_created = not _section_exists(path, "agent") or options.force
     if agent_created:
         server = config.get_section(path, "server")
         port = _parse_port(str(server.get("port", 8000)))
         token = config.read_server_agent_token(path)
         workspace = _workspace_value(options, prompter)
-        tools = _selected_tools(path, options, catalog)
         config.init_config(
             path,
             "agent",
             force=options.force,
             token=token,
-            tools=tools,
+            tools=prepared_tools,
             relay_url=f"ws://127.0.0.1:{port}/ws/agent",
             workspace=workspace,
             allow_insecure_ws=True,
             catalog=catalog,
+            cua_access=prepared_cua_access,
+            assume_yes=options.yes or cua_confirmation_done,
         )
     else:
         print("Existing Agent configuration found; leaving it unchanged.")
+        if options.cua_access is not None:
+            config.update_cua_access(
+                path,
+                options.cua_access,
+                catalog=catalog,
+                assume_yes=options.yes,
+            )
 
     _report(path, "server", catalog)
     _report(path, "agent", catalog)
@@ -372,6 +440,13 @@ def _configure_agent(
 ) -> int:
     if _section_exists(path, "agent") and not options.force:
         print("Existing Agent configuration found; leaving it unchanged.")
+        if options.cua_access is not None:
+            config.update_cua_access(
+                path,
+                options.cua_access,
+                catalog=catalog,
+                assume_yes=options.yes,
+            )
         _report(path, "agent", catalog)
         _check_connection(path, options, catalog=catalog)
         print("Start the Agent with: agent-relay agent")
@@ -395,6 +470,7 @@ def _configure_agent(
     workspace = _workspace_value(options, prompter)
     token = _agent_token(options, prompter)
     tools = _selected_tools(path, options, catalog)
+    cua_access = _cua_access_value(options, prompter)
     config.init_config(
         path,
         "agent",
@@ -405,6 +481,8 @@ def _configure_agent(
         workspace=workspace,
         allow_insecure_ws=allow_insecure_ws,
         catalog=catalog,
+        cua_access=cua_access,
+        assume_yes=options.yes,
     )
     _report(path, "agent", catalog)
     print("Agent credential stored in the private .env and never printed.")
@@ -420,10 +498,18 @@ def run(
     catalog: CatalogSnapshot | None = None,
 ) -> int:
     """Run one guided onboarding flow and return a CLI-compatible status."""
+    _validate_tool_options(options)
     config_path = Path(path).expanduser()
     prompter = _Prompter(non_interactive=options.non_interactive)
     role = _select_role(options, prompter)
     if role == "server":
+        if (
+            options.tools is not None
+            or options.no_tools
+            or options.cua_access is not None
+            or options.yes
+        ):
+            raise config.ConfigError("server onboarding does not accept Agent-only options")
         return _configure_server(path=config_path, options=options, prompter=prompter, catalog=catalog)
     if role == "agent":
         return _configure_agent(path=config_path, options=options, prompter=prompter, catalog=catalog)

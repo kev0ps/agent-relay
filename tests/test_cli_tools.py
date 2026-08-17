@@ -36,8 +36,8 @@ def test_cli_uses_provider_catalog_and_shows_risk_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     descriptor = ProviderToolDescriptor(
-        provider_name="browser",
-        tool_name="snapshot",
+        provider_name="cua",
+        tool_name="get_browser_state",
         public_name="provider-name-is-not-trusted",
         description="semantic page snapshot",
         input_schema={
@@ -62,7 +62,7 @@ def test_cli_uses_provider_catalog_and_shows_risk_status(
         CatalogService(
             [
                 ProviderRegistration(
-                    "browser", _Provider(), allow_reserved_public_names=True
+                    "cua", _Provider(), allow_reserved_public_names=True
                 )
             ]
         ).discover()
@@ -78,7 +78,7 @@ def test_cli_uses_provider_catalog_and_shows_risk_status(
                 "init",
                 "agent",
                 "--tools",
-                "relay_browser_snapshot",
+                "relay_cua_get_browser_state",
             ],
             catalog=catalog,
         )
@@ -86,7 +86,7 @@ def test_cli_uses_provider_catalog_and_shows_risk_status(
     )
     assert cli.main(["--config", str(config_path), "tools", "list"], catalog=catalog) == 0
     output = capsys.readouterr().out
-    assert "relay_browser_snapshot\tbrowser\tenabled\tread_only" in output
+    assert "relay_cua_get_browser_state" in output
 
 
 def test_agent_config_init_discovers_local_catalog_without_injection(
@@ -180,7 +180,7 @@ def test_set_allowlist_accepts_a_comma_separated_value(
     assert cli.main(["--config", str(config_path), "config", "validate", "agent"]) == 0
 
 
-def test_set_rejects_an_unavailable_optional_tool(
+def test_set_rejects_an_unknown_dynamic_cua_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config_path = tmp_path / "config.yaml"
@@ -196,16 +196,16 @@ def test_set_rejects_an_unavailable_optional_tool(
                 "set",
                 "agent",
                 "tools.allowlist",
-                "[relay_browser_list_tabs]",
+                "relay_cua_tool_not_in_catalog",
             ]
         )
         == 1
     )
-    assert "unavailable" in capsys.readouterr().err
+    assert "unknown Agent tool" in capsys.readouterr().err
     assert cli.main(["--config", str(config_path), "config", "validate", "agent"]) == 0
 
 
-def test_validation_without_catalog_rejects_static_optional_provider_fallback(
+def test_validation_without_catalog_accepts_dynamic_cua_selection_for_discovery(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
@@ -217,11 +217,7 @@ def test_validation_without_catalog_rejects_static_optional_provider_fallback(
         env={},
     )
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    profile = tmp_path / "profile"
-    profile.mkdir()
-    document["agent"]["tools"]["allowlist"] = ["relay_browser_snapshot"]
-    document["agent"]["browser"]["user_data_dir"] = str(profile)
-    document["agent"]["browser"]["allowed_origins"] = ["https://example.test"]
+    document["agent"]["tools"]["allowlist"] = ["relay_cua_get_browser_state"]
     yaml.safe_dump(document, config_path.open("w", encoding="utf-8"), sort_keys=False)
 
     report = config.validate_document(
@@ -230,23 +226,20 @@ def test_validation_without_catalog_rejects_static_optional_provider_fallback(
         env={"RELAY_AGENT_TOKEN": "agent-secret"},
     )
 
-    assert not report.valid
-    assert any("unavailable" in issue.message for issue in report.errors)
+    assert report.valid
 
 
-def test_reinit_without_catalog_rejects_static_optional_allowlist(
+def test_reinit_without_catalog_preserves_dynamic_cua_allowlist(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config.init_config(config_path, "agent", token="agent-secret", tools=[], env={})
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    profile = tmp_path / "profile"
-    profile.mkdir()
-    document["agent"]["tools"]["allowlist"] = ["relay_browser_snapshot"]
-    document["agent"]["browser"]["user_data_dir"] = str(profile)
-    document["agent"]["browser"]["allowed_origins"] = ["https://example.test"]
+    document["agent"]["tools"]["allowlist"] = ["relay_cua_get_browser_state"]
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(document, handle, sort_keys=False)
 
-    with pytest.raises(config.ConfigError, match="unavailable"):
-        config.init_config(config_path, "agent", tools=None, env={})
+    config.init_config(config_path, "agent", tools=None, env={})
+    assert config.get_section(config_path, "agent")["tools"]["allowlist"] == [
+        "relay_cua_get_browser_state"
+    ]

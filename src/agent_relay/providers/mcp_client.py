@@ -60,19 +60,99 @@ def _debug_cua_descriptor_failure(provider_name: str, category: str) -> None:
         _debug_log(f"cua provider descriptor failure: category={category}")
 
 
+_CUA_FALLBACK_VALUE_SCHEMA = {
+    "anyOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "integer"},
+        {"type": "number"},
+        {"type": "string", "maxLength": MAX_JSON_COLLECTION_ITEMS},
+    ]
+}
+_CUA_SCHEMA_ASSERTIONS = frozenset(
+    {
+        "$ref",
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "const",
+        "contains",
+        "enum",
+        "items",
+        "not",
+        "oneOf",
+        "prefixItems",
+        "properties",
+        "required",
+        "type",
+    }
+)
+_CUA_SCHEMA_MAP_KEYS = frozenset(
+    {"$defs", "definitions", "dependentSchemas", "patternProperties", "properties"}
+)
+_CUA_SCHEMA_LIST_KEYS = frozenset(
+    {"allOf", "anyOf", "oneOf", "prefixItems"}
+)
+_CUA_SCHEMA_NODE_KEYS = frozenset(
+    {
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+
+
 def _normalize_cua_schema_bounds(value: object) -> object:
-    """Copy a CUA schema while filling the shared finite collection bounds."""
+    """Copy a CUA schema into Relay's finite, closed schema subset.
+
+    cua-driver intentionally publishes permissive ``additionalProperties``
+    defaults for forward-compatible wire results. Relay descriptors must stay
+    closed and bounded, so undeclared object properties are rejected at the
+    local boundary while declared arrays/maps receive the shared finite cap.
+    """
     if isinstance(value, list):
         return [_normalize_cua_schema_bounds(item) for item in value]
     if not isinstance(value, dict):
         return value
-    normalized = {
-        key: _normalize_cua_schema_bounds(child) for key, child in value.items()
-    }
+    normalized: dict[str, object] = {}
+    for key, child in value.items():
+        if key in _CUA_SCHEMA_MAP_KEYS and isinstance(child, dict):
+            normalized[key] = {
+                name: _normalize_cua_schema_bounds(schema)
+                for name, schema in child.items()
+            }
+        elif key in _CUA_SCHEMA_LIST_KEYS and isinstance(child, list):
+            normalized[key] = [_normalize_cua_schema_bounds(schema) for schema in child]
+        elif key in _CUA_SCHEMA_NODE_KEYS:
+            normalized[key] = _normalize_cua_schema_bounds(child)
+        else:
+            normalized[key] = child
+    if not _CUA_SCHEMA_ASSERTIONS.intersection(normalized):
+        normalized.update(_CUA_FALLBACK_VALUE_SCHEMA)
     items = normalized.get("items")
     if items is not None and items is not False and "maxItems" not in normalized:
         normalized["maxItems"] = MAX_JSON_COLLECTION_ITEMS
     additional = normalized.get("additionalProperties")
+    schema_type = normalized.get("type")
+    object_schema = (
+        schema_type == "object"
+        or (isinstance(schema_type, list) and "object" in schema_type)
+        or "properties" in normalized
+        or "required" in normalized
+    )
+    if object_schema and additional is None:
+        normalized["additionalProperties"] = False
+    elif additional is True:
+        normalized["additionalProperties"] = False
+        additional = False
     if isinstance(additional, dict) and "maxProperties" not in normalized:
         normalized["maxProperties"] = MAX_JSON_COLLECTION_ITEMS
     return normalized
@@ -360,6 +440,15 @@ class McpProviderToolClient:
                                 )
                             except Exception:
                                 failure_category = "descriptor"
+                                if self._provider_name == "cua":
+                                    # CUA inventory is versioned independently from
+                                    # Relay. A malformed, unselected future tool must
+                                    # not hide valid tools; selection still fails later
+                                    # because the malformed descriptor is absent.
+                                    _debug_cua_descriptor_failure(
+                                        self._provider_name, failure_category
+                                    )
+                                    continue
                                 raise
                             descriptors.append(descriptor)
                         if len(descriptors) > MAX_PROVIDER_TOOLS:
@@ -390,7 +479,9 @@ class McpProviderToolClient:
                         break
                     seen_cursors.add(next_cursor)
                     cursor = next_cursor
-                self._tools = bounded_descriptors(descriptors)
+                self._tools = bounded_descriptors(
+                    descriptors, aggregate=self._provider_name != "cua"
+                )
             except (ProviderToolError, asyncio.CancelledError):
                 raise
             return self._tools
@@ -504,7 +595,7 @@ def _descriptor(
     input_schema = _field(tool, "inputSchema", "input_schema")
     output_schema = _field(tool, "outputSchema", "output_schema", default=None)
     if provider_name == "cua":
-        # cua-driver 0.8.3 omits some collection bounds; fill them with the
+        # cua-driver omits some collection bounds; fill them with the
         # existing Relay limit without changing generic-provider validation.
         input_schema = _normalize_cua_schema_bounds(input_schema)
         if output_schema is not None:
