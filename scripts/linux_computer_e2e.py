@@ -800,6 +800,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_NATIVE_DEBUG": "1",
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
+                "RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS": "30",
             }
         )
         agent_environment.update(_cua_agent_driver_environment())

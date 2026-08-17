@@ -45,7 +45,7 @@ except ModuleNotFoundError as error:
 
 EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = _mcp.EXPECTED_MCP_TOOLS
 MCP_OPERATION_TIMEOUT: Final[float] = 10.0
-MCP_BROWSER_HTTP_TIMEOUT: Final[float] = 15.0
+MCP_BROWSER_HTTP_TIMEOUT: Final[float] = 30.0
 EVENT_POLL_TIMEOUT: Final[float] = 10.0
 CUA_EVENT_FILE: Final[str] = "computer-events.jsonl"
 CORE_MCP_TOOLS: Final[tuple[str, ...]] = (

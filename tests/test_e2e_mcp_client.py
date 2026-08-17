@@ -309,7 +309,7 @@ def test_browser_cua_scenario_requests_driver_compatible_http_timeout(
             )
         )
 
-    assert captured["http_timeout"] == 15.0
+    assert captured["http_timeout"] == 30.0
 
 
 def test_call_tool_validates_url_is_loopback() -> None:
