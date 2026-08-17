@@ -162,19 +162,7 @@ def _diagnose_pwd_mismatch(result: object, expected: str) -> None:
 
 
 def _diagnose_browser_prepare(result: object) -> None:
-    """Log only fixed schema facts for a rejected browser prepare result."""
-    payload = getattr(result, "structuredContent", None)
-    if not isinstance(payload, dict):
-        print(
-            "E2E browser prepare diagnostic: structured_content=unavailable.",
-            file=sys.stderr,
-        )
-        return
-    status = payload.get("status")
-    prepared = payload.get("prepared")
-    prepared_pid = payload.get("prepared_pid")
-    refusal = payload.get("refusal")
-    refusal_code = refusal.get("code") if isinstance(refusal, dict) else None
+    """Log bounded facts for a rejected browser prepare result."""
     known_refusal_codes = {
         "browser_action_unavailable",
         "browser_binding_ambiguous",
@@ -193,6 +181,58 @@ def _diagnose_browser_prepare(result: object) -> None:
         "browser_tab_required",
         "browser_wrong_target_refused",
     }
+    content = getattr(result, "content", None)
+    content_items = content if isinstance(content, list) else []
+    content_types = sorted(
+        {
+            value
+            for item in content_items
+            if isinstance(value := getattr(item, "type", None), str)
+        }
+    )
+    text_lengths: list[int] = []
+    text_keywords: set[str] = set()
+    content_codes: set[str] = set()
+    keywords = (
+        "browser",
+        "consent",
+        "profile",
+        "setup",
+        "window",
+        "endpoint",
+        "target",
+        "timeout",
+        "denied",
+        "rejected",
+    )
+    for item in content_items:
+        text = getattr(item, "text", None)
+        if not isinstance(text, str):
+            continue
+        text_lengths.append(len(text))
+        normalized = text.casefold().replace("-", "_").replace(" ", "_")
+        text_keywords.update(keyword for keyword in keywords if keyword in normalized)
+        content_codes.update(code for code in known_refusal_codes if code in normalized)
+    content_facts = (
+        f"content_count={len(content_items)} "
+        f"content_types={','.join(content_types) or 'none'} "
+        f"text_lengths={','.join(map(str, text_lengths)) or 'none'} "
+        f"text_keywords={','.join(sorted(text_keywords)) or 'none'} "
+        f"content_codes={','.join(sorted(content_codes)) or 'none'}"
+    )
+    payload = getattr(result, "structuredContent", None)
+    if not isinstance(payload, dict):
+        print(
+            "E2E browser prepare diagnostic: "
+            f"structured_content=unavailable {content_facts}.",
+            file=sys.stderr,
+        )
+        return
+    status = payload.get("status")
+    prepared = payload.get("prepared")
+    prepared_pid = payload.get("prepared_pid")
+    refusal = payload.get("refusal")
+    refusal_code = refusal.get("code") if isinstance(refusal, dict) else None
     print(
         "E2E browser prepare diagnostic: "
         f"field_count={len(payload)} "
@@ -203,7 +243,8 @@ def _diagnose_browser_prepare(result: object) -> None:
         f"prepared_true={prepared is True} prepared_type={type(prepared).__name__} "
         f"pid_positive={type(prepared_pid) is int and prepared_pid > 0} "
         f"pid_type={type(prepared_pid).__name__} "
-        f"refusal_code={refusal_code if refusal_code in known_refusal_codes else 'other'}.",
+        f"refusal_code={refusal_code if refusal_code in known_refusal_codes else 'other'} "
+        f"{content_facts}.",
         file=sys.stderr,
     )
 
