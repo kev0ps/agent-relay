@@ -283,6 +283,25 @@ def test_linux_cua_controls_readiness_uses_public_snapshot_oracle(monkeypatch) -
     assert calls[1][3]["window_id"] == 7
 
 
+def test_cua_snapshot_diagnostic_is_bounded() -> None:
+    harness = _load_harness()
+    result = SimpleNamespace(
+        structuredContent={
+            "snapshot_id": "opaque",
+            "elements": [
+                {"role": "textbox", "label": "Name", "element_token": "secret"},
+                {"role": "button", "label": "Apply", "element_token": "secret-2"},
+            ],
+            "degraded": False,
+        }
+    )
+
+    diagnostic = harness._cua_snapshot_diagnostic(result)
+
+    assert diagnostic == "element_count=2 name_labels=1 apply_labels=1 degraded=False has_snapshot_id=True"
+    assert "secret" not in diagnostic
+
+
 def test_linux_cua_controls_readiness_scopes_by_browser_pid(monkeypatch) -> None:
     harness = _load_harness()
     calls = []

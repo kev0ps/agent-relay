@@ -117,8 +117,35 @@ def _runtime(
     )
 
 
+def _cua_snapshot_diagnostic(result: Any) -> str:
+    payload = getattr(result, "structuredContent", None)
+    if not isinstance(payload, dict):
+        return "structured_content=unavailable"
+    elements = payload.get("elements")
+    if not isinstance(elements, list):
+        return f"elements_type={type(elements).__name__}"
+    name_labels = 0
+    apply_labels = 0
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        label = element.get("label")
+        if not isinstance(label, str):
+            continue
+        if label.casefold() == "name":
+            name_labels += 1
+        elif label.casefold() == "apply":
+            apply_labels += 1
+    return (
+        f"element_count={len(elements)} name_labels={name_labels} "
+        f"apply_labels={apply_labels} degraded={payload.get('degraded') is True} "
+        f"has_snapshot_id={isinstance(payload.get('snapshot_id'), str)}"
+    )
+
+
 def _cua_controls_ready(runtime: Any) -> bool:
     """Require the public CUA path to expose the fixture's two controls."""
+    snapshot: Any | None = None
     try:
         raw_browser_pid = getattr(runtime, "browser_pid", "")
         browser_pid: int | None = None
@@ -172,6 +199,12 @@ def _cua_controls_ready(runtime: Any) -> bool:
             window_id=window_id,
         )
     except (ConnectionError, ValueError):
+        if snapshot is not None:
+            print(
+                f"Linux CUA AX diagnostic: {_cua_snapshot_diagnostic(snapshot)}",
+                file=sys.stderr,
+                flush=True,
+            )
         return False
     return True
 
