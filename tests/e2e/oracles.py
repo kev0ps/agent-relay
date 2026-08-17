@@ -547,11 +547,16 @@ def validate_cua_browser_controls(
                 or ref in seen_refs
                 or not isinstance(role, str)
                 or not _exact_str(role, nonempty=True, maximum=64)
-                or not isinstance(name, str)
-                or not _exact_str(name, maximum=256)
-                or type(states) is not list
+                or not (name is None or isinstance(name, str))
+                or (isinstance(name, str) and not _exact_str(name, maximum=256))
+                or type(states) is not dict
                 or type(actions) is not list
-                or not all(_exact_str(state, nonempty=True, maximum=64) for state in states)
+                or len(states) > 32
+                or not all(
+                    _exact_str(state, nonempty=True, maximum=64)
+                    and (isinstance(value, (bool, int, float, str)) or value is None)
+                    for state, value in states.items()
+                )
                 or not all(_exact_str(action, nonempty=True, maximum=64) for action in actions)
                 or (
                     "value" in ref_entry
@@ -567,12 +572,14 @@ def validate_cua_browser_controls(
             normalized_actions = {action.casefold() for action in actions}
             if (
                 normalized_role in {"textbox", "combobox"}
+                and isinstance(name, str)
                 and name.casefold() == "name"
                 and "type" in normalized_actions
             ):
                 field_refs.append(ref)
             if (
                 normalized_role in {"button", "push button"}
+                and isinstance(name, str)
                 and name.casefold() == "apply"
                 and "click" in normalized_actions
             ):
