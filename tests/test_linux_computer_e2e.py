@@ -101,7 +101,11 @@ def test_linux_cua_launch_uses_resolved_executable(tmp_path, monkeypatch) -> Non
     assert harness._launch_cua_browser(runtime, tmp_path / "profile", executable) == 73
     assert calls[0][3]["name"] == executable.name
     assert calls[0][3]["launch_path"] == str(executable)
-    assert calls[0][3]["additional_arguments"][-1] == runtime.fixture_url
+    assert f"--app={runtime.fixture_url}" in calls[0][3]["additional_arguments"]
+    assert all(
+        argument != runtime.fixture_url
+        for argument in calls[0][3]["additional_arguments"]
+    )
     assert calls[0][4]["http_timeout"] == 10.0
     assert calls[0][4]["operation_timeout"] == 15.0
 
