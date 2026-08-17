@@ -367,6 +367,7 @@ async def _wait_for_cua_browser_state(
             return last_result
         except ValueError:
             await asyncio.sleep(0.1)
+    _diagnose_cua_browser_state(last_result, expected_url, expected_text)
     _oracles.validate_cua_browser_state(
         last_result,
         expected_url=expected_url,
@@ -379,6 +380,41 @@ async def _wait_for_cua_browser_state(
             expected_text=expected_text,
         )
     raise AssertionError("unreachable browser state wait")
+
+
+def _diagnose_cua_browser_state(
+    result: Any,
+    expected_url: str,
+    expected_text: str | None,
+) -> None:
+    """Log bounded shape facts for a browser-state timeout."""
+    payload = getattr(result, "structuredContent", None)
+    if not isinstance(payload, dict):
+        print(
+            "E2E browser state diagnostic: structured_content=unavailable.",
+            file=sys.stderr,
+        )
+        return
+    url = payload.get("url")
+    text = payload.get("text")
+    tabs = payload.get("tabs")
+    elements = payload.get("elements")
+    target_id = payload.get("target_id")
+    print(
+        "E2E browser state diagnostic: "
+        f"keys={','.join(sorted(str(key) for key in payload))} "
+        f"status={payload.get('status') if isinstance(payload.get('status'), str) else 'other'} "
+        f"url_type={type(url).__name__} url_len={len(url) if isinstance(url, str) else 'none'} "
+        f"url_digest={hashlib.sha256(url.encode()).hexdigest()[:16] if isinstance(url, str) else 'none'} "
+        f"expected_url_digest={hashlib.sha256(expected_url.encode()).hexdigest()[:16]} "
+        f"text_len={len(text) if isinstance(text, str) else 'none'} "
+        f"text_digest={hashlib.sha256(text.encode()).hexdigest()[:16] if isinstance(text, str) else 'none'} "
+        f"expected_text={'set' if expected_text is not None else 'none'} "
+        f"target_type={type(target_id).__name__} tabs={len(tabs) if isinstance(tabs, list) else 'none'} "
+        f"active_tabs={sum(1 for tab in tabs if isinstance(tab, dict) and tab.get('active') is True) if isinstance(tabs, list) else 'none'} "
+        f"elements={len(elements) if isinstance(elements, list) else 'none'}.",
+        file=sys.stderr,
+    )
 
 
 async def _run_core_scenario_async(
