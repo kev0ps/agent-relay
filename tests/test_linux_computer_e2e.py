@@ -390,6 +390,17 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "if: always()" in job
 
 
+def test_linux_cua_passes_profile_grant_only_to_agent_environment(monkeypatch) -> None:
+    harness = _load_harness()
+    grant_name = "AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE"
+
+    monkeypatch.setenv(grant_name, "1")
+    assert harness._cua_agent_driver_environment() == {grant_name: "1"}
+
+    monkeypatch.setenv(grant_name, "0")
+    assert harness._cua_agent_driver_environment() == {}
+
+
 def test_linux_cua_starts_driver_before_chromium() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert source.index('phase = "agent-start"') < source.index('phase = "chromium-start"')

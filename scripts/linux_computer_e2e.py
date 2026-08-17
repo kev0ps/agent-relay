@@ -93,6 +93,7 @@ CUA_AGENT_TOOLS = (
 DESKTOP_READY_TIMEOUT_SECONDS = 15.0
 FIXTURE_READY_TIMEOUT_SECONDS = 15.0
 AGENT_READY_TIMEOUT_SECONDS = 30.0
+CUA_EXISTING_PROFILE_GRANT_ENV = "AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE"
 
 LinuxCuaE2EError = native.NativeE2EError
 
@@ -115,6 +116,13 @@ def _runtime(
         fixtures_root=str(fixtures_root),
         browser_pid=browser_pid,
     )
+
+
+def _cua_agent_driver_environment() -> dict[str, str]:
+    """Pass the explicit existing-profile opt-in only to the Agent child."""
+    if os.environ.get(CUA_EXISTING_PROFILE_GRANT_ENV) == "1":
+        return {CUA_EXISTING_PROFILE_GRANT_ENV: "1"}
+    return {}
 
 
 _CUA_FIELD_ROLES = frozenset({"textbox", "entry", "text", "edit", "editable"})
@@ -791,6 +799,7 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE": COMPUTER_WINDOW_TITLE,
             }
         )
+        agent_environment.update(_cua_agent_driver_environment())
         fixture_environment = native._minimal_environment(home, {"ARTIFACTS_DIR": str(local_artifacts)})
         phase = "xvfb-start"
         xvfb = native._spawn(
