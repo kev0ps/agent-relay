@@ -237,6 +237,17 @@ def _diagnose_browser_prepare(result: object) -> None:
     prepared_pid = payload.get("prepared_pid")
     refusal = payload.get("refusal")
     refusal_code = refusal.get("code") if isinstance(refusal, dict) else None
+    refusal_keys = (
+        ",".join(sorted(refusal))
+        if isinstance(refusal, dict)
+        else "none"
+    )
+    refusal_detail = refusal.get("detail") if isinstance(refusal, dict) else None
+    refusal_detail_keys = (
+        ",".join(sorted(refusal_detail))
+        if isinstance(refusal_detail, dict)
+        else "none"
+    )
     print(
         "E2E browser prepare diagnostic: "
         f"field_count={len(payload)} "
@@ -248,6 +259,7 @@ def _diagnose_browser_prepare(result: object) -> None:
         f"pid_positive={type(prepared_pid) is int and prepared_pid > 0} "
         f"pid_type={type(prepared_pid).__name__} "
         f"refusal_code={refusal_code if refusal_code in known_refusal_codes else 'other'} "
+        f"refusal_keys={refusal_keys} refusal_detail_keys={refusal_detail_keys} "
         f"{content_facts}.",
         file=sys.stderr,
     )
