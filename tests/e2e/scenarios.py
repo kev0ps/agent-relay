@@ -676,7 +676,14 @@ async def _run_cua_browser_subscenario(
         for pid in cleanup_pids:
             _mark(phase, "browser-kill")
             try:
-                kill_result = await client.call("relay_cua_kill_app", {"pid": pid})
+                try:
+                    kill_result = await client.call("relay_cua_kill_app", {"pid": pid})
+                except BaseException as error:
+                    print(
+                        f"E2E browser kill diagnostic: pid={pid} call_error={type(error).__name__}.",
+                        file=sys.stderr,
+                    )
+                    raise
                 try:
                     _oracles.validate_cua_browser_success(
                         kill_result,
@@ -691,8 +698,17 @@ async def _run_cua_browser_subscenario(
         if launch_profile_dir is not None:
             launch_profile_dir.cleanup()
         if primary_error is None and cleanup_error is not None:
+            print(
+                f"E2E browser cleanup diagnostic: error={type(cleanup_error).__name__}.",
+                file=sys.stderr,
+            )
             raise cleanup_error
     if primary_error is not None:
+        print(
+            "E2E browser primary diagnostic: "
+            f"error={type(primary_error).__name__} phase={primary_phase or 'unknown'}.",
+            file=sys.stderr,
+        )
         if primary_phase is not None:
             _mark(phase, primary_phase)
         raise primary_error
