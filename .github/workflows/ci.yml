@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload bounded Linux evidence
         if: always() && steps.validate-linux-terminal-evidence.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: linux-terminal-e2e-evidence
           path: linux-terminal-evidence/**
@@ -329,7 +329,7 @@ jobs:
 
       - name: Upload bounded Linux CUA evidence
         if: always() && steps.validate-linux-cua-evidence.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: linux-cua-e2e-evidence
           path: linux-cua-evidence/**
@@ -398,7 +398,7 @@ jobs:
 
       - name: Upload bounded Windows evidence
         if: always() && steps.validate-windows-evidence.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-terminal-e2e-evidence
           path: windows-evidence/**
@@ -483,7 +483,7 @@ jobs:
 
       - name: Upload bounded Windows CUA evidence
         if: always() && steps.validate-windows-cua-evidence.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-cua-e2e-evidence
           path: windows-cua-evidence/**
