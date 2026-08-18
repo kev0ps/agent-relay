@@ -5,7 +5,7 @@ set -euo pipefail
 repository="https://github.com/kev0ps/agent-relay"
 source_ref="${AGENT_RELAY_REF:-main}"
 source_ref_kind="${AGENT_RELAY_REF_KIND:-heads}"
-python_version="${AGENT_RELAY_PYTHON_VERSION:-3.13.5}"
+python_version="${AGENT_RELAY_PYTHON_VERSION:-3.14.4}"
 project_root="${AGENT_RELAY_PROJECT_ROOT:-}"
 archive_source="${AGENT_RELAY_ARCHIVE_SOURCE:-}"
 

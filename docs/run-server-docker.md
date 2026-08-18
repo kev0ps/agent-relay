@@ -24,7 +24,7 @@ trusted, firewalled LAN; do not expose port `8000` directly to the Internet.
 - Linux with Docker Engine and Docker Compose v2;
 - a reviewed Agent Relay commit;
 - a firewall restricting port `8000` to the intended network;
-- Python 3.11+ and `uv` on the Agent machine.
+- Python 3.14+ and `uv` on the Agent machine.
 
 Check out the exact reviewed revision rather than following a moving branch:
 

@@ -5,7 +5,7 @@ description = "Constrained MCP relay for explicitly enabled local capabilities"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115,<1",
     "mcp>=2,<3",
@@ -43,7 +43,7 @@ testpaths = ["tests"]
 markers = ["integration: real loopback network tests"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 88
 
 [tool.ruff.lint]

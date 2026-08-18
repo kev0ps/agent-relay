@@ -78,8 +78,8 @@ server. Today, one configured device can process one invocation at a time.
 
 ## Install
 
-Agent Relay requires Python 3.11 or newer. The platform installers install or
-verify `uv` and a managed Python 3.13.5, install the `agent-relay` command for
+Agent Relay requires Python 3.14 or newer. The platform installers install or
+verify `uv` and a managed Python 3.14.4, install the `agent-relay` command for
 the current user, and can initialize a new local Server and outbound Agent for
 loopback only. Existing settings are preserved. Before starting an existing
 configuration, verify `server.host`, the Agent relay URL, and the host firewall.

@@ -18,7 +18,7 @@ $sourceRefKind = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_REF_KIND)) {
     $env:AGENT_RELAY_REF_KIND
 }
 $script:pythonVersion = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_PYTHON_VERSION)) {
-    "3.13.5"
+    "3.14.4"
 } else {
     $env:AGENT_RELAY_PYTHON_VERSION
 }

@@ -20,6 +20,8 @@ The project is currently pre-1.0 and has no formal release tag.
 
 ### Changed
 
+- Python 3.14.4 is now the minimum and managed runtime for the package,
+  installers, CI, and Docker image.
 - Credentials now live in a private `.env` beside the selected YAML file and
   are read directly without dotenv environment injection. The former
   `secrets/` YAML layout and `*_TOKEN_FILE` runtime overrides are intentionally

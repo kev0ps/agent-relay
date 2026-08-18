@@ -18,6 +18,13 @@ def test_cua_driver_is_optional_and_not_part_of_the_default_runtime() -> None:
     assert project["optional-dependencies"]["cua"] == ["cua-driver==0.19.3"]
 
 
+def test_project_requires_python_314_or_newer() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)["project"]
+
+    assert project["requires-python"] == ">=3.14"
+
+
 def test_docker_runtime_contract_has_no_implicit_role_or_secret_build_inputs() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
     instructions = [line.strip() for line in dockerfile.splitlines() if line.strip()]
@@ -29,8 +36,8 @@ def test_docker_runtime_contract_has_no_implicit_role_or_secret_build_inputs() -
     assert "ca-certificates" in dockerfile
     assert re.search(r"\bapt-get install\b[^\n]*\bgit\b", dockerfile)
     assert "uv sync --frozen" in dockerfile
-    assert "FROM python:3.13.5-slim-bookworm AS builder" in dockerfile
-    assert "FROM python:3.13.5-slim-bookworm AS runtime" in dockerfile
+    assert "FROM python:3.14.4-slim-bookworm AS builder" in dockerfile
+    assert "FROM python:3.14.4-slim-bookworm AS runtime" in dockerfile
     assert "COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/" in dockerfile
     assert not any(line.startswith("EXPOSE ") for line in instructions)
     assert not any(
