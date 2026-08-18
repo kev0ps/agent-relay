@@ -1,4 +1,4 @@
-FROM python:3.13.5-slim-bookworm AS builder
+FROM python:3.14.4-slim-bookworm AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
@@ -13,7 +13,7 @@ COPY README.md LICENSE ./
 COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable
 
-FROM python:3.13.5-slim-bookworm AS runtime
+FROM python:3.14.4-slim-bookworm AS runtime
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates git \

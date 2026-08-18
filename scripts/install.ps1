@@ -18,7 +18,7 @@ $sourceRefKind = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_REF_KIND)) {
     $env:AGENT_RELAY_REF_KIND
 }
 $script:pythonVersion = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_PYTHON_VERSION)) {
-    "3.13.5"
+    "3.14.4"
 } else {
     $env:AGENT_RELAY_PYTHON_VERSION
 }
@@ -215,8 +215,32 @@ try {
         $projectRoot = (Resolve-Path -LiteralPath $projectRoot).Path
     }
 
+    $setupMode = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_SETUP)) {
+        "prompt"
+    } else {
+        $env:AGENT_RELAY_SETUP.ToLowerInvariant()
+    }
+    if ($setupMode -notin @("prompt", "local", "server", "agent", "skip")) {
+        throw "AGENT_RELAY_SETUP must be 'prompt', 'local', 'server', 'agent', or 'skip'."
+    }
+    if ($setupMode -eq "prompt") {
+        $answer = Read-Host "Choose onboarding: [L]ocal, [S]erver, [A]gent, [N]one (default Local)"
+        switch -Regex ($answer.Trim()) {
+            "^[Ss]" { $setupMode = "server"; break }
+            "^[Aa]" { $setupMode = "agent"; break }
+            "^[Nn]" { $setupMode = "skip"; break }
+            default { $setupMode = "local" }
+        }
+    }
+
     Write-Host "Installing the Agent Relay command for the current user..."
-    & $uv tool install --force $projectRoot
+    $toolArguments = @("tool", "install", "--force")
+    $toolTarget = $projectRoot
+    if ($setupMode -in @("local", "agent")) {
+        $toolTarget = "$projectRoot[cua]"
+    }
+    $toolArguments += $toolTarget
+    & $uv @toolArguments
     if ($LASTEXITCODE -ne 0) {
         throw "uv tool install failed with exit code $LASTEXITCODE."
     }
@@ -238,24 +262,6 @@ try {
         throw "The agent-relay command was not found in $toolBin."
     }
     $script:agentRelayCommand = $agentRelay.FullName
-
-    $setupMode = if ([string]::IsNullOrWhiteSpace($env:AGENT_RELAY_SETUP)) {
-        "prompt"
-    } else {
-        $env:AGENT_RELAY_SETUP.ToLowerInvariant()
-    }
-    if ($setupMode -notin @("prompt", "local", "server", "agent", "skip")) {
-        throw "AGENT_RELAY_SETUP must be 'prompt', 'local', 'server', 'agent', or 'skip'."
-    }
-    if ($setupMode -eq "prompt") {
-        $answer = Read-Host "Choose onboarding: [L]ocal, [S]erver, [A]gent, [N]one (default Local)"
-        switch -Regex ($answer.Trim()) {
-            "^[Ss]" { $setupMode = "server"; break }
-            "^[Aa]" { $setupMode = "agent"; break }
-            "^[Nn]" { $setupMode = "skip"; break }
-            default { $setupMode = "local" }
-        }
-    }
 
     if ($setupMode -eq "server") {
         Invoke-AgentRelay @("onboard", "--role", "server", "--non-interactive")

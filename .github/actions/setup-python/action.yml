@@ -6,6 +6,10 @@ inputs:
     description: Run the Agent Relay user installer and expose its command for a native E2E harness
     required: false
     default: "false"
+  cua:
+    description: Install the optional CUA provider dependency
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -15,7 +19,7 @@ runs:
       uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
       with:
         version: "0.11.6"
-        python-version: "3.13.5"
+        python-version: "3.14.4"
         enable-cache: true
         cache-dependency-glob: uv.lock
 
@@ -24,10 +28,15 @@ runs:
       shell: bash
       run: uv lock --check
 
-    - name: Install locked dependencies
-      if: inputs.installer != 'true'
+    - name: Install locked dependencies without CUA
+      if: inputs.installer != 'true' && inputs.cua != 'true'
       shell: bash
       run: uv sync --locked
+
+    - name: Install locked dependencies with CUA
+      if: inputs.installer != 'true' && inputs.cua == 'true'
+      shell: bash
+      run: uv sync --locked --extra cua
 
     - name: Install Agent Relay runtime through the Linux bootstrapper
       if: inputs.installer == 'true' && runner.os == 'Linux'

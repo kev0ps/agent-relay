@@ -14,7 +14,8 @@ def test_python_job_runs_required_quality_gates() -> None:
     assert "uv run --frozen ruff check ." in python_job
     assert 'pytest -q -m "not integration"' in python_job
     assert "pytest -q -m integration" in python_job
-    assert "uv lock --check" not in python_job
+    assert "uv lock --check" in python_job
+    assert "scripts/audit_dependencies.py --check" in python_job
 
 
 def test_ci_has_only_general_cua_native_jobs() -> None:
@@ -40,9 +41,10 @@ def test_cua_jobs_use_the_standard_locked_dependency_set() -> None:
     for job_name in ("e2e-linux-cua", "e2e-windows-cua"):
         job = workflow.split(f"  {job_name}:", 1)[1].split("\n  e2e-", 1)[0]
         assert "scripts/probe_cua_driver.py" in job
-    assert ("profile: " + "cua") not in workflow
+        assert 'cua: "true"' in job
     assert "profile:" not in setup
     assert "uv sync --locked" in setup
+    assert "--extra cua" in setup
     assert ("AGENT_RELAY_SYNC_" + "PROFILE") not in setup
     assert "extra " + "browser" not in setup
     assert "extra " + "computer" not in setup
@@ -96,3 +98,13 @@ def test_dependabot_groups_python_and_actions_weekly_without_automerge() -> None
     assert dependabot.count("interval: weekly") == 2
     assert "patterns:" in dependabot
     assert "automerge" not in dependabot.casefold()
+
+
+def test_dependabot_does_not_group_major_python_updates_after_mcp2() -> None:
+    dependabot = DEPENDABOT.read_text(encoding="utf-8")
+    python_config = dependabot.split("  - package-ecosystem: pip", 1)[1].split(
+        "  - package-ecosystem: github-actions", 1
+    )[0]
+
+    assert 'update-types: ["patch", "minor"]' in python_config
+    assert 'dependency-name: "mcp"' not in python_config

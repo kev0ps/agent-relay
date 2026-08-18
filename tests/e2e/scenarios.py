@@ -104,6 +104,16 @@ def _mark(phase: list[str] | None, value: str) -> None:
         phase[:] = [value]
 
 
+_MISSING = object()
+
+
+def _result_field(result: object, canonical: str, legacy: str, default: Any = None) -> Any:
+    value = getattr(result, canonical, _MISSING)
+    if value is not _MISSING:
+        return value
+    return getattr(result, legacy, default)
+
+
 def _fixture_path(runtime: RuntimeConfig, filename: str) -> Path:
     return Path(runtime.fixtures_root) / filename
 
@@ -145,7 +155,7 @@ def _portable_phase(
 
 def _diagnose_pwd_mismatch(result: object, expected: str) -> None:
     """Log bounded path-shape facts without exposing the workspace path."""
-    payload = getattr(result, "structuredContent", None)
+    payload = _result_field(result, "structured_content", "structuredContent")
     actual = payload.get("stdout") if isinstance(payload, dict) else None
     if not isinstance(actual, str):
         print("E2E pwd diagnostic: stdout unavailable.", file=sys.stderr)
@@ -226,7 +236,7 @@ def _diagnose_browser_prepare(result: object) -> None:
         f"text_keywords={','.join(sorted(text_keywords)) or 'none'} "
         f"content_codes={','.join(sorted(content_codes)) or 'none'}"
     )
-    payload = getattr(result, "structuredContent", None)
+    payload = _result_field(result, "structured_content", "structuredContent")
     if not isinstance(payload, dict):
         print(
             "E2E browser prepare diagnostic: "
@@ -307,7 +317,7 @@ async def _wait_for_cua_browser_window(
     last_window_id: int | None = None
     while time.monotonic() < deadline:
         result = await client.call("relay_cua_list_windows", {"pid": pid})
-        payload = getattr(result, "structuredContent", None)
+        payload = _result_field(result, "structured_content", "structuredContent")
         windows = payload.get("windows") if isinstance(payload, dict) else None
         if isinstance(windows, list):
             for window in windows:
@@ -393,7 +403,7 @@ def _diagnose_cua_browser_state(
     expected_text: str | None,
 ) -> None:
     """Log bounded shape facts for a browser-state timeout."""
-    payload = getattr(result, "structuredContent", None)
+    payload = _result_field(result, "structured_content", "structuredContent")
     if not isinstance(payload, dict):
         print(
             "E2E browser state diagnostic: structured_content=unavailable.",
@@ -550,7 +560,7 @@ async def _run_cua_browser_subscenario(
         _mark(
             phase,
             "browser-prepare-provider-error"
-            if getattr(prepare_result, "isError", None) is True
+            if _result_field(prepare_result, "is_error", "isError") is True
             else "browser-prepare-response",
         )
         try:
@@ -726,11 +736,11 @@ async def _run_cua_browser_subscenario(
 
 def _diagnose_cua_kill_result(result: Any, pid: int) -> None:
     """Log bounded facts when cleanup refuses a process kill."""
-    payload = getattr(result, "structuredContent", None)
+    payload = _result_field(result, "structured_content", "structuredContent")
     keys = ",".join(sorted(str(key) for key in payload)) if isinstance(payload, dict) else "none"
     print(
         "E2E browser kill diagnostic: "
-        f"pid={pid} is_error={getattr(result, 'isError', None) is True} "
+        f"pid={pid} is_error={_result_field(result, 'is_error', 'isError') is True} "
         f"structured_keys={keys} "
         f"content_count={len(getattr(result, 'content', []) or [])}.",
         file=sys.stderr,
@@ -858,7 +868,7 @@ async def _run_cua_scenario_async(
             "relay_cua_click",
             {"pid": pid, "window_id": window_id, "element_token": button_token},
         )
-        if stale.isError is not True or button_token in str(stale):
+        if _result_field(stale, "is_error", "isError") is not True or button_token in str(stale):
             raise ValueError("stale CUA element was not safely rejected")
         _mark(phase, "stale-click-oracle")
         _oracles.assert_no_cua_event(artifact)

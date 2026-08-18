@@ -151,7 +151,7 @@ def _is_link_or_junction(path: Path) -> bool:
         return True
     if os.name != "nt":
         return False
-    # Python 3.11 has no os.path.isjunction.  Reparse points cover junctions.
+    # Reparse points cover junctions on Windows.
     attributes = getattr(path.lstat(), "st_file_attributes", 0)
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 

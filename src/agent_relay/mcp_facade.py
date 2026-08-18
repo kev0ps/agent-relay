@@ -6,8 +6,8 @@ import uuid
 from ipaddress import ip_address
 from typing import Any, Literal
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
 
@@ -47,40 +47,11 @@ def create_mcp_facade(
     registry: RelayRegistry,
     timeout_seconds: float,
     device_id: str | None = None,
-    host: str = "127.0.0.1",
-    allowed_hosts: tuple[str, ...] = (),
-    allowed_origins: tuple[str, ...] = (),
-    automatic_ip_host_policy: bool = False,
     only_announced: bool = False,
-) -> FastMCP:
-    """Create one stateless, JSON-response MCP server for a Relay app."""
-    transport_security = None
-    if automatic_ip_host_policy:
-        transport_security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=False
-        )
-    elif not _is_loopback_host(host) or allowed_hosts or allowed_origins:
-        if not allowed_hosts:
-            allowed_hosts = ("127.0.0.1:*", "localhost:*", "[::1]:*")
-        if not allowed_origins:
-            allowed_origins = (
-                "http://127.0.0.1:*",
-                "http://localhost:*",
-                "http://[::1]:*",
-            )
-        transport_security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=list(allowed_hosts),
-            allowed_origins=list(allowed_origins),
-        )
-    mcp = FastMCP(
-        "Agent Relay",
-        host=host,
-        stateless_http=False,
-        json_response=True,
-        streamable_http_path="/mcp",
-        transport_security=transport_security,
-    )
+) -> MCPServer:
+    """Create one MCP server for a Relay app."""
+    mcp = MCPServer("Agent Relay")
+
     @mcp.tool(structured_output=True)
     async def relay_device_status() -> DeviceStatusOutput:
         """Return the configured Relay device's safe connection status."""
@@ -125,8 +96,6 @@ def create_mcp_facade(
         result = await _invoke(registry, device_id, message, timeout_seconds)
         return _validate_output(TerminalExecOutput, result)
 
-
-
     _close_tool_input_schemas(mcp)
     if only_announced:
         server_tool = mcp._tool_manager.get_tool(SERVER_LOCAL_TOOL)
@@ -143,6 +112,43 @@ def create_mcp_facade(
     return mcp
 
 
+def create_mcp_http_app(
+    mcp: MCPServer,
+    *,
+    host: str = "127.0.0.1",
+    allowed_hosts: tuple[str, ...] = (),
+    allowed_origins: tuple[str, ...] = (),
+    automatic_ip_host_policy: bool = False,
+) -> Any:
+    """Create the MCP 2 Streamable HTTP app with Relay transport policy."""
+    transport_security = None
+    if automatic_ip_host_policy:
+        transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    elif not _is_loopback_host(host) or allowed_hosts or allowed_origins:
+        if not allowed_hosts:
+            allowed_hosts = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+        if not allowed_origins:
+            allowed_origins = (
+                "http://127.0.0.1:*",
+                "http://localhost:*",
+                "http://[::1]:*",
+            )
+        transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=list(allowed_hosts),
+            allowed_origins=list(allowed_origins),
+        )
+    return mcp.streamable_http_app(
+        streamable_http_path="/mcp",
+        stateless_http=False,
+        json_response=True,
+        transport_security=transport_security,
+        host=host,
+    )
+
+
 def _is_loopback_host(host: str) -> bool:
     if host == "localhost":
         return True
@@ -152,8 +158,8 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _close_tool_input_schemas(mcp: FastMCP[Any]) -> None:
-    """Apply the MCP v1 closed-schema compatibility shim or fail clearly."""
+def _close_tool_input_schemas(mcp: MCPServer[Any]) -> None:
+    """Apply Relay's closed-schema contract across MCP SDK versions."""
     try:
         tool_manager = mcp._tool_manager
         registered_tools = tool_manager.list_tools()
@@ -168,8 +174,8 @@ def _close_tool_input_schemas(mcp: FastMCP[Any]) -> None:
     except (AttributeError, TypeError):
         raise RuntimeError("unsupported MCP SDK tool schema API") from None
 
-    # MCP v1 has no public override for the schemas generated from these
-    # callable signatures. Keep every private SDK access contained here.
+    # The MCP SDK currently has no public override for the schemas generated
+    # from these callable signatures. Keep every private SDK access contained here.
     for registered_tool, model in zip(registered_tools, models, strict=True):
         model.model_config["extra"] = "forbid"
         model.model_rebuild(force=True)

@@ -695,7 +695,7 @@ def _server_endpoint_available(mcp_url: str, control_token: str) -> bool:
         )
     except ConnectionError:
         return False
-    return result.isError is False
+    return getattr(result, "is_error", getattr(result, "isError", None)) is False
 
 
 def _status(

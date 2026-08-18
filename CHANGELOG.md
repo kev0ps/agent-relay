@@ -20,6 +20,8 @@ The project is currently pre-1.0 and has no formal release tag.
 
 ### Changed
 
+- Python 3.14.4 is now the minimum and managed runtime for the package,
+  installers, CI, and Docker image.
 - Credentials now live in a private `.env` beside the selected YAML file and
   are read directly without dotenv environment injection. The former
   `secrets/` YAML layout and `*_TOKEN_FILE` runtime overrides are intentionally
@@ -32,6 +34,10 @@ The project is currently pre-1.0 and has no formal release tag.
 - CUA, Terminal and System invocations now share the generic v2 provider route
   and bounded descriptor/result validation. CUA publishes only explicitly
   selected driver descriptors, including its browser tools.
+- The MCP facade now targets the Python MCP SDK 2.x with stateful Streamable
+  HTTP and JSON responses; the Agent WebSocket protocol remains unchanged.
+- `cua-driver` is optional for Server-only installs and remains selected by
+  default for native Agent/local installs.
 - Documentation now distinguishes delivered, experimental and unsupported
   capabilities.
 - Documentation is organized around setup, tools, protocol, security, and one

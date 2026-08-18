@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from datetime import timedelta
 
-import httpx
+import anyio
+import httpx2
 import pytest
 import uvicorn
 from mcp import ClientSession
+from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CancelledNotification, CancelledNotificationParams
 
 from agent_relay.mcp_facade import (
@@ -174,7 +174,7 @@ def test_tool_discovery_is_exact_and_closed() -> None:
     async def scenario() -> None:
         registry = RelayRegistry(device_id="one", agent_token="agent-token")
         mcp = create_mcp_facade(registry=registry, device_id="one", timeout_seconds=1)
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             tools = (await session.list_tools()).tools
 
         assert [tool.name for tool in tools] == [
@@ -184,14 +184,14 @@ def test_tool_discovery_is_exact_and_closed() -> None:
         ]
         by_name = {tool.name: tool for tool in tools}
         for name in ("relay_device_status", "relay_system_ping"):
-            assert by_name[name].inputSchema == {
+            assert by_name[name].input_schema == {
                 "type": "object",
                 "properties": {},
                 "additionalProperties": False,
             }
-            assert by_name[name].outputSchema is not None
-            assert by_name[name].outputSchema["additionalProperties"] is False
-        terminal_schema = by_name["relay_terminal_exec"].inputSchema
+            assert by_name[name].output_schema is not None
+            assert by_name[name].output_schema["additionalProperties"] is False
+        terminal_schema = by_name["relay_terminal_exec"].input_schema
         assert terminal_schema["additionalProperties"] is False
         assert terminal_schema["required"] == ["command_id"]
         assert terminal_schema["properties"]["command_id"]["enum"] == [
@@ -277,18 +277,18 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
                     break
                 await asyncio.sleep(0.01)
             assert server.started
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 headers={"Authorization": "Bearer control-token"},
             ) as http_client:
                 async with streamable_http_client(
                     f"http://127.0.0.1:{port}/mcp",
                     http_client=http_client,
-                    terminate_on_close=False,
-                ) as (read_stream, write_stream, _):
+                    terminate_on_close=True,
+                ) as (read_stream, write_stream):
                     async with ClientSession(
                         read_stream,
                         write_stream,
-                        read_timeout_seconds=timedelta(seconds=10),
+                        read_timeout_seconds=10,
                     ) as session:
                         await session.initialize()
                         call = asyncio.create_task(
@@ -299,7 +299,7 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
                         await asyncio.wait_for(agent_socket.invoke_seen.wait(), timeout=1)
                         # The SDK does not expose the request id; call_tool is
                         # the next request after initialize in this isolated session.
-                        request_id = session._request_id - 1  # pyright: ignore[reportPrivateUsage]
+                        request_id = session._dispatcher._next_id  # pyright: ignore[reportPrivateUsage]
                         await session.send_notification(
                             CancelledNotification(
                                 params=CancelledNotificationParams(
@@ -319,6 +319,11 @@ def test_public_mcp_call_cancellation_sends_one_cancel_and_releases_request() ->
                             and message.get("type") == "invoke"
                         )
             await asyncio.wait_for(agent_socket.cancel_seen.wait(), timeout=2)
+        except* anyio.BrokenResourceError:
+            # MCP 2 cancels the HTTP response task after the request is
+            # cancelled; the late response can only reach a closed client
+            # stream and is irrelevant to Relay cancellation semantics.
+            pass
         finally:
             server.should_exit = True
             server.force_exit = True
@@ -358,7 +363,7 @@ def test_status_reports_offline_and_online_safe_state() -> None:
     async def scenario() -> None:
         registry = RelayRegistry(device_id="one", agent_token="agent-token")
         mcp = create_mcp_facade(registry=registry, device_id="one", timeout_seconds=1)
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             offline = await session.call_tool("relay_device_status", {})
             socket = FakeSocket()
             await registry.register(
@@ -379,8 +384,8 @@ def test_status_reports_offline_and_online_safe_state() -> None:
             )
             online = await session.call_tool("relay_device_status", {})
 
-        assert offline.isError is False
-        assert offline.structuredContent == {
+        assert offline.is_error is False
+        assert offline.structured_content == {
             "device_id": "one",
             "connected": False,
             "capabilities": [],
@@ -388,15 +393,15 @@ def test_status_reports_offline_and_online_safe_state() -> None:
             "progress": None,
             "heartbeat_age_seconds": None,
         }
-        assert online.isError is False
-        assert online.structuredContent is not None
-        assert online.structuredContent["device_id"] == "one"
-        assert online.structuredContent["connected"] is True
-        assert online.structuredContent["capabilities"] == [
+        assert online.is_error is False
+        assert online.structured_content is not None
+        assert online.structured_content["device_id"] == "one"
+        assert online.structured_content["connected"] is True
+        assert online.structured_content["capabilities"] == [
             "system.ping",
             "terminal.exec",
         ]
-        assert set(online.structuredContent) == {
+        assert set(online.structured_content) == {
             "device_id",
             "connected",
             "capabilities",
@@ -446,11 +451,11 @@ def test_invocation_tools_return_structured_output_and_fixed_parameters(
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=2.5
         )
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             response = await session.call_tool(tool_name, arguments)
 
-        assert response.isError is False
-        assert response.structuredContent == result
+        assert response.is_error is False
+        assert response.structured_content == result
         assert len(registry.calls) == 1
         device_id, message, timeout = registry.calls[0]
         assert device_id == "one"
@@ -536,10 +541,10 @@ def test_expected_relay_failures_are_safe_mcp_tool_errors(
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=1
         )
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             response = await session.call_tool("relay_system_ping", {})
 
-        assert response.isError is True
+        assert response.is_error is True
         assert safe_message in response.content[0].text  # type: ignore[union-attr]
         assert "sensitive" not in response.content[0].text  # type: ignore[union-attr]
         assert "secret-code" not in response.content[0].text  # type: ignore[union-attr]
@@ -559,10 +564,10 @@ def test_unexpected_tool_failures_never_reach_mcp_clients(tool_name: str) -> Non
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=1
         )
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             response = await session.call_tool(tool_name, {})
 
-        assert response.isError is True
+        assert response.is_error is True
         assert "internal relay error" in response.content[0].text  # type: ignore[union-attr]
         assert "UNEXPECTED_SECRET" not in response.content[0].text  # type: ignore[union-attr]
 
@@ -575,7 +580,7 @@ def test_terminal_command_enum_and_extra_arguments_are_rejected() -> None:
         mcp = create_mcp_facade(  # type: ignore[arg-type]
             registry=registry, device_id="one", timeout_seconds=1
         )
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             invalid = await session.call_tool(
                 "relay_terminal_exec", {"command_id": "arbitrary"}
             )
@@ -583,8 +588,8 @@ def test_terminal_command_enum_and_extra_arguments_are_rejected() -> None:
                 "relay_system_ping", {"timeout_seconds": 999}
             )
 
-        assert invalid.isError is True
-        assert extra.isError is True
+        assert invalid.is_error is True
+        assert extra.is_error is True
         assert registry.calls == []
 
     run(scenario())
@@ -620,14 +625,14 @@ def test_official_streamable_http_client_uses_authenticated_canonical_mcp_url() 
                     break
                 await asyncio.sleep(0.01)
             assert server.started
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 headers={"Authorization": "Bearer control-placeholder"},
             ) as http_client:
                 async with streamable_http_client(
                     f"http://127.0.0.1:{port}/mcp",
                     http_client=http_client,
                     terminate_on_close=False,
-                ) as (read_stream, write_stream, _):
+                ) as (read_stream, write_stream):
                     async with ClientSession(read_stream, write_stream) as session:
                         initialized = await session.initialize()
                         tools = (await session.list_tools()).tools
@@ -636,10 +641,10 @@ def test_official_streamable_http_client_uses_authenticated_canonical_mcp_url() 
             server.should_exit = True
             await asyncio.wait_for(server_task, timeout=2)
 
-        assert initialized.serverInfo.name == "Agent Relay"
+        assert initialized.server_info.name == "Agent Relay"
         assert [tool.name for tool in tools] == ["relay_device_status"]
-        assert status.isError is False
-        assert status.structuredContent is not None
-        assert status.structuredContent["connected"] is False
+        assert status.is_error is False
+        assert status.structured_content is not None
+        assert status.structured_content["connected"] is False
 
     run(scenario())

@@ -35,6 +35,7 @@ def test_windows_installer_is_a_self_contained_user_scope_bootstrapper() -> None
     assert "RELAY_AGENT_TOKEN=" not in installer
     assert "Write-Host $agentToken" not in installer
     assert "secrets\\server\\agent_token" not in installer
+    assert '"3.14.4"' in installer
 
 
 def _windows_function(name: str, next_name: str) -> str:
@@ -173,6 +174,19 @@ def test_linux_installer_is_a_self_contained_user_scope_bootstrapper() -> None:
     assert "RELAY_AGENT_TOKEN=" not in installer
     assert "printf '%s' \"$agent_token\"" not in installer
     assert "secrets/server/agent_token" not in installer
+    assert 'AGENT_RELAY_PYTHON_VERSION:-3.14.4' in installer
+
+
+def test_installers_request_cua_only_for_local_or_agent_roles() -> None:
+    linux = (ROOT / "scripts" / "install.sh").read_text()
+    windows = (ROOT / "scripts" / "install.ps1").read_text()
+
+    assert 'if [[ "$setup_mode" == "local" || "$setup_mode" == "agent" ]]' in linux
+    assert 'tool_target="${project_root}[cua]"' in linux
+    assert 'if ($setupMode -in @("local", "agent"))' in windows
+    assert '$toolTarget = "$projectRoot[cua]"' in windows
+    assert "cua-driver==0.19.3" not in linux
+    assert "cua-driver==0.19.3" not in windows
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires the Linux installer")

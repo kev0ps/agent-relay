@@ -35,7 +35,7 @@ smallest coherent set of code, tests, and documentation.
 
 ## Setup commands
 
-Agent Relay requires Python 3.11 or newer and uses `uv` for dependency and
+Agent Relay requires Python 3.14 or newer and uses `uv` for dependency and
 environment management.
 
 Install the locked development environment with:

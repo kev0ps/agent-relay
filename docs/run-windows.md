@@ -59,7 +59,7 @@ The script:
 
 - uses WinGet to install `uv` when it is missing, with an official uv installer
   fallback when WinGet is unavailable;
-- installs or verifies managed Python 3.13.5 through `uv`;
+- installs or verifies managed Python 3.14.4 through `uv`;
 - downloads the Agent Relay source archive without requiring Git;
 - installs the runtime and its Python dependencies for the current user through
   `uv tool install`;

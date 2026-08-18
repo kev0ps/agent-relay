@@ -20,6 +20,12 @@ Agent -> capabilities(version=1) -> Server
 tools selected by the operator and the matching bounded provider descriptors.
 The Server accepts one connected Agent for the configured device.
 
+The MCP facade uses the Python MCP SDK 2.x (`mcp>=2,<3`) and its stateful
+Streamable HTTP transport with JSON responses. The public MCP server name is
+`Agent Relay`; authentication and Host/Origin policy remain enforced by the
+Relay application around the SDK transport. This SDK migration does not change
+the Agent WebSocket frames or their version numbers described above.
+
 After registration, application and lifecycle frames use version 2:
 
 ```text

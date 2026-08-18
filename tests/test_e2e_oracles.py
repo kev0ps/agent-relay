@@ -98,6 +98,14 @@ def _good_status_payload(device_id: str, *, connected: bool) -> dict[str, Any]:
 # --- Tests -----------------------------------------------------------------
 
 
+def test_oracle_accepts_mcp2_call_tool_result_attributes() -> None:
+    from mcp.types import CallToolResult
+
+    result = CallToolResult(content=[], structuredContent={"pong": True})
+
+    _oracles().validate_ping(result)
+
+
 def test_oracles_module_exposes_validate_status() -> None:
     """``tests/e2e/oracles.py`` exposes ``validate_status``."""
     oracles = _oracles()

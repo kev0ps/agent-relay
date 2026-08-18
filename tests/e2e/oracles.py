@@ -8,8 +8,9 @@ platform-specific harnesses.
 
 Each oracle:
 
-* accepts a ``CallToolResult``-like object (``structuredContent``,
-  ``isError``, ``model_extra``);
+* accepts a ``CallToolResult``-like object using MCP 2 Python attributes
+  (``structured_content``, ``is_error``) and the legacy aliases used by
+  older test doubles;
 * raises ``ValueError`` on any deviation from the contract;
 * performs no I/O, no subprocess, and no global state mutation;
 * is portable across Linux and Windows native runners.
@@ -56,6 +57,16 @@ _STATUS_KEYS: frozenset[str] = frozenset(
 )
 
 
+_MISSING = object()
+
+
+def _result_field(result: Any, canonical: str, legacy: str) -> Any:
+    value = getattr(result, canonical, _MISSING)
+    if value is not _MISSING:
+        return value
+    return getattr(result, legacy, _MISSING)
+
+
 def _structured(result: Any, description: str) -> dict[str, Any]:
     """Extract ``structuredContent`` as a strict ``dict``.
 
@@ -63,14 +74,15 @@ def _structured(result: Any, description: str) -> dict[str, Any]:
     fields, or non-``dict`` payload) raises ``ValueError``. This is the
     universal gate that every other oracle relies on.
     """
-    if not hasattr(result, "structuredContent") or not hasattr(result, "isError"):
+    payload = _result_field(result, "structured_content", "structuredContent")
+    is_error = _result_field(result, "is_error", "isError")
+    if payload is _MISSING or is_error is _MISSING:
         raise ValueError(f"invalid {description} response schema")
-    if result.isError is not False:
+    if is_error is not False:
         raise ValueError(f"invalid {description} response schema")
     extra = getattr(result, "model_extra", None)
     if bool(extra):
         raise ValueError(f"invalid {description} response schema")
-    payload = result.structuredContent
     if type(payload) is not dict:
         raise ValueError(f"invalid {description} response schema")
     return payload
@@ -162,7 +174,7 @@ def classify_status_failure(
     expected_capabilities: tuple[str, ...],
 ) -> str:
     """Classify status drift without returning response fields or names."""
-    payload = getattr(result, "structuredContent", None)
+    payload = _result_field(result, "structured_content", "structuredContent")
     if type(payload) is not dict:
         return "response-shape"
     if payload.get("device_id") != device_id:
@@ -392,7 +404,7 @@ def validate_cua_action(result: Any, *, tool_name: str) -> None:
 
 def validate_cua_browser_success(result: Any, *, tool_name: str) -> None:
     """Validate a successful CUA browser lifecycle/action envelope."""
-    if not hasattr(result, "isError") or result.isError is not False:
+    if _result_field(result, "is_error", "isError") is not False:
         raise ValueError(f"invalid {tool_name} response schema")
     extra = getattr(result, "model_extra", None)
     if bool(extra):

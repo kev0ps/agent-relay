@@ -6,6 +6,7 @@ updates:
       interval: weekly
     groups:
       python-dependencies:
+        update-types: ["patch", "minor"]
         patterns:
           - "*"
   - package-ecosystem: github-actions
