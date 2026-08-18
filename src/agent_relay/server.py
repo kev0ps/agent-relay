@@ -30,7 +30,7 @@ from .auth import credentials_match
 from .config import load_server_runtime
 from .diagnostics import debug as _debug_log
 from .json_bounds import JsonObject, validate_json_bounds
-from .mcp_facade import create_mcp_facade
+from .mcp_facade import create_mcp_facade, create_mcp_http_app
 from .output_models import ProviderToolResult
 from .protocol import (
     MAX_TOKEN_LENGTH,
@@ -356,13 +356,15 @@ def create_app(settings: RelaySettings) -> FastAPI:
     mcp = create_mcp_facade(
         registry=registry,
         timeout_seconds=settings.max_timeout_seconds,
+        only_announced=True,
+    )
+    mcp_http_app = create_mcp_http_app(
+        mcp,
         host=settings.bind_host,
         allowed_hosts=settings.mcp_allowed_hosts,
         allowed_origins=settings.mcp_allowed_origins,
         automatic_ip_host_policy=automatic_ip_host_policy,
-        only_announced=True,
     )
-    mcp_http_app = mcp.streamable_http_app()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

@@ -1,10 +1,12 @@
 # Agent Relay tools
 
-CUA is Agent Relay's only desktop and browser provider. Agent Relay installs
-`cua-driver` as a standard dependency, resolves its bundled executable through
-`cua_driver.get_binary_path()`, starts the provider, and discovers its complete
-MCP catalogue at runtime. Discovery does not require an application, window,
-or manually supplied path.
+CUA is Agent Relay's only desktop and browser provider. Native Local and Agent
+installations select the optional `cua` extra, which installs `cua-driver`,
+resolves its bundled executable through `cua_driver.get_binary_path()`, starts
+the provider, and discovers its complete MCP catalogue at runtime. Server-only
+base installations omit the extra; discovery then reports CUA as unavailable
+without attempting an implicit install. Discovery does not require an
+application, window, or manually supplied path.
 
 The Agent starts with CUA access `none`. Every discovered CUA tool is visible
 to local catalogue and diagnostics commands, but remains disabled until the

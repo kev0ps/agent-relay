@@ -132,7 +132,7 @@ _CUA_BUTTON_ROLES = frozenset({"button", "push button"})
 
 
 def _cua_snapshot_diagnostic(result: Any) -> str:
-    payload = getattr(result, "structuredContent", None)
+    payload = getattr(result, "structured_content", getattr(result, "structuredContent", None))
     if not isinstance(payload, dict):
         return "structured_content=unavailable"
     elements = payload.get("elements")
@@ -296,11 +296,11 @@ def _kill_cua_browser(runtime: Any, pid: int) -> None:
             tool_name="relay_cua_kill_app",
         )
     except BaseException:
-        payload = getattr(result, "structuredContent", None)
+        payload = getattr(result, "structured_content", getattr(result, "structuredContent", None))
         keys = ",".join(sorted(str(key) for key in payload)) if isinstance(payload, dict) else "none"
         print(
             "Linux CUA desktop kill diagnostic: "
-            f"pid={pid} is_error={getattr(result, 'isError', None) is True} "
+            f"pid={pid} is_error={getattr(result, 'is_error', getattr(result, 'isError', None)) is True} "
             f"structured_keys={keys} content_count={len(getattr(result, 'content', []) or [])}.",
             file=sys.stderr,
         )

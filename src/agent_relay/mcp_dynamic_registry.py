@@ -7,9 +7,9 @@ from copy import deepcopy
 from typing import Any, Protocol
 from uuid import uuid4
 
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.fastmcp.tools.base import Tool
-from mcp.server.fastmcp.tools.tool_manager import ToolManager
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.tools.base import Tool
+from mcp.server.mcpserver.tools.tool_manager import ToolManager
 from mcp.types import CallToolResult
 from pydantic import ValidationError
 
@@ -40,13 +40,13 @@ class DynamicRegistry(Protocol):
 
 
 async def _unreachable_tool(**arguments: Any) -> dict[str, Any]:
-    """Placeholder function; dynamic calls bypass FastMCP's static runner."""
+    """Placeholder function; dynamic calls bypass MCPServer's static runner."""
     del arguments
     raise RuntimeError("dynamic tool placeholder was called")
 
 
 class DynamicToolManager(ToolManager):
-    """Project selected Agent descriptors into FastMCP's ToolManager surface.
+    """Project selected Agent descriptors into MCPServer's ToolManager surface.
 
     The manager keeps only fixed Server-local tools in its static collection. Provider
     tools are materialized from the current Registry announcement for each list/get

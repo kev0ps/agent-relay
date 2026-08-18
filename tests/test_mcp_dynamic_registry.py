@@ -4,8 +4,8 @@ import asyncio
 from collections.abc import Mapping
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.client import Client
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult
 
 from agent_relay.mcp_dynamic_registry import DynamicToolManager
@@ -150,7 +150,7 @@ def test_dynamic_facade_exposes_selected_tool_through_mcp_session() -> None:
             only_announced=True,
         )
 
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             tools = (await session.list_tools()).tools
             assert [tool.name for tool in tools] == [
                 "relay_device_status",
@@ -158,15 +158,15 @@ def test_dynamic_facade_exposes_selected_tool_through_mcp_session() -> None:
             ]
             assert next(
                 tool for tool in tools if tool.name == descriptor.public_name
-            ).inputSchema == descriptor.input_schema
+            ).input_schema == descriptor.input_schema
 
             result = await session.call_tool(
                 descriptor.public_name,
                 {"value": "target"},
             )
 
-        assert result.isError is False
-        assert result.structuredContent == {"accepted": True}
+        assert result.is_error is False
+        assert result.structured_content == {"accepted": True}
         assert len(registry.calls) == 1
 
     asyncio.run(scenario())
@@ -201,6 +201,7 @@ def test_dynamic_manager_maps_public_calls_and_preserves_provider_result() -> No
         ],
         "structuredContent": {"accepted": True},
         "isError": False,
+        "resultType": "complete",
     }
     assert len(registry.calls) == 1
     device_id, message, timeout = registry.calls[0]
@@ -227,8 +228,8 @@ def test_dynamic_manager_preserves_provider_error_results() -> None:
     )
 
     assert isinstance(result, CallToolResult)
-    assert result.isError is True
-    assert result.structuredContent == {"reason": "policy"}
+    assert result.is_error is True
+    assert result.structured_content == {"reason": "policy"}
     assert result.content[0].text == "provider rejected the action"  # type: ignore[union-attr]
 
 

@@ -40,7 +40,10 @@ git_status
 git_branch
 ```
 
-CUA 0.19.3 is installed and initialized automatically on a new installation.
+CUA 0.19.3 is selected and installed automatically for new native Local and
+Agent installations. Server-only/base installations leave the optional CUA
+extra out; add it with `uv sync --locked --extra cua` when the Server process
+must also host CUA.
 Its complete descriptor catalogue is discovered from the bundled MCP provider;
 every descriptor is visible to catalogue diagnostics but CUA access defaults to
 `none` until an explicit profile or individual tool selection. A target
@@ -166,8 +169,8 @@ tool settings remain YAML or explicit process environment overrides.
 This layout is for new installations. Agent Relay is not published yet and
 does not provide a migration path for older layouts.
 
-The standard installation includes `cua-driver`. Agent Relay resolves the
-driver only through `cua_driver.get_binary_path()`; no manually configured
+Native Local and Agent installations include `cua-driver`. Agent Relay resolves
+the driver only through `cua_driver.get_binary_path()`; no manually configured
 driver location, browser extra, or separate browser runtime is used. Select an
 exact CUA profile or an individual `relay_cua_<name>` tool explicitly:
 

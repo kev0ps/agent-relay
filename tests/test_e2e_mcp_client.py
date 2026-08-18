@@ -368,8 +368,8 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
 
     class FakeResult:
         def __init__(self) -> None:
-            self.structuredContent = {"pong": True}
-            self.isError = False
+            self.structured_content = {"pong": True}
+            self.is_error = False
             self.model_extra = None
 
     class FakeSession:
@@ -409,7 +409,7 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
 
     class FakeStreamableClient:
         async def __aenter__(self):
-            return (None, None, None)
+            return (None, None)
 
         async def __aexit__(self, exc_type, exc, tb):
             return None
@@ -422,7 +422,7 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
     # ``async with`` block in the client can use it directly.
     class _FakeStreamableClientCM:
         async def __aenter__(self):
-            return (None, None, None)
+            return (None, None)
 
         async def __aexit__(self, exc_type, exc, tb):
             return None
@@ -458,4 +458,4 @@ def test_call_tool_async_returns_when_sdk_returns_expected_result(
             arguments={},
         )
     )
-    assert result.structuredContent == {"pong": True}
+    assert result.structured_content == {"pong": True}

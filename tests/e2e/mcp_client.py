@@ -23,18 +23,16 @@ import asyncio
 import json
 import sys
 from contextlib import AsyncExitStack
-from datetime import timedelta
 from typing import Any, Final, Mapping
 from urllib.parse import urlparse
 
-import httpx
+import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
     CallToolRequest,
     CallToolRequestParams,
     CallToolResult,
-    ClientRequest,
 )
 from pydantic import ConfigDict
 
@@ -90,7 +88,7 @@ def _tool_inventory_mismatch_category(discovered: tuple[str, ...]) -> str:
 def _validate_tool_schema(tool: Any) -> None:
     """Reject an MCP inventory entry without a bounded provider schema."""
     name = getattr(tool, "name", None)
-    schema = getattr(tool, "inputSchema", None)
+    schema = getattr(tool, "input_schema", getattr(tool, "inputSchema", None))
     if type(name) is not str or not name or type(schema) is not dict:
         raise MCPContractError("invalid MCP tool descriptor")
     if len(name) > 128 or len(schema) > MAX_JSON_COLLECTION_ITEMS:
@@ -233,13 +231,13 @@ class MCPClientSession:
         self._stack = stack
         try:
             http_client = await stack.enter_async_context(
-                httpx.AsyncClient(
+                httpx2.AsyncClient(
                     headers={"Authorization": f"Bearer {self.control_token}"},
-                    timeout=httpx.Timeout(self.http_timeout),
+                    timeout=httpx2.Timeout(self.http_timeout),
                     trust_env=False,
                 )
             )
-            read_stream, write_stream, _ = await stack.enter_async_context(
+            read_stream, write_stream = await stack.enter_async_context(
                 streamable_http_client(
                     self.mcp_url,
                     http_client=http_client,
@@ -249,7 +247,7 @@ class MCPClientSession:
                 ClientSession(
                     read_stream,
                     write_stream,
-                    read_timeout_seconds=timedelta(seconds=self.http_timeout),
+                    read_timeout_seconds=self.http_timeout,
                 )
             )
             await asyncio.wait_for(
@@ -315,12 +313,10 @@ class MCPClientSession:
             raise RuntimeError("MCP client session is not open")
         return await asyncio.wait_for(
             self._session.send_request(
-                ClientRequest(
-                    CallToolRequest(
-                        params=CallToolRequestParams(
-                            name=tool_name,
-                            arguments=dict(arguments),
-                        )
+                CallToolRequest(
+                    params=CallToolRequestParams(
+                        name=tool_name,
+                        arguments=dict(arguments),
                     )
                 ),
                 StrictCallToolResult,

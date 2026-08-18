@@ -116,8 +116,36 @@ else
     project_root="$(dirname "${projects[0]}")"
 fi
 
+setup_mode="${AGENT_RELAY_SETUP:-prompt}"
+case "$setup_mode" in
+    prompt|local|server|agent|skip) ;;
+    *)
+        printf "AGENT_RELAY_SETUP must be 'prompt', 'local', 'server', 'agent', or 'skip'.\n" >&2
+        exit 1
+        ;;
+esac
+
+if [[ "$setup_mode" == "prompt" ]]; then
+    if [[ -r /dev/tty ]]; then
+        answer=''
+        read -r -p 'Choose onboarding: [L]ocal, [S]erver, [A]gent, [N]one (default Local) ' answer </dev/tty
+        case "$answer" in
+            [Ss]*) setup_mode='server' ;;
+            [Aa]*) setup_mode='agent' ;;
+            [Nn]*) setup_mode='skip' ;;
+            *) setup_mode='local' ;;
+        esac
+    else
+        setup_mode='skip'
+    fi
+fi
+
 printf 'Installing the Agent Relay command for the current user...\n'
-"$uv_path" tool install --force "$project_root"
+tool_target="$project_root"
+if [[ "$setup_mode" == "local" || "$setup_mode" == "agent" ]]; then
+    tool_target="${project_root}[cua]"
+fi
+"$uv_path" tool install --force "$tool_target"
 tool_bin="$("$uv_path" tool dir --bin)"
 if [[ ! -d "$tool_bin" ]]; then
     printf 'uv did not report a valid tool bin directory.\n' >&2
@@ -142,30 +170,6 @@ fi
 invoke_agent_relay() {
     "$agent_relay_command" "$@"
 }
-
-setup_mode="${AGENT_RELAY_SETUP:-prompt}"
-case "$setup_mode" in
-    prompt|local|server|agent|skip) ;;
-    *)
-        printf "AGENT_RELAY_SETUP must be 'prompt', 'local', 'server', 'agent', or 'skip'.\n" >&2
-        exit 1
-        ;;
-esac
-
-if [[ "$setup_mode" == "prompt" ]]; then
-    if [[ -r /dev/tty ]]; then
-        answer=''
-        read -r -p 'Choose onboarding: [L]ocal, [S]erver, [A]gent, [N]one (default Local) ' answer </dev/tty
-        case "$answer" in
-            [Ss]*) setup_mode='server' ;;
-            [Aa]*) setup_mode='agent' ;;
-            [Nn]*) setup_mode='skip' ;;
-            *) setup_mode='local' ;;
-        esac
-    else
-        setup_mode='skip'
-    fi
-fi
 
 if [[ "$setup_mode" == "server" ]]; then
     invoke_agent_relay onboard --role server --non-interactive

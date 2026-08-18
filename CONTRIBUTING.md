@@ -26,6 +26,14 @@ Install [`uv`](https://docs.astral.sh/uv/), clone the repository, then run:
 uv sync --locked --group dev
 ```
 
+The default environment is appropriate for Server-only work. The complete
+portable test suite, including CUA capability tests, requires the optional
+provider extra:
+
+```sh
+uv sync --locked --group dev --extra cua
+```
+
 Use synthetic fixtures and temporary workspaces. CUA browser scenarios must use
 temporary provider state and local fixtures; never use personal credentials,
 sessions, files, desktops, or external websites as test data.
@@ -39,8 +47,27 @@ uv run --frozen python -m pytest -q -m "not integration"
 uv run --frozen python -m pytest -q -m integration
 uv run --frozen ruff check .
 uv lock --check
+uv run --frozen python scripts/audit_dependencies.py --check
 git diff --check
 ```
+
+Dependency changes must update `pyproject.toml` and regenerate `uv.lock` with
+`uv`; do not hand-edit the lockfile. The audit reports direct runtime,
+development, build and transitive packages and fails when application imports
+or runtime declarations are unexplained.
+
+For a named dependency update, regenerate only that package and inspect the
+resulting graph:
+
+```sh
+uv lock --upgrade-package <package>
+uv lock --check
+uv tree --locked
+```
+
+Server-only environments use the base dependency set. Run the full CUA test
+suite with `uv sync --locked --group dev --extra cua`; native Local and Agent
+installers select that extra automatically.
 
 If a platform-specific E2E gate cannot run locally, state that clearly in the
 pull request and identify the exact CI evidence still required.

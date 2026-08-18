@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
+
+
+def test_cua_driver_is_optional_and_not_part_of_the_default_runtime() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)["project"]
+
+    assert all(
+        not requirement.startswith("cua-driver")
+        for requirement in project["dependencies"]
+    )
+    assert project["optional-dependencies"]["cua"] == ["cua-driver==0.19.3"]
 
 
 def test_docker_runtime_contract_has_no_implicit_role_or_secret_build_inputs() -> None:

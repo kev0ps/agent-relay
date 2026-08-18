@@ -175,6 +175,18 @@ def test_linux_installer_is_a_self_contained_user_scope_bootstrapper() -> None:
     assert "secrets/server/agent_token" not in installer
 
 
+def test_installers_request_cua_only_for_local_or_agent_roles() -> None:
+    linux = (ROOT / "scripts" / "install.sh").read_text()
+    windows = (ROOT / "scripts" / "install.ps1").read_text()
+
+    assert 'if [[ "$setup_mode" == "local" || "$setup_mode" == "agent" ]]' in linux
+    assert 'tool_target="${project_root}[cua]"' in linux
+    assert 'if ($setupMode -in @("local", "agent"))' in windows
+    assert '$toolTarget = "$projectRoot[cua]"' in windows
+    assert "cua-driver==0.19.3" not in linux
+    assert "cua-driver==0.19.3" not in windows
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="requires the Linux installer")
 def test_linux_installer_rejects_missing_archive_override_without_network(
     tmp_path: Path,

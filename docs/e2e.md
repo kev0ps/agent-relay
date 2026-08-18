@@ -58,8 +58,8 @@ uv run --frozen python -m pytest -q -m integration
 ## Linux CUA
 
 The `e2e-linux-cua` job runs Xvfb, a private D-Bus/AT-SPI session, a small
-window manager, Chromium, the standard `cua-driver` dependency, and the real
-Relay processes. The CUA catalogue is discovered at runtime and the
+window manager, Chromium, the optional `cua` extra (`cua-driver`), and the
+real Relay processes. The CUA catalogue is discovered at runtime and the
 representative surface includes native desktop operations:
 
 ```text

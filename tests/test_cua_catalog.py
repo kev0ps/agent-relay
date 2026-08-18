@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 
 import pytest
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.client import Client
 
 from agent_relay.catalog import (
     CatalogError,
@@ -275,16 +275,16 @@ def test_selected_cua_descriptor_is_published_and_unselected_is_rejected() -> No
             registry=registry,  # type: ignore[arg-type]
             timeout_seconds=1.0, only_announced=True
         )
-        async with create_connected_server_and_client_session(mcp) as session:
+        async with Client(mcp) as session:
             tools = (await session.list_tools()).tools
             assert [tool.name for tool in tools] == [
                 "relay_device_status",
                 "relay_cua_click",
             ]
             result = await session.call_tool("relay_cua_click", {})
-            assert result.isError is False
+            assert result.is_error is False
             unselected = await session.call_tool("relay_cua_type_text", {})
-            assert unselected.isError is True
+            assert unselected.is_error is True
 
     asyncio.run(scenario())
     assert registry.calls == ["cua.click"]

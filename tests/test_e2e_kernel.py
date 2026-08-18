@@ -10,6 +10,7 @@ pytest's rootdir-based collection only).
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import importlib.util
 import inspect
@@ -60,8 +61,8 @@ def _scenarios() -> ModuleType:
 
 class _CuaScenarioResult:
     def __init__(self, *, structured: dict[str, object] | None = None, is_error: bool = False) -> None:
-        self.structuredContent = structured or {}
-        self.isError = is_error
+        self.structured_content = structured or {}
+        self.is_error = is_error
 
     def __str__(self) -> str:
         return "rejected"
@@ -164,7 +165,7 @@ def _install_cua_scenario_fakes(
         return 1234, 77
 
     def validate_state(result: object, **kwargs: object) -> tuple[str, str, str]:
-        payload = getattr(result, "structuredContent", {})
+        payload = getattr(result, "structured_content", {})
         assert isinstance(payload, dict)
         count = payload.get("snapshot_id", "snapshot-1").split("-")[-1]
         return f"snapshot-{count}", f"field-token-{count}", f"button-token-{count}"
@@ -312,6 +313,32 @@ def test_computer_scenario_requires_harness_fixture_identity() -> None:
         parameters["expected_cua_window_title"].default
         is inspect.Parameter.empty
     )
+
+
+def test_browser_window_wait_reads_mcp2_structured_content() -> None:
+    """The native MCP 2 result field must expose the first visible window."""
+    from mcp.types import CallToolResult
+
+    scenarios = _scenarios()
+
+    class MCP2Client:
+        async def call(self, _tool_name: str, _arguments: dict[str, object]) -> CallToolResult:
+            return CallToolResult(
+                content=[],
+                structuredContent={
+                    "windows": [
+                        {
+                            "window_id": 77,
+                            "is_on_screen": True,
+                            "bounds": {"width": 800, "height": 600},
+                        }
+                    ]
+                },
+            )
+
+    assert asyncio.run(
+        scenarios._wait_for_cua_browser_window(MCP2Client(), 1234, None)
+    ) == 77
 
 
 def test_core_scenario_accepts_harness_workspace_pwd(
