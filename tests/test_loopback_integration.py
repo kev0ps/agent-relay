@@ -5,7 +5,7 @@ import socket
 import sys
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 
@@ -99,7 +99,7 @@ def test_real_loopback_server_agent_and_runner(tmp_path: Path) -> None:
             )
             agent_task = asyncio.create_task(agent.run())
             headers = {"Authorization": "Bearer control-secret"}
-            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            async with httpx2.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
                 for _ in range(100):
                     if app.state.registry.last_heartbeat is not None:
                         break
