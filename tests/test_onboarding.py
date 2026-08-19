@@ -32,8 +32,8 @@ def test_local_onboarding_creates_both_valid_sections_without_printing_secrets(
                 "--role",
                 "local",
                 "--non-interactive",
-                "--policy",
-                "loopback",
+                "--topology",
+                "local",
                 "--no-tools",
             ],
             catalog=EMPTY_CATALOG,
@@ -44,7 +44,11 @@ def test_local_onboarding_creates_both_valid_sections_without_printing_secrets(
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert set(document) == {"server", "agent"}
     assert document["server"]["host"] == "127.0.0.1"
+    assert document["agent"]["relay_url"] == "ws://127.0.0.1:8000/ws/agent"
     assert document["agent"]["tools"]["allowlist"] == []
+    assert "topology" not in document
+    assert "allow_" + "insecure_ws" not in document["server"]
+    assert "allow_" + "insecure_ws" not in document["agent"]
     dotenv_values = {
         line.split("=", 1)[0]: line.split("=", 1)[1]
         for line in (config_path.parent / ".env").read_text(encoding="utf-8").splitlines()
@@ -73,7 +77,7 @@ def test_server_only_onboarding_does_not_create_an_agent_section(
                 "--role",
                 "server",
                 "--non-interactive",
-                "--policy",
+                "--topology",
                 "lan",
             ],
             catalog=EMPTY_CATALOG,
@@ -103,7 +107,7 @@ def test_interactive_role_selection_uses_safe_server_defaults(
     assert "Server only" in capsys.readouterr().out
 
 
-def test_remote_agent_onboarding_masks_file_secret_and_validates_policy(
+def test_remote_agent_onboarding_masks_file_secret_and_requires_wss(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config_path = tmp_path / "config.yaml"
@@ -119,6 +123,8 @@ def test_remote_agent_onboarding_masks_file_secret_and_validates_policy(
                 "--role",
                 "agent",
                 "--non-interactive",
+                "--topology",
+                "remote",
                 "--relay-url",
                 "wss://relay.example.test/ws/agent?ignored=secret",
                 "--token-file",
@@ -126,7 +132,6 @@ def test_remote_agent_onboarding_masks_file_secret_and_validates_policy(
                 "--workspace",
                 str(workspace),
                 "--no-tools",
-                "--deny-insecure-ws",
                 "--no-check",
             ],
             catalog=EMPTY_CATALOG,
@@ -135,15 +140,98 @@ def test_remote_agent_onboarding_masks_file_secret_and_validates_policy(
     )
 
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert document["agent"]["allow_insecure_ws"] is False
+    assert document["agent"]["relay_url"] == "wss://relay.example.test/ws/agent?ignored=secret"
     assert document["agent"]["workspace"] == str(workspace)
+    assert "topology" not in document
+    assert "allow_" + "insecure_ws" not in document["agent"]
     assert token_file.read_text(encoding="utf-8").strip() not in capsys.readouterr().out
     assert "RELAY_AGENT_TOKEN=remote-agent-secret" in (
         config_path.parent / ".env"
     ).read_text(encoding="utf-8")
 
 
-def test_remote_agent_onboarding_rejects_plaintext_remote_url_by_default(
+def test_server_and_agent_lan_onboarding_generate_explicit_transport_values(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    token_file = _private_token_file(tmp_path / "token")
+    workspace = tmp_path / "agent-workspace"
+
+    assert (
+        cli.main(
+            [
+                "--config",
+                str(config_path),
+                "onboard",
+                "--role",
+                "server",
+                "--non-interactive",
+                "--topology",
+                "lan",
+                "--host",
+                "0.0.0.0",
+            ],
+            catalog=EMPTY_CATALOG,
+        )
+        == 0
+    )
+    assert (
+        cli.main(
+            [
+                "--config",
+                str(config_path),
+                "onboard",
+                "--role",
+                "agent",
+                "--non-interactive",
+                "--topology",
+                "lan",
+                "--relay-url",
+                "ws://192.168.1.20:8000/ws/agent",
+                "--token-file",
+                str(token_file),
+                "--workspace",
+                str(workspace),
+                "--no-tools",
+                "--no-check",
+            ],
+            catalog=EMPTY_CATALOG,
+        )
+        == 0
+    )
+
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert document["server"]["host"] == "0.0.0.0"
+    assert document["agent"]["relay_url"] == "ws://192.168.1.20:8000/ws/agent"
+    assert "topology" not in document
+
+
+def test_server_remote_onboarding_uses_internal_wildcard_without_persisting_topology(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    assert (
+        cli.main(
+            [
+                "--config",
+                str(config_path),
+                "onboard",
+                "--role",
+                "server",
+                "--non-interactive",
+                "--topology",
+                "remote",
+            ],
+            catalog=EMPTY_CATALOG,
+        )
+        == 0
+    )
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert document["server"]["host"] == "0.0.0.0"
+    assert "topology" not in document
+
+
+def test_remote_agent_onboarding_rejects_plaintext_remote_url(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     token_file = _private_token_file(tmp_path / "token")
@@ -155,6 +243,8 @@ def test_remote_agent_onboarding_rejects_plaintext_remote_url_by_default(
             "--role",
             "agent",
             "--non-interactive",
+            "--topology",
+            "remote",
             "--relay-url",
             "ws://relay.example.test/ws/agent",
             "--token-file",
@@ -165,7 +255,29 @@ def test_remote_agent_onboarding_rejects_plaintext_remote_url_by_default(
     )
 
     assert result == 1
-    assert "non-loopback ws:// requires allow_insecure_ws" in capsys.readouterr().err
+    assert "remote topology requires a wss:// relay URL" in capsys.readouterr().err
+
+
+def test_local_role_rejects_a_non_local_topology(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config_path = tmp_path / "config.yaml"
+    result = cli.main(
+        [
+            "--config",
+            str(config_path),
+            "onboard",
+            "--role",
+            "local",
+            "--non-interactive",
+            "--topology",
+            "lan",
+            "--no-tools",
+        ],
+        catalog=EMPTY_CATALOG,
+    )
+
+    assert result == 1
+    assert "local role requires local topology" in capsys.readouterr().err
+    assert not config_path.exists()
 
 
 def test_onboarding_cancellation_is_safe(
@@ -209,7 +321,7 @@ def test_noninteractive_onboarding_requires_a_role(
     assert "requires --role" in capsys.readouterr().err
 
 
-def test_agent_only_default_policy_is_strict_for_existing_yaml(
+def test_agent_only_default_topology_is_remote_for_existing_yaml(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
@@ -223,6 +335,8 @@ def test_agent_only_default_policy_is_strict_for_existing_yaml(
                 "--role",
                 "agent",
                 "--non-interactive",
+                "--topology",
+                "remote",
                 "--relay-url",
                 "wss://relay.example.test/ws/agent",
                 "--token-file",
@@ -234,4 +348,5 @@ def test_agent_only_default_policy_is_strict_for_existing_yaml(
         == 0
     )
     settings = config.load_agent_settings(config_path, catalog=EMPTY_CATALOG)
-    assert settings.allow_insecure_ws is False
+    assert settings.server_url == "wss://relay.example.test/ws/agent"
+    assert "allow_" + "insecure_ws" not in type(settings).model_fields

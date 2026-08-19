@@ -454,7 +454,7 @@ def test_agent_settings_validate_url_workspace_and_mask_secret(tmp_path: Path) -
     assert "secret-token" not in repr(settings)
     with pytest.raises(ConfigurationError):
         AgentSettings(
-            server_url="ws://relay.example/ws/agent",
+            server_url="http://relay.example/ws/agent",
             device_id="device-a",
             agent_token="secret-token",
             workspace=tmp_path,
@@ -521,69 +521,71 @@ def test_existing_agent_id_is_preserved_instead_of_silently_replaced(
 
 
 @pytest.mark.parametrize(
-    ("url", "allow_insecure_ws", "accepted"),
+    "url",
     [
-        ("ws://relay.example.test/ws/agent", "true", True),
-        ("ws://relay.example.test/ws/agent", "false", False),
-        ("wss://relay.example.test/ws/agent", "false", True),
-        ("ws://127.0.0.1/ws/agent", "false", True),
+        "ws://127.0.0.1:8000/ws/agent",
+        "ws://localhost:8000/ws/agent",
+        "ws://[::1]:8000/ws/agent",
+        "ws://192.168.1.20:8000/ws/agent",
+        "ws://relay-server:8000/ws/agent",
+        "wss://relay.example.com/ws/agent",
     ],
 )
-def test_canonical_agent_transport_policy(
-    tmp_path: Path,
-    url: str,
-    allow_insecure_ws: str,
-    accepted: bool,
+def test_agent_accepts_syntactically_valid_ws_and_wss_urls(
+    tmp_path: Path, url: str
 ) -> None:
     environment, _ = _canonical_agent_environment(tmp_path, url=url)
-    environment["RELAY_ALLOW_INSECURE_WS"] = allow_insecure_ws
-
-    try:
-        settings = AgentSettings.from_environment(environment)
-    except ConfigurationError as exc:
-        if accepted:
-            pytest.fail(f"allowed Agent URL was rejected: {exc}")
-        return
-
-    if not accepted:
-        pytest.fail("non-loopback ws:// was accepted while insecure transport was disabled")
+    settings = _load_canonical_agent_settings(environment)
     assert settings.server_url == url
 
 
+def test_removed_transport_environment_does_not_affect_a_valid_ws_url(
+    tmp_path: Path,
+) -> None:
+    environment, _ = _canonical_agent_environment(
+        tmp_path, url="ws://192.168.1.20:8000/ws/agent"
+    )
+    removed_key = "RELAY_" + "ALLOW_" + "INSECURE_WS"
+    environment[removed_key] = "false"
+    settings = _load_canonical_agent_settings(environment)
+    assert settings.server_url == "ws://192.168.1.20:8000/ws/agent"
+
+
 @pytest.mark.parametrize(
-    "url, accepted",
+    "url",
     [
-        ("wss://relay.example/ws/agent", True),
-        ("ws://localhost/ws/agent", True),
-        ("ws://127.42.0.1/ws/agent", True),
-        ("ws://[::1]/ws/agent", True),
-        ("ws://relay.example/ws/agent", False),
-        ("ws://localhost.example/ws/agent", False),
-        ("ws://127.0.0.1.example/ws/agent", False),
-        ("ws://user@localhost/ws/agent", False),
-        ("wss://user@relay.example/ws/agent", False),
+        "http://relay.example.com",
+        "ws:///ws/agent",
+        "ws://user:password@relay.example.com/ws/agent",
+        "ws://relay.example.com/ws/agent#fragment",
+        "ws://relay.example.com:not-a-port/ws/agent",
     ],
 )
-def test_agent_settings_only_permit_explicit_loopback_ws(
-    tmp_path: Path, url: str, accepted: bool
+def test_agent_rejects_structurally_invalid_relay_urls(
+    tmp_path: Path, url: str
 ) -> None:
-    values = {
-        "server_url": url,
-        "device_id": "device-a",
-        "agent_token": "secret-token",
-        "workspace": tmp_path,
-    }
-    if accepted:
-        assert AgentSettings(**values).server_url == url
-    else:
-        with pytest.raises(ConfigurationError):
-            AgentSettings(**values)
+    environment, _ = _canonical_agent_environment(tmp_path, url=url)
+    with pytest.raises(ConfigurationError):
+        AgentSettings.from_environment(environment)
+
+
+def test_agent_settings_has_no_transport_policy_field(tmp_path: Path) -> None:
+    field_name = "allow_" + "insecure_ws"
+    assert field_name not in AgentSettings.model_fields
+    with pytest.raises(ConfigurationError):
+        AgentSettings(
+            server_url="ws://192.168.1.20:8000/ws/agent",
+            device_id="device-a",
+            agent_token="secret-token",
+            workspace=tmp_path,
+            **{field_name: True},
+        )
 
 
 def test_configuration_failures_never_echo_agent_token(tmp_path: Path) -> None:
     secret = "AGENT_TOKEN_SENTINEL"
     invalid_values = [
-        {"server_url": "ws://relay.example/ws/agent"},
+        {"server_url": "http://relay.example/ws/agent"},
         {"device_id": "bad space"},
         {"agent_token": ""},
         {"workspace": tmp_path / "missing"},

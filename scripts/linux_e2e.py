@@ -514,7 +514,6 @@ def run_scenario(
                     "RELAY_SERVER_PORT": str(port),
                     "RELAY_MCP_TOKEN": control_token,
                     "RELAY_AGENT_TOKEN": agent_token,
-                    "RELAY_ALLOW_INSECURE_WS": "true",
                 },
             )
             agent_environment = _minimal_environment(
@@ -524,7 +523,6 @@ def run_scenario(
                     "RELAY_AGENT_TOKEN": agent_token,
                     "RELAY_AGENT_ID": DEVICE_ID,
                     "RELAY_AGENT_WORKSPACE": str(workspace),
-                    "RELAY_ALLOW_INSECURE_WS": "true",
                     "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
                     "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec",
                     "RELAY_AGENT_E2E_RUN_ID": run_id,

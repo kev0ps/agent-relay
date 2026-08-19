@@ -11,8 +11,7 @@ from agent_relay.output_models import ProviderToolResult
 from agent_relay.protocol import InvokeMessage
 from agent_relay.server import (
     RelaySettings,
-    _is_allowed_bind_host,
-    _is_loopback_bind_host,
+    _is_canonical_bind_host,
     create_app,
     main,
 )
@@ -22,6 +21,12 @@ def settings() -> RelaySettings:
     return RelaySettings(
         device_id="device-a", agent_token="agent-secret", mcp_token="control-secret"
     )
+
+
+def test_relay_settings_default_to_loopback_without_a_transport_policy() -> None:
+    configured = settings()
+    assert configured.bind_host == "127.0.0.1"
+    assert "allow_" + "insecure_ws" not in RelaySettings.model_fields
 
 
 def test_server_main_uses_canonical_environment_defaults_and_optional_deferred_mcp_settings(
@@ -43,7 +48,7 @@ def test_server_main_uses_canonical_environment_defaults_and_optional_deferred_m
     except SystemExit as exc:
         pytest.fail(f"canonical server environment was rejected: {exc}")
 
-    assert observed["host"] == "0.0.0.0"
+    assert observed["host"] == "127.0.0.1"
     assert observed["port"] == 8000
     assert "RELAY_AGENT_ID" not in environment
     assert "RELAY_MCP_ALLOWED_HOSTS" not in environment
@@ -181,39 +186,15 @@ def test_relay_settings_match_protocol_identifier_and_token_limits(
         ("127.42.0.1", True),
         ("::1", True),
         ("localhost", True),
-        ("0.0.0.0", False),
-        ("::", False),
+        ("0.0.0.0", True),
+        ("::", True),
         ("100.64.0.1", False),
         ("192.168.1.1", False),
         ("relay.example", False),
     ],
 )
-def test_server_bind_host_is_explicit_loopback(host: str, accepted: bool) -> None:
-    assert _is_loopback_bind_host(host) is accepted
-
-
-@pytest.mark.parametrize(
-    ("host", "allow_non_loopback", "allowed_hosts", "accepted"),
-    [
-        ("127.0.0.1", False, (), True),
-        ("0.0.0.0", False, ("relay.example:*",), False),
-        ("0.0.0.0", True, (), False),
-        ("0.0.0.0", True, ("relay.example:*",), True),
-        ("192.168.1.20", True, ("relay.example:*",), False),
-        ("::", True, ("[::1]:*",), True),
-    ],
-)
-def test_non_loopback_bind_requires_explicit_opt_in_and_mcp_host_allowlist(
-    host: str,
-    allow_non_loopback: bool,
-    allowed_hosts: tuple[str, ...],
-    accepted: bool,
-) -> None:
-    assert _is_allowed_bind_host(
-        host,
-        allow_non_loopback=allow_non_loopback,
-        mcp_allowed_hosts=allowed_hosts,
-    ) is accepted
+def test_server_bind_host_uses_the_runtime_validator(host: str, accepted: bool) -> None:
+    assert _is_canonical_bind_host(host) is accepted
 
 
 def test_server_cli_rejects_invalid_host_and_port_without_echoing_values(

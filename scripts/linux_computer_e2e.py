@@ -803,7 +803,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_SERVER_PORT": str(server_port),
                 "RELAY_MCP_TOKEN": control_token,
                 "RELAY_AGENT_TOKEN": agent_token,
-                "RELAY_ALLOW_INSECURE_WS": "true",
             },
         )
         agent_environment = dict(graphical_environment)
@@ -813,7 +812,6 @@ def run_scenario(evidence_dir: Path | None = None, *, output_file: Path | None =
                 "RELAY_AGENT_TOKEN": agent_token,
                 "RELAY_AGENT_ID": DEVICE_ID,
                 "RELAY_AGENT_WORKSPACE": str(workspace),
-                "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
                 # Dynamic MCP publication preserves announcement order; keep this
                 # sequence identical to the public CUA_MCP_TOOLS contract.

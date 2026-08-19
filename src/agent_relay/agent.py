@@ -13,7 +13,6 @@ import signal
 import stat
 import time
 from collections.abc import Coroutine, Mapping, Sequence
-from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, AsyncContextManager, Callable, Protocol, cast
 from urllib.parse import urlparse
@@ -149,7 +148,6 @@ class AgentSettings(BaseModel):
     )
     agent_token: SecretStr = Field(repr=False, min_length=1, max_length=256)
     workspace: Path
-    allow_insecure_ws: bool = False
     heartbeat_interval_seconds: float = Field(default=15, gt=0, le=3600)
     reconnect_min_seconds: float = Field(default=0.1, gt=0, le=60)
     reconnect_max_seconds: float = Field(default=5, gt=0, le=3600)
@@ -231,10 +229,6 @@ class AgentSettings(BaseModel):
             self.agent_id = self.device_id
         elif self.agent_id != self.device_id:
             raise ValueError("device_id and agent_id must match")
-        parsed = urlparse(self.server_url)
-        if parsed.scheme == "ws" and not _is_explicit_loopback(parsed.hostname or ""):
-            if not self.allow_insecure_ws:
-                raise ValueError("ws:// is permitted only for explicit loopback hosts")
         if self.reconnect_min_seconds > self.reconnect_max_seconds:
             raise ValueError("reconnect_min_seconds must be <= reconnect_max_seconds")
         result_budget = min(MAX_RESULT_JSON_BYTES, self.max_ws_message_bytes) - 2048
@@ -295,16 +289,6 @@ def _strict_bool(value: str) -> bool:
     normalized = value.strip().lower()
     if normalized not in {"true", "false"}:
         raise ValueError("invalid boolean option")
-    return normalized == "true"
-
-
-def _allow_insecure_ws_from_environment(env: Mapping[str, str]) -> bool:
-    raw = env.get("RELAY_ALLOW_INSECURE_WS")
-    if raw is None:
-        return False
-    normalized = raw.strip().lower()
-    if normalized not in {"true", "false"}:
-        raise ValueError("invalid insecure WebSocket policy")
     return normalized == "true"
 
 
@@ -370,7 +354,6 @@ def _canonical_agent_values(
         "agent_id": agent_id,
         "agent_token": token,
         "workspace": workspace,
-        "allow_insecure_ws": _allow_insecure_ws_from_environment(env),
         "tools_allowlist": tools_allowlist,
     }
     if not defer_tool_validation:
@@ -504,15 +487,6 @@ def _load_or_create_agent_id(workspace: Path, configured: str | None) -> str:
     if selected is not None and selected != existing:
         raise ValueError("existing agent identity differs")
     return existing
-
-
-def _is_explicit_loopback(hostname: str) -> bool:
-    if hostname == "localhost":
-        return True
-    try:
-        return ip_address(hostname).is_loopback
-    except ValueError:
-        return False
 
 
 class TextSocket(Protocol):

@@ -120,27 +120,20 @@ In a second terminal, run the outbound Agent:
 uv run --frozen agent-relay agent
 ```
 
-The `relay_url` value is a generic `ws://` or `wss://` URL. The configuration
-validator does not impose a fixed WebSocket path so the transport protocol can
-evolve independently. The current protocol example uses `/ws/agent`.
+The `relay_url` value is a syntactically valid `ws://` or `wss://` URL. The
+runtime accepts both schemes and validates the scheme, hostname, optional port,
+userinfo, fragment, and general URL structure. The current protocol example
+uses `/ws/agent`.
 
 ## Configuration examples
 
-`config init server` uses the project's network-capable default bind
-`0.0.0.0:8000`. For a same-machine-only setup, change it to loopback before
-starting the Server:
-
-```sh
-uv run --frozen agent-relay config set server host 127.0.0.1
-```
-
-A loopback-only YAML configuration looks like:
+`config init server` defaults to the loopback bind `127.0.0.1:8000`. A
+same-machine Local configuration looks like:
 
 ```yaml
 server:
   host: 127.0.0.1
   port: 8000
-  allow_insecure_ws: true
 
 agent:
   identity:
@@ -217,33 +210,43 @@ WebSocket connection, authenticated `registered`, the capability summary,
 disconnects, and bounded reconnect delays. Internal phases and exception detail
 remain behind `RELAY_NATIVE_DEBUG=1`.
 
-## Private LAN or external WSS
+## Local, LAN, and Remote topologies
 
-For a trusted LAN/test connection, set the Server policy and the Agent URL in
-YAML or with canonical environment overrides:
+Onboarding uses three topology names to generate explicit values; the topology
+itself is not stored in YAML.
+
+For **Local**, keep the defaults shown above: Server bind `127.0.0.1` and Agent
+URL `ws://127.0.0.1:8000/ws/agent`.
+
+For **LAN**, provide the LAN address explicitly (do not guess it) and keep the
+port on a trusted private network:
 
 ```sh
 uv run --frozen agent-relay config set server host 0.0.0.0
-uv run --frozen agent-relay config set server allow_insecure_ws true
 uv run --frozen agent-relay config set agent relay_url ws://192.168.1.10:8000/ws/agent
 uv run --frozen agent-relay config validate server
 uv run --frozen agent-relay config validate agent
 ```
 
-Keep port `8000` LAN-firewalled. Plaintext tokens are acceptable only on that
-trusted LAN/test network. For WSS, use an externally provided TLS endpoint;
-the application does not implement TLS:
+`ws://` is unencrypted. Authentication is still required, but a token does not
+prevent interception; use a LAN firewall and never publish port `8000` directly
+to the Internet.
+
+For **Remote**, use a public WSS URL and terminate TLS in Caddy, Nginx, Traefik,
+Tailscale Serve, or an equivalent external proxy:
 
 ```sh
-uv run --frozen agent-relay config set agent relay_url wss://tls.example.test/relay
+uv run --frozen agent-relay config set server host 127.0.0.1
+uv run --frozen agent-relay config set agent relay_url wss://relay.example.com/ws/agent
+uv run --frozen agent-relay config validate server
+uv run --frozen agent-relay config validate agent
 ```
 
-For an Agent-only YAML file, set the Agent policy explicitly instead of the
-shared Server policy:
-
-```sh
-uv run --frozen agent-relay config set agent allow_insecure_ws true
-```
+The proxy must preserve WebSocket Upgrade and long-lived connections. It is
+responsible for certificates and public exposure; Agent Relay does not trust
+forwarded headers and no token belongs in the proxy configuration or URL. For
+MCP through a DNS name, configure explicit `RELAY_MCP_ALLOWED_HOSTS` and
+`RELAY_MCP_ALLOWED_ORIGINS` values matching that public host.
 
 ## Docker image CI validation
 

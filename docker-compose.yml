@@ -1,4 +1,6 @@
 # Simple one-listener MVP deployment for a Linux host.
+# `ports` publishes the Server to the host; a private Compose-only topology
+# would use `expose` instead and keep the listener off the host network.
 # Keep credentials in the ignored .env file, never in this file.
 services:
   relay-server:
@@ -13,4 +15,3 @@ services:
       RELAY_SERVER_PORT: "8000"
       RELAY_MCP_TOKEN: "${RELAY_MCP_TOKEN:?set RELAY_MCP_TOKEN}"
       RELAY_AGENT_TOKEN: "${RELAY_AGENT_TOKEN:?set RELAY_AGENT_TOKEN}"
-      RELAY_ALLOW_INSECURE_WS: "${RELAY_ALLOW_INSECURE_WS:-true}"

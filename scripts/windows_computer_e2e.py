@@ -227,7 +227,6 @@ def run_scenario(
                 "RELAY_SERVER_PORT": str(server_port),
                 "RELAY_MCP_TOKEN": control_token,
                 "RELAY_AGENT_TOKEN": agent_token,
-                "RELAY_ALLOW_INSECURE_WS": "true",
             }
         )
         agent_environment = _driver_environment(
@@ -237,7 +236,6 @@ def run_scenario(
                 "RELAY_AGENT_TOKEN": agent_token,
                 "RELAY_AGENT_ID": DEVICE_ID,
                 "RELAY_AGENT_WORKSPACE": str(workspace),
-                "RELAY_ALLOW_INSECURE_WS": "true",
                 "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
                 "RELAY_AGENT_TOOLS": "relay_system_ping,relay_terminal_exec,relay_cua_list_windows,relay_cua_get_window_state,relay_cua_click,relay_cua_type_text",
                 "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME": COMPUTER_APP_NAME,

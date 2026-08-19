@@ -149,7 +149,6 @@ jobs:
             cat "$mcp_token_file"
             printf '\nRELAY_AGENT_TOKEN='
             cat "$agent_token_file"
-            printf '\nRELAY_ALLOW_INSECURE_WS=true\n'
           } > "$env_file"
           docker compose --env-file "$env_file" config --quiet
           docker compose --env-file "$env_file" up --build --detach

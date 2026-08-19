@@ -238,10 +238,9 @@ class RelaySettings(BaseModel):
     )
     # A server can start before any Agent has registered.
     device_id: DeviceId | None = None
-    bind_host: str = "0.0.0.0"
+    bind_host: str = "127.0.0.1"
     mcp_allowed_hosts: tuple[str, ...] = ()
     mcp_allowed_origins: tuple[str, ...] = ()
-    allow_insecure_ws: bool = True
     min_timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 0.1
     max_timeout_seconds: Annotated[float, Field(gt=0, le=3600)] = 30.0
     cancel_send_timeout_seconds: Annotated[float, Field(gt=0, le=5)] = 0.25
@@ -304,10 +303,7 @@ class RelaySettings(BaseModel):
                 "mcp_token": env["RELAY_MCP_TOKEN"],
                 "bind_host": bind_host
                 if bind_host is not None
-                else env.get("RELAY_SERVER_HOST", "0.0.0.0"),
-                "allow_insecure_ws": _parse_bool(
-                    env.get("RELAY_ALLOW_INSECURE_WS", "true")
-                ),
+                else env.get("RELAY_SERVER_HOST", "127.0.0.1"),
                 "mcp_allowed_hosts": _split_csv(
                     env.get("RELAY_MCP_ALLOWED_HOSTS", "")
                 ),
@@ -349,8 +345,7 @@ def create_app(settings: RelaySettings) -> FastAPI:
         cancel_send_timeout_seconds=settings.cancel_send_timeout_seconds,
     )
     automatic_ip_host_policy = (
-        not _is_loopback_bind_host(settings.bind_host)
-        and not settings.mcp_allowed_hosts
+        not settings.mcp_allowed_hosts
         and not settings.mcp_allowed_origins
     )
     mcp = create_mcp_facade(
@@ -548,7 +543,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             host = runtime.host
             port = runtime.port
         else:
-            host = args.host or env.get("RELAY_SERVER_HOST", "0.0.0.0")
+            host = args.host or env.get("RELAY_SERVER_HOST", "127.0.0.1")
             port = int(args.port or env.get("RELAY_SERVER_PORT", "8000"))
             if not 1 <= port <= 65535 or not _is_canonical_bind_host(host):
                 raise ValueError
@@ -565,8 +560,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
 
-def _is_loopback_bind_host(host: str) -> bool:
-    if host == "localhost":
+def _is_canonical_bind_host(host: str) -> bool:
+    """Allow loopback and the documented LAN wildcard binds for canonical config."""
+    if host == "localhost" or host in {"0.0.0.0", "::"}:
         return True
     try:
         return ip_address(host).is_loopback
@@ -574,37 +570,8 @@ def _is_loopback_bind_host(host: str) -> bool:
         return False
 
 
-def _is_canonical_bind_host(host: str) -> bool:
-    """Allow loopback and the documented LAN wildcard binds for canonical config."""
-    return _is_loopback_bind_host(host) or host in {"0.0.0.0", "::"}
-
-
-def _is_allowed_bind_host(
-    host: str,
-    *,
-    allow_non_loopback: bool,
-    mcp_allowed_hosts: tuple[str, ...],
-) -> bool:
-    if _is_loopback_bind_host(host):
-        return True
-    return (
-        allow_non_loopback
-        and host in {"0.0.0.0", "::"}
-        and bool(mcp_allowed_hosts)
-    )
-
-
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
-
-
-def _parse_bool(value: str) -> bool:
-    normalized = value.strip().lower()
-    if normalized == "true":
-        return True
-    if normalized == "false":
-        return False
-    raise ValueError
 
 
 if __name__ == "__main__":
