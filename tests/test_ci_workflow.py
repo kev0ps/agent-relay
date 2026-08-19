@@ -8,13 +8,15 @@ SETUP = ROOT / ".github/actions/setup-python/action.yml"
 DEPENDABOT = ROOT / ".github/dependabot.yml"
 
 
-def test_python_job_runs_required_quality_gates() -> None:
+def test_python_job_runs_required_quality_gates_without_duplicate_lock_check() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     python_job = workflow.split("  python:", 1)[1].split("\n  container:", 1)[0]
+    setup = SETUP.read_text(encoding="utf-8")
     assert "uv run --frozen ruff check ." in python_job
     assert 'pytest -q -m "not integration"' in python_job
     assert "pytest -q -m integration" in python_job
-    assert "uv lock --check" in python_job
+    assert "uv lock --check" not in python_job
+    assert setup.count("uv lock --check") == 1
     assert "scripts/audit_dependencies.py --check" in python_job
 
 
@@ -31,7 +33,9 @@ def test_ci_has_only_general_cua_native_jobs() -> None:
     assert forbidden_manual_path not in workflow
     assert "import cua_driver; print(cua_driver.get_binary_path())" in workflow
     assert "Verify Linux CUA browser prerequisite" in workflow
-    assert "google-chrome-stable --version" in workflow
+    assert "command -v google-chrome" in workflow
+    assert "google-chrome --version" in workflow
+    assert "google-chrome-stable" not in workflow
     assert ("CUA_DRIVER_" + "RS_INSTALL_DIR") not in workflow
 
 
@@ -58,18 +62,25 @@ def test_ci_uses_reproducible_pytest_module_invocation() -> None:
     assert "uv run --frozen pytest" not in workflow
 
 
-def test_linux_cua_job_uses_secure_apt_source_and_bounded_budget() -> None:
+def test_linux_cua_job_uses_preinstalled_chrome_and_bounded_budget() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     linux_cua = workflow.split("  e2e-linux-cua:", 1)[1].split(
         "\n  e2e-windows-terminal:", 1
     )[0]
+    desktop_prerequisites = linux_cua.split(
+        "      - name: Install Linux desktop prerequisites", 1
+    )[1].split("      - name: Verify Linux CUA browser prerequisite", 1)[0]
     assert "timeout-minutes: 10" in linux_cua
-    assert "https://dl.google.com/linux/linux_signing_key.pub" in linux_cua
-    assert "https://dl.google.com/linux/chrome/deb/" in linux_cua
-    assert "http://dl.google.com" not in linux_cua
+    assert desktop_prerequisites.count("sudo apt-get update") == 1
+    assert "chromium" not in desktop_prerequisites.casefold()
+    assert "wget" not in desktop_prerequisites
+    assert "google-chrome-stable" not in linux_cua
+    assert "https://dl.google.com/linux/linux_signing_key.pub" not in linux_cua
+    assert "https://dl.google.com/linux/chrome/deb/" not in linux_cua
+    assert "uv run --frozen python scripts/linux_computer_e2e.py" in linux_cua
 
 
-def test_cua_jobs_run_the_same_portable_contract_suite() -> None:
+def test_cua_jobs_do_not_repeat_portable_contract_suite() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     common_tests = (
         "tests/test_cua_catalog.py",
@@ -88,7 +99,7 @@ def test_cua_jobs_run_the_same_portable_contract_suite() -> None:
     for job_name in ("e2e-linux-cua", "e2e-windows-cua"):
         job = workflow.split(f"  {job_name}:", 1)[1].split("\n  e2e-", 1)[0]
         for test_path in common_tests:
-            assert test_path in job, f"{test_path} missing from {job_name}"
+            assert test_path not in job, f"{test_path} duplicated in {job_name}"
 
 
 def test_dependabot_groups_python_and_actions_weekly_without_automerge() -> None:

@@ -380,7 +380,7 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "xvfb" in job.lower()
     assert "at-spi" in job.lower()
     assert "uv run --frozen python scripts/linux_computer_e2e.py" in job
-    assert "google-chrome-stable --version" in job
+    assert "google-chrome --version" in job
     assert "include_browser=True" in SCRIPT.read_text(encoding="utf-8")
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile linux-cua" in job
