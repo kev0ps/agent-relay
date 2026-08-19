@@ -331,13 +331,17 @@ def test_ci_defines_bounded_native_windows_gate_without_docker_or_ui() -> None:
     assert "uv run --frozen python -m pytest -q" in job
     for test_path in (
         "tests/test_windows_e2e.py",
-        "tests/test_installers.py",
-        "test_init_agent_from_server_uses_the_effective_dotenv_token",
-        "tests/test_runner.py",
+        "tests/test_installers.py::test_windows_path_refresh_preserves_session_entries",
+        "tests/test_installers.py::test_windows_agent_configuration_probe_fails_closed",
+        "tests/test_cli_uninstall.py::test_windows_uninstall_retries_real_locked_executable",
+        "tests/test_cli_uninstall.py::test_windows_uninstall_real_process_lock_boundary",
     ):
         assert test_path in job
-    assert "git_search_skips_relative_default_path_entries" in job
-    assert "uv run --frozen python -m pytest -q -m integration" in job
+    assert "tests/test_linux_e2e.py" not in job
+    assert "tests/test_runner.py" not in job
+    assert "test_init_agent_from_server_uses_the_effective_dotenv_token" not in job
+    assert "git_search_skips_relative_default_path_entries" not in job
+    assert "uv run --frozen python -m pytest -q -m integration" not in job
     assert "uv run --frozen python scripts/windows_e2e.py" in job
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile windows-terminal" in job

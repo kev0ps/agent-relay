@@ -397,15 +397,21 @@ def test_terminal_harnesses_share_server_restart_lifecycle() -> None:
         assert source.count("portable_scenarios.run_core_scenario(") == 3
 
 
-def test_linux_and_windows_ci_jobs_run_both_harness_contract_modules() -> None:
+def test_linux_and_windows_ci_jobs_run_their_platform_harness_contract_module() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     linux_job = workflow.split("  e2e-linux:", 1)[1].split("\n  e2e-linux-cua:", 1)[0]
     windows_job = workflow.split("  e2e-windows-terminal:", 1)[1].split(
         "\n  e2e-windows-cua:", 1
     )[0]
-    for job in (linux_job, windows_job):
-        assert "tests/test_linux_e2e.py" in job
-        assert "tests/test_windows_e2e.py" in job
+    assert "tests/test_linux_e2e.py" in linux_job
+    assert "tests/test_windows_e2e.py" not in linux_job
+    assert "tests/test_runner.py" not in linux_job
+    assert "-m integration" not in linux_job
+
+    assert "tests/test_windows_e2e.py" in windows_job
+    assert "tests/test_linux_e2e.py" not in windows_job
+    assert "tests/test_runner.py" not in windows_job
+    assert "-m integration" not in windows_job
 
 
 

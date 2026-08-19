@@ -106,9 +106,13 @@ from another_package import item
     }
 
 
-def test_python_ci_job_runs_lock_and_dependency_audit_gates() -> None:
+def test_python_ci_job_runs_audit_without_duplicate_lock_gate() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     python_job = workflow.split("  python:", 1)[1].split("\n  container:", 1)[0]
+    setup = (ROOT / ".github/actions/setup-python/action.yml").read_text(
+        encoding="utf-8"
+    )
 
-    assert "uv lock --check" in python_job
+    assert "uv lock --check" not in python_job
+    assert setup.count("uv lock --check") == 1
     assert "uv run --frozen python scripts/audit_dependencies.py --check" in python_job
