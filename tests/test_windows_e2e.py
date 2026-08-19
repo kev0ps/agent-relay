@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "windows_e2e.py"
+SHARED_SCRIPT = Path(__file__).parents[1] / "scripts" / "e2e_harness.py"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
 
 
@@ -275,7 +276,7 @@ def test_cleanup_diagnostics_use_a_closed_category() -> None:
 
 
 def test_native_lifecycle_scenario_contains_server_restart_gate() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = SHARED_SCRIPT.read_text(encoding="utf-8")
 
     for phase in (
         '"server-stop"',

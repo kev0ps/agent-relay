@@ -13,6 +13,8 @@ from tests.e2e.mcp_client import EXPECTED_MCP_TOOLS
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "linux_computer_e2e.py"
+CUA_ADAPTER = ROOT / "scripts" / "linux_cua_adapter.py"
+SHARED_HARNESS = ROOT / "scripts" / "e2e_harness.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"
 POSIX_ONLY = pytest.mark.skipif(
@@ -353,7 +355,7 @@ def test_linux_cua_controls_readiness_scopes_by_browser_pid(monkeypatch) -> None
 
 def test_linux_cua_uses_production_configuration_and_fixture() -> None:
     harness = _load_harness()
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = CUA_ADAPTER.read_text(encoding="utf-8")
     assert harness.COMPUTER_APP_NAME == "relay-desktop-fixture"
     assert harness.COMPUTER_WINDOW_TITLE == "Relay Desktop Fixture"
     assert 'DESKTOP_FIXTURE = ROOT / "tests" / "fixtures" / "desktop_app.py"' in source
@@ -381,7 +383,7 @@ def test_linux_cua_ci_job_invokes_public_runtime_gate() -> None:
     assert "at-spi" in job.lower()
     assert "uv run --frozen python scripts/linux_computer_e2e.py" in job
     assert "google-chrome --version" in job
-    assert "include_browser=True" in SCRIPT.read_text(encoding="utf-8")
+    assert "include_browser=True" in CUA_ADAPTER.read_text(encoding="utf-8")
     assert "python scripts/validate_e2e_evidence.py" in job
     assert "--profile linux-cua" in job
     assert "docker" not in job.lower()
@@ -401,8 +403,10 @@ def test_linux_cua_passes_profile_grant_only_to_agent_environment(monkeypatch) -
 
 
 def test_linux_cua_starts_driver_before_chromium() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
-    assert source.index('phase = "agent-start"') < source.index('phase = "chromium-start"')
+    source = CUA_ADAPTER.read_text(encoding="utf-8")
+    shared_source = SHARED_HARNESS.read_text(encoding="utf-8")
+    assert 'phase = "agent-start"' in shared_source
+    assert 'context.phase = "chromium-start"' in source
     assert '"ACCESSIBILITY_ENABLED": "1"' in source
     assert '"NO_AT_BRIDGE": "0"' in source
     assert "AT_SPI_BUS_ADDRESS" in source

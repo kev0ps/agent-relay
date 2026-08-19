@@ -12,6 +12,7 @@ import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "linux_e2e.py"
 WINDOWS_SCRIPT = Path(__file__).parents[1] / "scripts" / "windows_e2e.py"
+SHARED_SCRIPT = Path(__file__).parents[1] / "scripts" / "e2e_harness.py"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
 POSIX_ONLY = pytest.mark.skipif(
     os.name != "posix", reason="requires the Linux process and evidence primitives"
@@ -373,10 +374,7 @@ def test_primary_failure_reports_secondary_cleanup_without_raw_error(
 
 
 def test_terminal_harnesses_share_server_restart_lifecycle() -> None:
-    sources = (
-        SCRIPT.read_text(encoding="utf-8"),
-        WINDOWS_SCRIPT.read_text(encoding="utf-8"),
-    )
+    source = SHARED_SCRIPT.read_text(encoding="utf-8")
 
     phases = (
         '"server-start"',
@@ -391,10 +389,9 @@ def test_terminal_harnesses_share_server_restart_lifecycle() -> None:
         '"server-restart"',
         '"post-restart-core-scenario"',
     )
-    for source in sources:
-        for phase in phases:
-            assert phase in source
-        assert source.count("portable_scenarios.run_core_scenario(") == 3
+    for phase in phases:
+        assert phase in source
+    assert source.count("portable_scenarios.run_core_scenario(") == 3
 
 
 def test_linux_and_windows_ci_jobs_run_their_platform_harness_contract_module() -> None:
