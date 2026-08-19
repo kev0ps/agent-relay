@@ -17,6 +17,13 @@ def test_no_arguments_prints_help_and_succeeds(capsys: pytest.CaptureFixture[str
     assert "doctor" in output
 
 
+def test_onboarding_parser_exposes_the_three_transport_topologies() -> None:
+    parser = cli._parser()
+    assert parser.parse_args(["onboard", "--topology", "local"]).topology == "local"
+    assert parser.parse_args(["onboard", "--topology", "lan"]).topology == "lan"
+    assert parser.parse_args(["onboard", "--topology", "remote"]).topology == "remote"
+
+
 def test_help_and_version_are_top_level_only(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["--help"]) == 0
     assert "--version" in capsys.readouterr().out

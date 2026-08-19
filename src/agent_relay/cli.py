@@ -18,7 +18,7 @@ _HELP = """usage: agent-relay [--config PATH] <command>\n\nAgent Relay\n\nComman
 _HELP = _HELP.replace(
     "  config validate agent          validate the Agent configuration\n",
     "  config validate agent          validate the Agent configuration\n"
-    "  onboard                       guided Server/Agent first-run setup\n",
+    "  onboard [--topology TOPOLOGY] guided Server/Agent first-run setup\n",
 )
 
 _HELP = _HELP.replace(
@@ -133,7 +133,7 @@ def _parser() -> _Parser:
     onboard_parser.add_argument("--host")
     onboard_parser.add_argument("--port")
     onboard_parser.add_argument(
-        "--policy", choices=("loopback", "lan", "secure")
+        "--topology", choices=("local", "lan", "remote")
     )
     onboard_parser.add_argument("--relay-url")
     onboard_parser.add_argument("--workspace")
@@ -149,18 +149,6 @@ def _parser() -> _Parser:
     onboard_tokens = onboard_parser.add_mutually_exclusive_group()
     onboard_tokens.add_argument("--token-file", type=Path)
     onboard_tokens.add_argument("--token-stdin", action="store_true")
-    onboard_transport = onboard_parser.add_mutually_exclusive_group()
-    onboard_transport.add_argument(
-        "--allow-insecure-ws",
-        dest="allow_insecure_ws",
-        action="store_true",
-    )
-    onboard_transport.add_argument(
-        "--deny-insecure-ws",
-        dest="allow_insecure_ws",
-        action="store_false",
-    )
-    onboard_parser.set_defaults(allow_insecure_ws=None)
     onboard_check = onboard_parser.add_mutually_exclusive_group()
     onboard_check.add_argument("--check", dest="check", action="store_true")
     onboard_check.add_argument("--no-check", dest="check", action="store_false")

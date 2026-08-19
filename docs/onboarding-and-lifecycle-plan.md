@@ -38,27 +38,34 @@ available for internal phases and detailed diagnostics.
 
 ### Local Server and Agent
 
-1. Generate the Server MCP and Agent credentials.
-2. Reuse the Server Agent credential in the local Agent configuration.
-3. Ask for the workspace and enabled tools.
-4. Validate both sections and print the two startup commands.
+1. Select the `local` topology.
+2. Generate the Server MCP and Agent credentials.
+3. Reuse the Server Agent credential in the local Agent configuration.
+4. Ask for the workspace and enabled tools.
+5. Validate both sections and print the two startup commands.
 
 ### Server only
 
-1. Ask for bind host, port, and the intended local/LAN deployment policy.
+1. Select `local`, `lan`, or `remote`, then ask for any explicit bind host and
+   port override.
 2. Generate private Server credentials.
 3. Validate the Server section.
 4. Explain how an Agent administrator can securely receive the Agent
    credential without printing it by default.
 
-### Agent connected to a remote Server
+### Agent connected to another Server
 
-1. Ask for the `ws://` or `wss://` Relay URL.
-2. Read the Agent credential through a masked prompt, standard input, or an
+1. Select `local`, `lan`, or `remote` to guide the URL prompt.
+2. Ask for the Agent URL; the `remote` topology requires a public `wss://` URL.
+3. Read the Agent credential through a masked prompt, standard input, or an
    explicitly selected private file.
-3. Ask for the workspace and enabled tools.
-4. Validate URL policy and Agent configuration.
-5. Start or suggest a connection check and clearly report its result.
+4. Ask for the workspace and enabled tools.
+5. Validate the URL structure and Agent configuration.
+6. Start or suggest a connection check and clearly report its result.
+
+The selected topology guides generation only; it is not persisted as runtime
+state. The resulting `server.host`, `server.port`, and `agent.relay_url` values
+are authoritative.
 
 ## Delivery plan
 

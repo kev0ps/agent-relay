@@ -1,4 +1,4 @@
-"""Canonical YAML configuration, private dotenv credentials, and CLI policy helpers."""
+"""Canonical YAML configuration, private dotenv credentials, and CLI helpers."""
 
 from __future__ import annotations
 
@@ -118,9 +118,8 @@ class ServerRuntime:
 
 
 _SERVER_DEFAULTS: dict[str, Any] = {
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8000,
-    "allow_insecure_ws": True,
     "mcp": {"allowed_hosts": [], "allowed_origins": []},
     "runtime": {
         "min_timeout_seconds": 0.1,
@@ -159,7 +158,6 @@ _CONFIG_KEYS: dict[str, frozenset[str]] = {
         {
             "host",
             "port",
-            "allow_insecure_ws",
             "mcp.allowed_hosts",
             "mcp.allowed_origins",
             "runtime.min_timeout_seconds",
@@ -172,7 +170,6 @@ _CONFIG_KEYS: dict[str, frozenset[str]] = {
         {
             "identity.id",
             "relay_url",
-            "allow_insecure_ws",
             "workspace",
             "tools.allowlist",
             "computer.allowed_app_name",
@@ -541,14 +538,6 @@ def _relative_path(value: object, config_path: Path) -> Path:
     return path.resolve(strict=False)
 
 
-def _parse_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
-        return value.strip().lower() == "true"
-    raise ConfigError("configuration boolean is invalid")
-
-
 def _parse_int(value: object, *, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ConfigError("configuration integer is invalid")
@@ -577,16 +566,6 @@ def _env_value(env: Mapping[str, str], key: str) -> str | None:
     return env.get(key)
 
 
-def _env_bool(env: Mapping[str, str], key: str, default: bool | str) -> bool | str:
-    value = _env_value(env, key)
-    if value is None:
-        return default
-    try:
-        return _parse_bool(value)
-    except ConfigError:
-        return value
-
-
 def _reject_token_file_environment(env: Mapping[str, str]) -> None:
     if "RELAY_MCP_TOKEN_FILE" in env or "RELAY_AGENT_TOKEN_FILE" in env:
         raise ConfigError("*_TOKEN_FILE is no longer supported; use .env")
@@ -597,12 +576,6 @@ def _effective_server(document: Mapping[str, Any], env: Mapping[str, str]) -> di
         section["host"] = value
     if (value := _env_value(env, "RELAY_SERVER_PORT")) is not None:
         section["port"] = value
-    configured_insecure = section["allow_insecure_ws"]
-    try:
-        configured_insecure = _parse_bool(configured_insecure)
-    except ConfigError:
-        pass
-    section["allow_insecure_ws"] = _env_bool(env, "RELAY_ALLOW_INSECURE_WS", configured_insecure)
     mcp = section.setdefault("mcp", {})
     if (value := _env_value(env, "RELAY_MCP_ALLOWED_HOSTS")) is not None:
         mcp["allowed_hosts"] = [item.strip() for item in value.split(",") if item.strip()]
@@ -624,12 +597,6 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dic
     section = _deep_merge(_default_document("agent"), document.get("agent", {}))
     if (value := _env_value(env, "RELAY_URL")) is not None:
         section["relay_url"] = value
-    if (value := _env_value(env, "RELAY_ALLOW_INSECURE_WS")) is not None:
-        section["allow_insecure_ws"] = _env_bool(
-            env,
-            "RELAY_ALLOW_INSECURE_WS",
-            section.get("allow_insecure_ws", _SERVER_DEFAULTS["allow_insecure_ws"]),
-        )
     if (value := _env_value(env, "RELAY_AGENT_ID")) is not None:
         section.setdefault("identity", {})["id"] = value
     if (value := _env_value(env, "RELAY_AGENT_WORKSPACE")) is not None:
@@ -663,27 +630,6 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dic
         if (value := _env_value(env, env_key)) is not None:
             computer[field] = value
     return section
-
-
-def _effective_agent_allow_insecure_ws(
-    document: Mapping[str, Any], env: Mapping[str, str]
-) -> object:
-    """Resolve the Agent transport policy without widening old configs."""
-    raw_agent = document.get("agent")
-    if "RELAY_ALLOW_INSECURE_WS" in env or (
-        isinstance(raw_agent, Mapping) and "allow_insecure_ws" in raw_agent
-    ):
-        return _effective_agent(document, env).get("allow_insecure_ws", False)
-    # Combined YAML continues to use the canonical Server policy. Legacy
-    # Agent-only YAML keeps its historical default until onboarding writes an
-    # explicit policy key.
-    if not isinstance(document.get("server"), Mapping):
-        # Preserve the historical config-init contract. Guided onboarding
-        # writes an explicit Agent policy, while legacy scripted Agent YAML
-        # continues to accept a trusted LAN ws:// URL until the operator opts
-        # into the stricter policy.
-        return _SERVER_DEFAULTS["allow_insecure_ws"]
-    return _effective_server(document, env).get("allow_insecure_ws", False)
 
 
 def discover_local_catalog(
@@ -814,24 +760,9 @@ def validate_relay_url(value: str) -> None:
         raise ConfigError("agent relay_url must be a ws:// or wss:// URL")
 
 
-def validate_agent_transport(value: str, *, allow_insecure_ws: bool) -> None:
-    """Validate a Relay URL together with its local transport policy."""
+def validate_agent_transport(value: str) -> None:
+    """Validate the structural Relay WebSocket URL contract."""
     validate_relay_url(value)
-    parsed = urlparse(value)
-    if parsed.scheme == "ws" and not _is_loopback(parsed.hostname or ""):
-        if not allow_insecure_ws:
-            raise ConfigError("non-loopback ws:// requires allow_insecure_ws")
-
-
-def _is_loopback(hostname: str) -> bool:
-    if hostname == "localhost":
-        return True
-    try:
-        from ipaddress import ip_address
-
-        return ip_address(hostname).is_loopback
-    except ValueError:
-        return False
 
 
 def _validate_root(document: Mapping[str, Any], report: list[ValidationIssue]) -> None:
@@ -894,13 +825,6 @@ def _validate_server(
         issues.append(ValidationIssue("INFO", f"port={port}"))
     except ConfigError:
         issues.append(ValidationIssue("ERROR", "server port is invalid"))
-    try:
-        insecure = _parse_bool(section.get("allow_insecure_ws"))
-    except ConfigError:
-        insecure = False
-        issues.append(ValidationIssue("ERROR", "allow_insecure_ws must be boolean"))
-    if insecure and isinstance(host, str) and host not in {"127.0.0.1", "::1", "localhost"}:
-        issues.append(ValidationIssue("WARNING", "allow_insecure_ws is enabled on a non-loopback bind"))
     token_values: dict[str, str] = {}
     dotenv_error: str | None = None
     try:
@@ -1008,17 +932,15 @@ def _validate_agent(
         issues.append(ValidationIssue("ERROR", "agent relay_url must be a ws:// or wss:// URL"))
     else:
         parsed = urlparse(str(relay_url))
-        insecure = _effective_agent_allow_insecure_ws(document, env)
-        try:
-            insecure = _parse_bool(insecure)
-        except ConfigError:
-            insecure = False
-            if isinstance(document.get("agent"), Mapping) and "allow_insecure_ws" in document["agent"]:
-                issues.append(ValidationIssue("ERROR", "agent allow_insecure_ws must be boolean"))
-        if parsed.scheme == "ws" and not _is_loopback(parsed.hostname or "") and not insecure:
-            issues.append(ValidationIssue("ERROR", "non-loopback ws:// requires allow_insecure_ws"))
-        elif parsed.scheme == "ws" and not _is_loopback(parsed.hostname or ""):
-            issues.append(ValidationIssue("WARNING", "Agent uses insecure ws:// transport"))
+        if parsed.scheme == "ws":
+            issues.append(
+                ValidationIssue(
+                    "INFO",
+                    "transport=ws:// (unencrypted; intended for local or trusted LAN use)",
+                )
+            )
+        else:
+            issues.append(ValidationIssue("INFO", "transport=wss:// (TLS expected)"))
     workspace_value = section.get("workspace")
     try:
         workspace = _relative_path(workspace_value, path)
@@ -1337,7 +1259,6 @@ def init_config(
     catalog: CatalogSnapshot | None = None,
     relay_url: str | None = None,
     workspace: str | Path | None = None,
-    allow_insecure_ws: bool | None = None,
     cua_access: str | None = None,
     assume_yes: bool = False,
 ) -> Path:
@@ -1400,8 +1321,6 @@ def init_config(
             section["relay_url"] = relay_url
         if workspace is not None:
             section["workspace"] = str(workspace)
-        if allow_insecure_ws is not None:
-            section["allow_insecure_ws"] = allow_insecure_ws
         _reject_token_file_environment(effective_env)
         if "RELAY_AGENT_TOKEN" in effective_env and not effective_env["RELAY_AGENT_TOKEN"]:
             raise ConfigError("agent token is empty")
@@ -1851,18 +1770,12 @@ def load_agent_settings(
     workspace = _relative_path(section["workspace"], config_path)
     from .agent import AgentSettings
 
-    allow_insecure_ws = _effective_agent_allow_insecure_ws(document, effective_env)
-    try:
-        allow_insecure_ws = _parse_bool(allow_insecure_ws)
-    except ConfigError:
-        allow_insecure_ws = False
     return AgentSettings(
         server_url=section["relay_url"],
         device_id=identity,
         agent_id=identity,
         agent_token=token,
         workspace=workspace,
-        allow_insecure_ws=allow_insecure_ws,
         tools_allowlist=tuple(section["tools"]["allowlist"]),
         heartbeat_interval_seconds=float(runtime["heartbeat_interval_seconds"]),
         reconnect_min_seconds=float(runtime["reconnect_min_seconds"]),
@@ -1910,7 +1823,6 @@ def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | Non
         bind_host=str(section["host"]),
         mcp_allowed_hosts=tuple(mcp["allowed_hosts"]),
         mcp_allowed_origins=tuple(mcp["allowed_origins"]),
-        allow_insecure_ws=_parse_bool(section["allow_insecure_ws"]),
         min_timeout_seconds=float(runtime["min_timeout_seconds"]),
         max_timeout_seconds=float(runtime["max_timeout_seconds"]),
         cancel_send_timeout_seconds=float(runtime["cancel_send_timeout_seconds"]),

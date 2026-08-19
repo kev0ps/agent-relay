@@ -66,42 +66,85 @@ storage, or exhaustive structured auditing. Application logs are minimal: do
 not treat them as an audit trail, and do not log tokens, URLs with secrets,
 Bearer headers, or environments. The application does not implement TLS.
 
-## One-listener deployment
+## One-listener deployment and transport topologies
 
 The current Server listens once on
-`RELAY_SERVER_HOST:RELAY_SERVER_PORT`, defaulting to `0.0.0.0:8000`. The same
+`RELAY_SERVER_HOST:RELAY_SERVER_PORT`, defaulting to `127.0.0.1:8000`. The same
 listener serves the local MCP endpoint `/mcp` and the Agent WebSocket endpoint
 `/ws/agent`. The Agent has no inbound listener; it connects outbound.
 
-By default, MCP/Codex remains local and uses:
+The topology is an onboarding choice, not persisted runtime state. Once the
+configuration is written, `server.host`, `server.port`, and `agent.relay_url`
+are the complete transport contract:
 
-```text
-http://127.0.0.1:8000/mcp
+### Local
+
+Use the loopback bind and an unencrypted loopback WebSocket:
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8000
+agent:
+  relay_url: ws://127.0.0.1:8000/ws/agent
 ```
 
-The Docker example requires no MCP network setting for `localhost` or direct IP
-URLs. After successful Bearer authentication, the Server accepts loopback and
-IP-literal Host values automatically, while rejecting arbitrary DNS names. If
-a request includes `Origin`, the automatic policy requires it to be same-origin.
-Explicit host and origin allowlists remain available for DNS names and reverse
-proxies. These checks validate HTTP metadata, not the client source IP; the host
-firewall remains responsible for the client-IP allowlist.
+MCP/Codex uses `http://127.0.0.1:8000/mcp`. No network port needs to be
+reachable from another machine.
 
-For a trusted LAN or test network, the Agent may connect directly to
-`ws://<LAN-IP>:8000/ws/agent` when `RELAY_ALLOW_INSECURE_WS=true`. Port `8000`
-must be LAN-firewalled. Plaintext tokens are acceptable only on a trusted
-LAN/test network; do not expose this listener to the public Internet.
+### LAN
 
-For WSS, use `wss://<TLS endpoint>/ws/agent` only when an external TLS endpoint
-already exists. `RELAY_ALLOW_INSECURE_WS=false` rejects non-loopback `ws://` but
-accepts `wss://`; `true` permits both `ws://` and `wss://`. The Relay
-application does not terminate TLS, and the project prescribes no particular TLS
-endpoint or proxy implementation.
+Bind explicitly to a LAN address or wildcard and use the LAN address in the
+Agent URL:
 
-`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` remain advanced
-settings for DNS names and reverse proxies. They validate HTTP metadata and
-are not client-IP allowlists. Neither replaces a LAN firewall or external TLS
-boundary.
+```yaml
+server:
+  host: 0.0.0.0
+  port: 8000
+agent:
+  relay_url: ws://192.168.1.20:8000/ws/agent
+```
+
+`ws://` is unencrypted and is intended only for a trusted private network,
+Docker network, or CI fixture. Authentication remains mandatory, but the Agent
+token does not protect against transport interception. Restrict port `8000`
+with a host/LAN firewall and never expose it directly to the public Internet.
+The onboarding flow asks for the LAN address; it does not guess one.
+
+### Remote
+
+TLS is terminated outside Agent Relay by a reverse proxy or secure tunnel. The
+internal Server port is reachable only by that boundary, and the Agent uses a
+public `wss://` URL:
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8000
+agent:
+  relay_url: wss://relay.example.com/ws/agent
+```
+
+For example, a minimal Caddy site is:
+
+```caddyfile
+relay.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+The proxy must terminate TLS, preserve WebSocket Upgrade, and use long-lived
+read/write timeouts appropriate for an Agent session. Nginx, Traefik, Tailscale
+Serve, and equivalent products provide the same boundary when configured
+accordingly. Agent Relay does not configure certificates, trust `X-Forwarded-*`
+or `Forwarded`, or make authentication decisions from proxy headers. Do not
+publish the internal port, put a token in a URL or proxy configuration, or add
+an alternate public path that bypasses authentication.
+
+For MCP over a public DNS name, set explicit `RELAY_MCP_ALLOWED_HOSTS` and
+`RELAY_MCP_ALLOWED_ORIGINS` values matching the proxy hostname and HTTPS origin.
+These validate HTTP metadata, not client source IPs; the host firewall remains
+responsible for source-IP restriction.
 
 ## Manual rotation
 

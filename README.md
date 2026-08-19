@@ -126,10 +126,11 @@ agent-relay server
 agent-relay agent
 ```
 
-For a guided first run, use the onboarding command. It offers Local Server +
-Agent, Server-only, and Agent connected to a remote Server flows. It asks only
-for settings relevant to the selected role; Agent credentials are masked or
-read from a private `.env` file or secure input and are never printed:
+For a guided first run, use the onboarding command. It offers the `local`, `lan`,
+and `remote` transport topologies for the Local Server + Agent, Server-only,
+and Agent-connected flows. It asks only for settings relevant to the selected
+role; Agent credentials are masked or read from a private `.env` file or secure
+input and are never printed:
 
 ```sh
 agent-relay onboard
@@ -247,7 +248,7 @@ Agent Relay is designed around explicit local authority rather than broad remote
 access:
 
 - the canonical Server has one listener on `RELAY_SERVER_HOST:RELAY_SERVER_PORT`,
-  defaulting to `0.0.0.0:8000`, for both `/mcp` and `/ws/agent`;
+  defaulting to `127.0.0.1:8000`, for both `/mcp` and `/ws/agent`;
 - the Agent opens the WebSocket connection and hosts no listener;
 - `RELAY_MCP_TOKEN` and `RELAY_AGENT_TOKEN` are separate credentials; normal YAML
   deployments store them in the adjacent private `.env` with mode `0600`, and
@@ -262,24 +263,29 @@ access:
 - the Docker production image builds as non-root for AMD64 and ARM64 and passes
   image-contract and CLI smoke checks.
 
-By default, MCP/Codex remains local at `http://127.0.0.1:8000/mcp`. For a
-trusted LAN/test MCP client in the Docker deployment, use the Server LAN IP
-directly; IP-literal Host values are accepted automatically after Bearer
-authentication. Restrict port `8000` to the intended client and Agent source
-IPs with the host firewall.
-For an Agent connection, use `ws://<LAN-IP>:8000/ws/agent` with
-`RELAY_ALLOW_INSECURE_WS=true` and keep port `8000` LAN-firewalled. For WSS,
-use `wss://<TLS endpoint>/ws/agent` only when an external TLS endpoint already
-exists; the application does not implement TLS. With
-`RELAY_ALLOW_INSECURE_WS=false`, non-loopback plaintext `ws://` is rejected but
-`wss://` is accepted. Plaintext tokens are acceptable only on a trusted
-LAN/test network. The project prescribes no specific TLS endpoint or proxy
-implementation.
+### Transport topologies
 
-`RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` remain advanced
-settings for DNS names and reverse proxies. They validate HTTP metadata, not
-client source IPs. Neither setting replaces a LAN firewall or an external TLS
-boundary.
+The topology is an onboarding guide, not persisted runtime state. After setup,
+only `server.host`, `server.port`, and `agent.relay_url` determine the transport:
+
+- **Local** — bind the Server to `127.0.0.1:8000` and use
+  `ws://127.0.0.1:8000/ws/agent`. No network port needs to be reachable from
+  another machine.
+- **LAN** — bind the Server explicitly to a LAN address or `0.0.0.0:8000`, and
+  give the Agent a `ws://<LAN-IP>:8000/ws/agent` URL. This is an unencrypted
+  WebSocket on a trusted private network: authentication remains mandatory, but
+  a token does not protect against transport interception. Restrict the port
+  with a LAN firewall and never publish it directly to the Internet.
+- **Remote** — give the Agent a `wss://<public-host>/ws/agent` URL. A Caddy,
+  Traefik, Nginx, Tailscale Serve, or equivalent reverse proxy terminates TLS,
+  handles WebSocket Upgrade, and forwards only to the internal Server bind.
+  Do not publish the internal port directly, put a token in a URL or proxy
+  configuration, or make authentication decisions from forwarded headers.
+
+MCP/Codex remains local at `http://127.0.0.1:8000/mcp` in the Local topology.
+For LAN or public DNS access, configure explicit Host/Origin allowlists as
+needed; these settings validate HTTP metadata, not client source IPs. The host
+firewall remains responsible for source-IP restriction.
 
 Read the **[security model and honest limitations](docs/security.md)** before a
 private deployment. Report suspected vulnerabilities through the

@@ -16,8 +16,11 @@ local MCP client -> http://127.0.0.1:8000/mcp
 ```
 
 The application has one listener on port `8000` for both `/mcp` and
-`/ws/agent`. It does not implement TLS. A plaintext deployment must stay on a
-trusted, firewalled LAN; do not expose port `8000` directly to the Internet.
+`/ws/agent`. This Compose example explicitly binds the Server to `0.0.0.0`
+and uses `ports: 8000:8000`, so the listener is published on the Docker host.
+A private Compose-only topology would use `expose` instead and connect through
+the Compose network. Agent Relay does not implement TLS; public exposure must
+be through an external TLS reverse proxy or secure tunnel.
 
 ## Prerequisites
 
@@ -114,13 +117,13 @@ private `.env` beside the Agent YAML with only the Server's Agent token:
 RELAY_AGENT_TOKEN=<SERVER-AGENT-TOKEN>
 ```
 
-Set the non-secret Agent options in the process environment before starting it:
+For the **LAN** topology, point the Agent to the Server's private address and
+keep port `8000` behind a LAN firewall:
 
 ```sh
 export RELAY_URL=ws://<SERVER-LAN-IP>:8000/ws/agent
 export RELAY_AGENT_WORKSPACE=<PRIVATE-WORKSPACE>
 export RELAY_AGENT_TOOLS=relay_system_ping,relay_terminal_exec
-export RELAY_ALLOW_INSECURE_WS=true
 ```
 
 Start the Agent from that checkout:
@@ -132,13 +135,24 @@ uv run --frozen agent-relay agent
 `RELAY_AGENT_TOOLS` is optional; omitting it leaves all Agent-executed tools
 disabled. See [`tools.md`](tools.md) for copyable tool profiles. The
 Server-local `relay_device_status` tool never belongs in the Agent allowlist.
+For Windows PowerShell, assign the same variables with `$env:NAME = "value"`
+before starting the Agent.
 
-For Windows PowerShell, the same variables can be assigned with `$env:NAME =
-"value"` before starting the Agent.
+`ws://` is unencrypted; authentication remains mandatory, but a token does not
+protect against interception. Never publish this listener directly to the
+Internet.
 
-For WSS, point `RELAY_URL` at an externally provided TLS endpoint and leave
-`RELAY_ALLOW_INSECURE_WS` false or unset. Agent Relay does not configure or
-terminate TLS itself.
+For the **Remote** topology, put a reverse proxy or secure tunnel in front of
+the internal Server, terminate TLS there, and set:
+
+```sh
+export RELAY_URL=wss://relay.example.com/ws/agent
+```
+
+The proxy must preserve WebSocket Upgrade and long-lived connections. Agent
+Relay does not configure certificates, trust forwarded headers, or put tokens in
+URLs or proxy configuration. For MCP through a public DNS name, configure
+explicit `RELAY_MCP_ALLOWED_HOSTS` and `RELAY_MCP_ALLOWED_ORIGINS` values.
 
 ## Stop and rotate
 

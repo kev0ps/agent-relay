@@ -98,7 +98,6 @@ def _spawn_agent(workspace: Path, token: str, home: Path) -> subprocess.Popen[An
             "RELAY_AGENT_TOKEN": token,
             "RELAY_AGENT_ID": DEVICE_ID,
             "RELAY_AGENT_WORKSPACE": str(workspace),
-            "RELAY_ALLOW_INSECURE_WS": "true",
             "RELAY_AGENT_HEARTBEAT_INTERVAL_SECONDS": "0.2",
         },
     )

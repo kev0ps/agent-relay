@@ -30,6 +30,35 @@ def test_init_server_creates_private_yaml_and_dotenv(
     assert "token" not in capsys.readouterr().out.lower()
 
 
+def test_server_configuration_defaults_to_loopback_without_transport_policy(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "server", env={})
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    field_name = "allow_" + "insecure_ws"
+    assert document["server"]["host"] == "127.0.0.1"
+    assert field_name not in document["server"]
+    runtime = config.load_server_runtime(config_path, env={})
+    assert runtime.host == "127.0.0.1"
+    assert field_name not in type(runtime.settings).model_fields
+
+
+def test_removed_transport_policy_keys_are_rejected_as_unknown_yaml_keys(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    field_name = "allow_" + "insecure_ws"
+    config_path.write_text(
+        f"server:\n  {field_name}: true\n",
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        config_path.chmod(0o600)
+    report = config.validate_document(config_path, "server", env={})
+    assert any(field_name in issue.message for issue in report.errors)
+
+
 def test_init_rejects_symlinked_dotenv(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     config_dir = tmp_path / "config-parent"
     outside = tmp_path / "outside"
@@ -459,6 +488,39 @@ def test_doctor_prints_combined_human_report(
     assert "Agent" in output
     assert "[INFO] no tools enabled" in output
     assert "Summary" in output
+
+
+def test_transport_validation_reports_scheme_without_sensitive_url_data(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "agent", token="agent-secret", tools=[], env={})
+
+    config.set_value(
+        config_path,
+        "agent",
+        "relay_url",
+        "ws://192.168.1.20:8000/ws/agent?token=must-not-be-rendered",
+    )
+    ws_report = config.render_validation(
+        config.validate_document(config_path, "agent", env={})
+    )
+    assert "transport=ws://" in ws_report
+    assert "unencrypted" in ws_report
+    assert "token=must-not-be-rendered" not in ws_report
+
+    config.set_value(
+        config_path,
+        "agent",
+        "relay_url",
+        "wss://relay.example.test/ws/agent?token=must-not-be-rendered",
+    )
+    wss_report = config.render_validation(
+        config.validate_document(config_path, "agent", env={})
+    )
+    assert "transport=wss://" in wss_report
+    assert "TLS expected" in wss_report
+    assert "token=must-not-be-rendered" not in wss_report
 
 
 def test_application_configuration_failures_return_one(

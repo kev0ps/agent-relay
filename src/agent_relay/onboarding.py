@@ -9,12 +9,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from . import config
 from .catalog import CatalogError, CatalogSnapshot
 
 OnboardingRole = Literal["local", "server", "agent"]
-OnboardingPolicy = Literal["loopback", "lan", "secure"]
+OnboardingTopology = Literal["local", "lan", "remote"]
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ class OnboardingOptions:
     force: bool = False
     host: str | None = None
     port: str | None = None
-    policy: OnboardingPolicy | None = None
+    topology: OnboardingTopology | None = None
     relay_url: str | None = None
     workspace: str | None = None
     tools: str | None = None
@@ -33,7 +34,6 @@ class OnboardingOptions:
     yes: bool = False
     token_file: Path | None = None
     token_stdin: bool = False
-    allow_insecure_ws: bool | None = None
     check: bool | None = None
 
     @classmethod
@@ -44,7 +44,7 @@ class OnboardingOptions:
             force=args.force,
             host=args.host,
             port=args.port,
-            policy=args.policy,
+            topology=args.topology,
             relay_url=args.relay_url,
             workspace=args.workspace,
             tools=args.tools,
@@ -53,7 +53,6 @@ class OnboardingOptions:
             yes=args.yes,
             token_file=args.token_file,
             token_stdin=args.token_stdin,
-            allow_insecure_ws=args.allow_insecure_ws,
             check=args.check,
         )
 
@@ -125,34 +124,32 @@ def _select_role(options: OnboardingOptions, prompter: _Prompter) -> OnboardingR
         raise config.ConfigError("onboarding role selection is invalid") from exc
 
 
-def _select_policy(
+def _select_topology(
     options: OnboardingOptions,
     prompter: _Prompter,
     *,
-    default: OnboardingPolicy,
-) -> OnboardingPolicy:
-    if options.policy is not None:
-        return options.policy
+    default: OnboardingTopology,
+) -> OnboardingTopology:
+    if options.topology is not None:
+        return options.topology
     if prompter.non_interactive:
         return default
-    print("Deployment policy:")
-    print("  1. This machine only (loopback)")
-    print("  2. Trusted LAN (plaintext WebSocket)")
-    print("  3. TLS/reverse proxy (wss://)")
-    choice = prompter.required("Choose a policy [1]: ", default="1")
-    policies = {"1": "loopback", "2": "lan", "3": "secure"}
+    print("Deployment topology:")
+    print("  1. Local — Server and Agent on this machine")
+    print("  2. LAN — devices on a trusted local network")
+    print("  3. Remote — WSS through a reverse proxy or secure tunnel")
+    choice = prompter.required("Choose a topology [1]: ", default="1")
+    topologies = {"1": "local", "2": "lan", "3": "remote"}
     try:
-        return policies[choice]  # type: ignore[return-value]
+        return topologies[choice]  # type: ignore[return-value]
     except KeyError as exc:
-        raise config.ConfigError("deployment policy selection is invalid") from exc
+        raise config.ConfigError("deployment topology selection is invalid") from exc
 
 
-def _policy_values(policy: OnboardingPolicy) -> tuple[str, bool]:
-    if policy == "loopback":
-        return "127.0.0.1", True
-    if policy == "lan":
-        return "0.0.0.0", True
-    return "0.0.0.0", False
+def _topology_server_host(topology: OnboardingTopology) -> str:
+    if topology == "local":
+        return "127.0.0.1"
+    return "0.0.0.0"
 
 
 def _parse_port(value: str) -> int:
@@ -169,16 +166,19 @@ def _server_values(
     options: OnboardingOptions,
     prompter: _Prompter,
     *,
-    default_policy: OnboardingPolicy,
-) -> tuple[str, int, bool]:
-    policy = _select_policy(options, prompter, default=default_policy)
-    default_host, allow_insecure_ws = _policy_values(policy)
+    default_topology: OnboardingTopology,
+    topology: OnboardingTopology | None = None,
+) -> tuple[str, int]:
+    selected_topology = topology or _select_topology(
+        options, prompter, default=default_topology
+    )
+    default_host = _topology_server_host(selected_topology)
     host = options.host or prompter.required(
         f"Server bind host [{default_host}]: ", default=default_host
     )
     raw_port = options.port or prompter.required("Server port [8000]: ", default="8000")
     port = _parse_port(raw_port)
-    return host, port, allow_insecure_ws
+    return host, port
 
 
 def _workspace_value(options: OnboardingOptions, prompter: _Prompter) -> str:
@@ -302,18 +302,12 @@ def _configure_server(
         print("Existing Server configuration found; leaving it unchanged.")
         _report(path, "server", catalog)
     else:
-        host, port, allow_insecure_ws = _server_values(
-            options, prompter, default_policy="lan"
+        host, port = _server_values(
+            options, prompter, default_topology="local"
         )
         config.init_config(path, "server", force=options.force)
         config.set_value(path, "server", "host", host)
         config.set_value(path, "server", "port", str(port))
-        config.set_value(
-            path,
-            "server",
-            "allow_insecure_ws",
-            "true" if allow_insecure_ws else "false",
-        )
         _report(path, "server", catalog)
     print("MCP and Agent credentials are distinct and were kept in the private .env.")
     print("Give an Agent administrator the Agent secret through a secure channel; do not paste it into a command or log.")
@@ -326,6 +320,7 @@ def _configure_local(
     options: OnboardingOptions,
     prompter: _Prompter,
     *,
+    topology: OnboardingTopology,
     catalog: CatalogSnapshot | None,
 ) -> int:
     agent_created = not _section_exists(path, "agent") or options.force
@@ -344,20 +339,15 @@ def _configure_local(
 
     server_created = not _section_exists(path, "server") or options.force
     if server_created:
-        host, port, allow_insecure_ws = _server_values(
+        host, port = _server_values(
             options,
             prompter,
-            default_policy="loopback",
+            default_topology="local",
+            topology=topology,
         )
         config.init_config(path, "server", force=options.force)
         config.set_value(path, "server", "host", host)
         config.set_value(path, "server", "port", str(port))
-        config.set_value(
-            path,
-            "server",
-            "allow_insecure_ws",
-            "true" if allow_insecure_ws else "false",
-        )
     else:
         print("Existing Server configuration found; leaving it unchanged.")
 
@@ -374,7 +364,6 @@ def _configure_local(
             tools=prepared_tools,
             relay_url=f"ws://127.0.0.1:{port}/ws/agent",
             workspace=workspace,
-            allow_insecure_ws=True,
             catalog=catalog,
             cua_access=prepared_cua_access,
             assume_yes=options.yes or cua_confirmation_done,
@@ -452,21 +441,20 @@ def _configure_agent(
         print("Start the Agent with: agent-relay agent")
         return 0
 
+    topology = _select_topology(options, prompter, default="remote")
     if options.relay_url is not None:
         relay_url = options.relay_url.strip()
     else:
-        relay_url = prompter.required("Relay URL (ws:// or wss://): ")
-    if options.allow_insecure_ws is None:
-        allow_insecure_ws = prompter.optional_yes_no(
-            "Allow non-loopback plaintext ws:// for a trusted LAN? [y/N] ",
-            default=False,
-        )
-    else:
-        allow_insecure_ws = options.allow_insecure_ws
-    config.validate_agent_transport(
-        relay_url,
-        allow_insecure_ws=allow_insecure_ws,
-    )
+        default_url = "ws://127.0.0.1:8000/ws/agent" if topology == "local" else None
+        prompt = {
+            "local": "Relay URL [ws://127.0.0.1:8000/ws/agent]: ",
+            "lan": "Relay URL (ws://<LAN-IP>:<port>/ws/agent): ",
+            "remote": "Public Relay URL (wss://.../ws/agent): ",
+        }[topology]
+        relay_url = prompter.required(prompt, default=default_url)
+    config.validate_agent_transport(relay_url)
+    if topology == "remote" and urlparse(relay_url).scheme != "wss":
+        raise config.ConfigError("remote topology requires a wss:// relay URL")
     workspace = _workspace_value(options, prompter)
     token = _agent_token(options, prompter)
     tools = _selected_tools(path, options, catalog)
@@ -479,7 +467,6 @@ def _configure_agent(
         tools=tools,
         relay_url=relay_url,
         workspace=workspace,
-        allow_insecure_ws=allow_insecure_ws,
         catalog=catalog,
         cua_access=cua_access,
         assume_yes=options.yes,
@@ -513,4 +500,13 @@ def run(
         return _configure_server(path=config_path, options=options, prompter=prompter, catalog=catalog)
     if role == "agent":
         return _configure_agent(path=config_path, options=options, prompter=prompter, catalog=catalog)
-    return _configure_local(path=config_path, options=options, prompter=prompter, catalog=catalog)
+    topology = _select_topology(options, prompter, default="local")
+    if topology != "local":
+        raise config.ConfigError("local role requires local topology")
+    return _configure_local(
+        path=config_path,
+        options=options,
+        prompter=prompter,
+        topology=topology,
+        catalog=catalog,
+    )

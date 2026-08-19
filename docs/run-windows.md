@@ -70,9 +70,10 @@ The script:
   `none` and is selected with `--cua-access none|standard|full`.
 
 Set `AGENT_RELAY_SETUP=local`, `server`, `agent`, or `skip` to select the
-installer onboarding mode. The `agent` mode asks for the remote URL and masked
-Agent credential; use a private token file or stdin only as a one-time import
-channel for non-interactive setup; the value is copied into the adjacent `.env`.
+installer onboarding mode. The `agent` mode asks for a `local`, `lan`, or `remote`
+topology and its Relay URL, then reads the masked Agent credential; use a
+private token file or stdin only as a one-time import channel for non-interactive
+setup; the value is copied into the adjacent `.env`.
 That `.env` contains only `RELAY_AGENT_TOKEN` (or both canonical token keys for
 a combined Server/Agent configuration); URL, workspace, and tool settings stay
 in YAML or explicit process environment variables.
@@ -138,5 +139,9 @@ explicitly enabled or included in the selected `standard`/`full` profile.
 Windows CUA remains experimental because its full hosted UI Automation evidence
 is still a CI candidate. Browser descriptors use the same CUA path; there is no
 separate wrapper; CUA owns those descriptors directly.
-Do not expose a plaintext `ws://` deployment to the public Internet; use a
-trusted firewalled LAN or an externally terminated WSS endpoint.
+The Server defaults to the Local topology (`127.0.0.1:8000`) and the Agent uses
+`ws://127.0.0.1:8000/ws/agent` on the same machine. For a trusted LAN, bind the
+Server explicitly to a LAN address or `0.0.0.0` and use `ws://<LAN-IP>:8000`;
+that transport is unencrypted and requires a firewall. For Remote, use
+`wss://<public-host>/ws/agent` through an external TLS reverse proxy or secure
+tunnel. Agent Relay does not terminate TLS or trust forwarded headers.
