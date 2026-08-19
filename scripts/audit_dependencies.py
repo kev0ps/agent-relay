@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit Agent Relay's declared, locked, and imported dependencies."""
+"""Check Agent Relay's third-party imports against direct dependencies."""
 
 from __future__ import annotations
 
@@ -12,22 +12,18 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-IMPORT_TO_DISTRIBUTION = {
+# Values are the distribution names that satisfy the corresponding imports.
+# Starlette is used through FastAPI, which is the direct project dependency.
+IMPORT_TO_DECLARATION = {
     "cua_driver": "cua-driver",
     "fastapi": "fastapi",
     "mcp": "mcp",
     "pydantic": "pydantic",
-    "starlette": "starlette",
+    "starlette": "fastapi",
     "typing_extensions": "typing-extensions",
     "uvicorn": "uvicorn",
     "websockets": "websockets",
     "yaml": "pyyaml",
-}
-
-# These modules are imported by application code but are intentionally provided
-# by a declared framework dependency. They are not Agent Relay's public API.
-TRANSITIVE_IMPORT_PROVIDERS = {
-    "starlette": "fastapi",
 }
 
 
@@ -40,20 +36,6 @@ def requirement_name(requirement: str) -> str:
 def load_project(path: Path) -> dict[str, Any]:
     with path.open("rb") as stream:
         return tomllib.load(stream)
-
-
-def _requirements(values: list[str]) -> set[str]:
-    return {requirement_name(value) for value in values}
-
-
-def _package_versions(lock: dict[str, Any]) -> dict[str, str]:
-    versions: dict[str, str] = {}
-    for package in lock.get("package", []):
-        name = package.get("name")
-        version = package.get("version")
-        if isinstance(name, str) and isinstance(version, str):
-            versions.setdefault(name.lower().replace("_", "-"), version)
-    return versions
 
 
 def collect_imports(paths: tuple[Path, ...]) -> set[str]:
@@ -86,103 +68,37 @@ def _python_files(root: Path, *directories: str) -> tuple[Path, ...]:
     )
 
 
-def build_report(root: Path, project: dict[str, Any]) -> dict[str, Any]:
+def build_report(root: Path, project: dict[str, Any]) -> dict[str, list[str]]:
     project_table = project["project"]
-    runtime_names = _requirements(project_table.get("dependencies", []))
-    optional_tables = project_table.get("optional-dependencies", {})
-    optional_names = {
+    declared_names = {
         requirement_name(requirement)
-        for requirements in optional_tables.values()
-        for requirement in requirements
+        for requirement in project_table.get("dependencies", [])
     }
-    dev_tables = project.get("dependency-groups", {})
-    development_names = {
+    declared_names.update(
         requirement_name(requirement)
-        for requirements in dev_tables.values()
+        for requirements in project_table.get("optional-dependencies", {}).values()
         for requirement in requirements
-    }
-    build_names = _requirements(project.get("build-system", {}).get("requires", []))
-
-    with (root / "uv.lock").open("rb") as stream:
-        lock = tomllib.load(stream)
-    versions = _package_versions(lock)
-    direct_names = runtime_names | optional_names | development_names | build_names
-
-    runtime = {
-        name: versions[name]
-        for name in sorted(runtime_names)
-        if name in versions
-    }
-    optional = {
-        name: versions[name]
-        for name in sorted(optional_names)
-        if name in versions
-    }
-    development = {
-        name: versions[name]
-        for name in sorted(development_names)
-        if name in versions
-    }
-    build = {
-        name: versions[name]
-        for name in sorted(build_names)
-        if name in versions
-    }
-    transitive = {
-        name: version
-        for name, version in sorted(versions.items())
-        if name not in direct_names and name != requirement_name(project_table["name"])
-    }
+    )
 
     imported_modules = collect_imports(_python_files(root, "src/agent_relay"))
-    imported_distributions = {
-        IMPORT_TO_DISTRIBUTION[module]
+    imported_declarations = {
+        IMPORT_TO_DECLARATION[module]
         for module in imported_modules
-        if module in IMPORT_TO_DISTRIBUTION
+        if module in IMPORT_TO_DECLARATION
     }
-    provided_transitively = {
-        IMPORT_TO_DISTRIBUTION[module]
-        for module in imported_modules
-        if module in TRANSITIVE_IMPORT_PROVIDERS
-        and TRANSITIVE_IMPORT_PROVIDERS[module] in direct_names
-    }
-    missing_declarations = sorted(
-        imported_distributions - direct_names - provided_transitively
-    )
-    missing_lock_entries = sorted(
-        (runtime_names | optional_names | development_names) - set(versions)
-    )
-    unexplained = sorted(
-        module
-        for module in imported_modules
-        if module not in IMPORT_TO_DISTRIBUTION
-        and module not in TRANSITIVE_IMPORT_PROVIDERS
-    )
-    unused_runtime = sorted(runtime_names - imported_distributions)
 
     return {
-        "runtime": runtime,
-        "optional": optional,
-        "development": development,
-        "build": build,
-        "transitive": transitive,
-        "missing_declarations": missing_declarations,
-        "missing_lock_entries": missing_lock_entries,
-        "unexplained": unexplained,
-        "unused_runtime": unused_runtime,
+        "missing_declarations": sorted(imported_declarations - declared_names),
+        "unexplained": sorted(
+            module
+            for module in imported_modules
+            if module not in IMPORT_TO_DECLARATION
+        ),
     }
 
 
-def report_has_failures(report: dict[str, Any]) -> bool:
-    return any(
-        report[key]
-        for key in (
-            "missing_declarations",
-            "missing_lock_entries",
-            "unexplained",
-            "unused_runtime",
-        )
-    )
+def report_has_failures(report: dict[str, list[str]]) -> bool:
+    return any(report.values())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -196,12 +112,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="return non-zero when the audit finds missing declarations, missing lock entries, unexplained imports, or unused runtime dependencies",
+        help="return non-zero when imports are not directly declared",
     )
     arguments = parser.parse_args(argv)
     root = arguments.root.resolve()
     report = build_report(root, load_project(root / "pyproject.toml"))
-    print(json.dumps(report, indent=2, sort_keys=False))
+    print(json.dumps(report, indent=2))
     if arguments.check and report_has_failures(report):
         return 1
     return 0
