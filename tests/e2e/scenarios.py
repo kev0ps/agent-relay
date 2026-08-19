@@ -344,6 +344,34 @@ async def _wait_for_cua_browser_window(
     raise ValueError(f"CUA browser native window did not become visible with non-empty bounds{suffix}")
 
 
+async def _wait_for_cua_browser_identity(
+    client: Any,
+    *,
+    pid: int,
+    phase: list[str] | None,
+) -> int:
+    """Wait for the prepared browser PID to expose one exact native window."""
+    deadline = time.monotonic() + CUA_BROWSER_WINDOW_READY_TIMEOUT
+    last_error: ValueError | None = None
+    while time.monotonic() < deadline:
+        result = await client.call("relay_cua_list_windows", {"pid": pid})
+        try:
+            _prepared_pid, window_id = _oracles.validate_cua_list_windows(
+                result,
+                expected_pid=pid,
+            )
+            return window_id
+        except ValueError as error:
+            last_error = error
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(min(0.1, remaining))
+    _mark(phase, "browser-window-timeout")
+    if last_error is not None:
+        raise last_error
+    raise ValueError("CUA browser native window identity did not become ready")
+
+
 async def _wait_for_cua_browser_binding(
     client: Any,
     *,
@@ -372,7 +400,9 @@ async def _wait_for_cua_browser_binding(
             )
         except ValueError as error:
             last_error = error
-            await asyncio.sleep(0.1)
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(min(0.1, remaining))
     _mark(phase, "browser-bind-timeout")
     if last_error is not None:
         raise last_error
@@ -606,12 +636,10 @@ async def _run_cua_browser_subscenario(
         if type(prepared_pid) is not int or prepared_pid <= 0:
             raise ValueError("CUA browser prepare returned an invalid process")
         _mark(phase, "browser-window")
-        _prepared_pid, window_id = _oracles.validate_cua_list_windows(
-            await client.call(
-                "relay_cua_list_windows",
-                {"pid": prepared_pid},
-            ),
-            expected_pid=prepared_pid,
+        window_id = await _wait_for_cua_browser_identity(
+            client,
+            pid=prepared_pid,
+            phase=phase,
         )
         _mark(phase, "browser-bind")
         target_id, tab_id = await _wait_for_cua_browser_binding(
