@@ -341,6 +341,55 @@ def test_browser_window_wait_reads_mcp2_structured_content() -> None:
     ) == 77
 
 
+def test_browser_binding_wait_retries_transient_rejection() -> None:
+    """Browser binding must tolerate a short-lived provider readiness race."""
+    from mcp.types import CallToolResult
+
+    scenarios = _scenarios()
+    attempts = 0
+
+    class MCPClient:
+        async def call(self, tool_name: str, arguments: dict[str, object]) -> CallToolResult:
+            nonlocal attempts
+            assert tool_name == "relay_cua_get_browser_state"
+            assert arguments == {
+                "pid": 1234,
+                "window_id": 77,
+                "session": "session-id",
+            }
+            attempts += 1
+            if attempts < 3:
+                return CallToolResult(
+                    content=[],
+                    structuredContent={
+                        "pid": 1234,
+                        "window_id": 77,
+                        "target_id": "target-id",
+                        "tabs": [],
+                    },
+                )
+            return CallToolResult(
+                content=[],
+                structuredContent={
+                    "pid": 1234,
+                    "window_id": 77,
+                    "target_id": "target-id",
+                    "tabs": [{"tab_id": "tab-id", "active": True}],
+                },
+            )
+
+    assert asyncio.run(
+        scenarios._wait_for_cua_browser_binding(
+            MCPClient(),
+            pid=1234,
+            window_id=77,
+            session="session-id",
+            phase=None,
+        )
+    ) == ("target-id", "tab-id")
+    assert attempts == 3
+
+
 def test_core_scenario_accepts_harness_workspace_pwd(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

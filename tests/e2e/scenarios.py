@@ -344,6 +344,41 @@ async def _wait_for_cua_browser_window(
     raise ValueError(f"CUA browser native window did not become visible with non-empty bounds{suffix}")
 
 
+async def _wait_for_cua_browser_binding(
+    client: Any,
+    *,
+    pid: int,
+    window_id: int,
+    session: str,
+    phase: list[str] | None,
+) -> tuple[str, str]:
+    """Wait for the browser provider to expose one exact active tab."""
+    deadline = time.monotonic() + CUA_BROWSER_WINDOW_READY_TIMEOUT
+    last_error: ValueError | None = None
+    while time.monotonic() < deadline:
+        result = await client.call(
+            "relay_cua_get_browser_state",
+            {
+                "pid": pid,
+                "window_id": window_id,
+                "session": session,
+            },
+        )
+        try:
+            return _oracles.validate_cua_browser_binding(
+                result,
+                expected_pid=pid,
+                expected_window_id=window_id,
+            )
+        except ValueError as error:
+            last_error = error
+            await asyncio.sleep(0.1)
+    _mark(phase, "browser-bind-timeout")
+    if last_error is not None:
+        raise last_error
+    raise ValueError("CUA browser binding did not become ready")
+
+
 async def _wait_for_cua_browser_state(
     client: Any,
     *,
@@ -568,6 +603,8 @@ async def _run_cua_browser_subscenario(
         except ValueError:
             _diagnose_browser_prepare(prepare_result)
             raise
+        if type(prepared_pid) is not int or prepared_pid <= 0:
+            raise ValueError("CUA browser prepare returned an invalid process")
         _mark(phase, "browser-window")
         _prepared_pid, window_id = _oracles.validate_cua_list_windows(
             await client.call(
@@ -577,17 +614,12 @@ async def _run_cua_browser_subscenario(
             expected_pid=prepared_pid,
         )
         _mark(phase, "browser-bind")
-        target_id, tab_id = _oracles.validate_cua_browser_binding(
-            await client.call(
-                "relay_cua_get_browser_state",
-                {
-                    "pid": prepared_pid,
-                    "window_id": window_id,
-                    "session": session,
-                },
-            ),
-            expected_pid=prepared_pid,
-            expected_window_id=window_id,
+        target_id, tab_id = await _wait_for_cua_browser_binding(
+            client,
+            pid=prepared_pid,
+            window_id=window_id,
+            session=session,
+            phase=phase,
         )
         _mark(phase, "browser-navigate")
         _oracles.validate_cua_browser_success(
