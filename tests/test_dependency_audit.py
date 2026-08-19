@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from scripts import audit_dependencies
@@ -13,13 +14,43 @@ def test_requirement_name_handles_bounds_and_extras() -> None:
     assert audit_dependencies.requirement_name("pyjwt[crypto]>=2.10") == "pyjwt"
 
 
-def test_application_imports_match_direct_dependency_declarations() -> None:
+def test_runtime_imports_are_mapped_to_declared_distributions() -> None:
     project = audit_dependencies.load_project(ROOT / "pyproject.toml")
     report = audit_dependencies.build_report(ROOT, project)
 
-    assert set(report) == {"missing_declarations", "unexplained"}
-    assert report["missing_declarations"] == []
     assert report["unexplained"] == []
+    assert report["unused_runtime"] == []
+    assert report["missing_declarations"] == []
+    assert report["missing_lock_entries"] == []
+    assert report["runtime"] == {
+        "fastapi": "0.141.1",
+        "mcp": "2.0.0",
+        "pydantic": "2.13.4",
+        "pyyaml": "6.0.3",
+        "typing-extensions": "4.16.0",
+        "uvicorn": "0.51.0",
+        "websockets": "17.0.1",
+    }
+
+
+def test_report_is_stable_json_and_check_succeeds(capsys) -> None:
+    exit_code = audit_dependencies.main(["--root", str(ROOT), "--check"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert list(payload) == [
+        "runtime",
+        "optional",
+        "development",
+        "build",
+        "transitive",
+        "missing_declarations",
+        "missing_lock_entries",
+        "unexplained",
+        "unused_runtime",
+    ]
+    assert payload["runtime"]["fastapi"] == "0.141.1"
+    assert payload["transitive"]["anyio"] == "4.14.2"
 
 
 def test_check_fails_when_an_imported_distribution_is_not_declared() -> None:
@@ -35,7 +66,23 @@ def test_check_fails_when_an_imported_distribution_is_not_declared() -> None:
 
     report = audit_dependencies.build_report(ROOT, project)
 
-    assert report["missing_declarations"] == ["mcp"]
+    assert "mcp" in report["missing_declarations"]
+    assert audit_dependencies.report_has_failures(report)
+
+
+def test_check_fails_when_a_declared_runtime_distribution_is_not_locked() -> None:
+    project = audit_dependencies.load_project(ROOT / "pyproject.toml")
+    project["project"] = {
+        **project["project"],
+        "dependencies": [
+            *project["project"]["dependencies"],
+            "not-in-uv-lock>=1",
+        ],
+    }
+
+    report = audit_dependencies.build_report(ROOT, project)
+
+    assert "not-in-uv-lock" in report["missing_lock_entries"]
     assert audit_dependencies.report_has_failures(report)
 
 
@@ -57,3 +104,15 @@ from another_package import item
         "another_package",
         "third_party",
     }
+
+
+def test_python_ci_job_runs_audit_without_duplicate_lock_gate() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    python_job = workflow.split("  python:", 1)[1].split("\n  container:", 1)[0]
+    setup = (ROOT / ".github/actions/setup-python/action.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "uv lock --check" not in python_job
+    assert setup.count("uv lock --check") == 1
+    assert "uv run --frozen python scripts/audit_dependencies.py --check" in python_job
