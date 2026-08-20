@@ -105,7 +105,7 @@ def test_profiles_exclude_policy_blocked_tools(
         catalog=catalog,
     )
 
-    config.update_cua_access(path, level, catalog=catalog, assume_yes=level == "full")
+    config.update_cua_access(path, level, catalog=catalog)
     assert "relay_cua_click" not in _allowlist(path)
     expected = tuple(
         name
@@ -137,7 +137,7 @@ def test_profile_transitions_preserve_non_cua_and_keep_dynamic_tools_off(
     ]
     assert "relay_cua_new_tool" not in _allowlist(path)
 
-    config.update_cua_access(path, "full", catalog=catalog, assume_yes=True)
+    config.update_cua_access(path, "full", catalog=catalog)
     assert _allowlist(path) == [
         "relay_system_ping",
         *CUA_PROFILE_PUBLIC_NAMES["full"],
@@ -171,8 +171,8 @@ def test_profile_mismatch_is_rejected_without_writing(tmp_path: Path) -> None:
     assert path.read_bytes() == before
 
 
-def test_full_requires_yes_noninteractive_and_cancellation_is_atomic(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_full_access_confirmation_is_cli_owned_and_cancellation_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     catalog = _catalog()
     path = tmp_path / "config.yaml"
@@ -180,18 +180,73 @@ def test_full_requires_yes_noninteractive_and_cancellation_is_atomic(
     before = path.read_bytes()
 
     monkeypatch.setattr("sys.stdin", io.StringIO("y\n"))
-    with pytest.raises(config.ConfigError, match="requires --yes"):
-        config.update_cua_access(path, "full", catalog=catalog)
+    assert (
+        cli.main(
+            ["--config", str(path), "tools", "cua-access", "full"],
+            catalog=catalog,
+        )
+        == 1
+    )
     assert path.read_bytes() == before
+    assert "requires --yes" in capsys.readouterr().err
 
     class _TTY(io.StringIO):
         def isatty(self) -> bool:
             return True
 
     monkeypatch.setattr("sys.stdin", _TTY("n\n"))
-    with pytest.raises(config.CuaAccessCancelled):
-        config.update_cua_access(path, "full", catalog=catalog)
+    assert (
+        cli.main(
+            ["--config", str(path), "tools", "cua-access", "full"],
+            catalog=catalog,
+        )
+        == 0
+    )
     assert path.read_bytes() == before
+    assert "CUA access update cancelled" in capsys.readouterr().out
+
+
+def test_local_onboarding_cua_cancellation_does_not_create_a_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    catalog = _catalog()
+    path = tmp_path / "config.yaml"
+    config.init_config(path, "agent", token="agent-secret", tools=[], env={}, catalog=catalog)
+    dotenv = path.parent / ".env"
+    config_before = path.read_bytes()
+    dotenv_before = dotenv.read_bytes()
+
+    class _TTY(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("sys.stdin", _TTY("n\n"))
+    assert (
+        cli.main(
+            [
+                "--config",
+                str(path),
+                "onboard",
+                "--role",
+                "local",
+                "--topology",
+                "local",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000",
+                "--cua-access",
+                "full",
+                "--no-check",
+            ],
+            catalog=catalog,
+        )
+        == 0
+    )
+
+    assert path.read_bytes() == config_before
+    assert dotenv.read_bytes() == dotenv_before
+    assert "CUA access update cancelled" in capsys.readouterr().out
 
 
 def test_cli_profiles_compact_inventory_and_option_conflicts(
