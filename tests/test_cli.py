@@ -11,9 +11,10 @@ def test_no_arguments_prints_help_and_succeeds(capsys: pytest.CaptureFixture[str
     assert cli.main([]) == 0
     output = capsys.readouterr().out
     assert "usage: agent-relay" in output
-    assert "config init server" in output
+    assert "--config PATH" in output
+    assert "config" in output
     assert "onboard" in output
-    assert "tools list" in output
+    assert "tools" in output
     assert "doctor" in output
 
 
@@ -22,6 +23,23 @@ def test_onboarding_parser_exposes_the_three_transport_topologies() -> None:
     assert parser.parse_args(["onboard", "--topology", "local"]).topology == "local"
     assert parser.parse_args(["onboard", "--topology", "lan"]).topology == "lan"
     assert parser.parse_args(["onboard", "--topology", "remote"]).topology == "remote"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["config", "get", "server"],
+        ["tools", "list"],
+        ["doctor"],
+        ["onboard"],
+        ["server"],
+        ["agent"],
+        ["uninstall"],
+    ],
+)
+def test_parser_binds_each_top_level_command_to_a_handler(argv: list[str]) -> None:
+    args = cli._parser().parse_args(argv)
+    assert callable(getattr(args, "handler", None))
 
 
 def test_help_and_version_are_top_level_only(capsys: pytest.CaptureFixture[str]) -> None:
