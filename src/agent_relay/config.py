@@ -12,15 +12,26 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Annotated, Any, ClassVar, Literal, Mapping
 from urllib.parse import urlparse
 
 import yaml
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from .catalog import (
     CatalogEntry,
     CatalogError,
     CatalogSnapshot,
+    validate_agent_allowlist,
 )
 from .catalog import discover_local_catalog as _discover_local_catalog
 from .cua_profiles import (
@@ -51,13 +62,6 @@ PUBLIC_TOOL_NAMES = tuple(PUBLIC_TO_INTERNAL)
 
 def _is_dynamic_cua_public_name(value: object) -> bool:
     return is_cua_public_name(value)
-
-
-def _is_public_agent_tool(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and (value in PUBLIC_TO_INTERNAL or _is_dynamic_cua_public_name(value))
-    )
 
 
 class ConfigError(ValueError):
@@ -117,78 +121,255 @@ class ServerRuntime:
     port: int
 
 
-_SERVER_DEFAULTS: dict[str, Any] = {
-    "host": "127.0.0.1",
-    "port": 8000,
-    "mcp": {"allowed_hosts": [], "allowed_origins": []},
-    "runtime": {
-        "min_timeout_seconds": 0.1,
-        "max_timeout_seconds": 30.0,
-        "cancel_send_timeout_seconds": 0.25,
-        "max_ws_message_bytes": 128 * 1024,
-    },
-}
-_AGENT_DEFAULTS: dict[str, Any] = {
-    "identity": {"id": ""},
-    "relay_url": "ws://127.0.0.1:8000/ws/agent",
-    "workspace": "./workspace",
-    "tools": {"allowlist": []},
-    "computer": {
-        "allowed_app_name": None,
-        "allowed_window_title": None,
-        "startup_timeout_seconds": 15.0,
-        "action_timeout_seconds": 10.0,
-        "shutdown_timeout_seconds": 3.0,
-        "max_elements": 300,
-    },
-    "runtime": {
-        "heartbeat_interval_seconds": 15.0,
-        "reconnect_min_seconds": 0.1,
-        "reconnect_max_seconds": 5.0,
-        "stable_session_seconds": 30.0,
-        "max_ws_message_bytes": 128 * 1024,
-        "command_timeout_seconds": 30.0,
-        "stdout_limit": 24 * 1024,
-        "stderr_limit": 24 * 1024,
-    },
-}
+def _config_int(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError("boolean is not an integer")
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid integer") from exc
 
-_CONFIG_KEYS: dict[str, frozenset[str]] = {
-    "server": frozenset(
-        {
-            "host",
-            "port",
-            "mcp.allowed_hosts",
-            "mcp.allowed_origins",
-            "runtime.min_timeout_seconds",
-            "runtime.max_timeout_seconds",
-            "runtime.cancel_send_timeout_seconds",
-            "runtime.max_ws_message_bytes",
+
+def _config_float(value: object) -> float:
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a number")
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid number") from exc
+
+
+ConfigInt = Annotated[int, BeforeValidator(_config_int)]
+ConfigFloat = Annotated[float, BeforeValidator(_config_float)]
+
+
+def _set_overlay(document: dict[str, Any], path: str, value: object) -> None:
+    current = document
+    for part in path.split(".")[:-1]:
+        child = current.setdefault(part, {})
+        if not isinstance(child, dict):
+            return
+        current = child
+    current[path.rsplit(".", 1)[-1]] = value
+
+
+class ConfigModel(BaseModel):
+    """Closed YAML schema with declarative process-environment overlays."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+    env_fields: ClassVar[dict[str, str]] = {}
+    csv_env_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def from_sources(cls, raw: Mapping[str, Any], env: Mapping[str, str]):
+        values = copy.deepcopy(dict(raw))
+        environment_paths: set[str] = set()
+        for env_name, path in cls.env_fields.items():
+            if env_name in env:
+                value: object = env[env_name]
+                if env_name in cls.csv_env_fields:
+                    value = [item.strip() for item in env[env_name].split(",") if item.strip()]
+                _set_overlay(values, path, value)
+                environment_paths.add(path)
+        return cls.model_validate(values, context={"environment_paths": environment_paths})
+
+
+class ServerMcpConfig(ConfigModel):
+    allowed_hosts: list[str] = Field(default_factory=list)
+    allowed_origins: list[str] = Field(default_factory=list)
+
+
+class ServerRuntimeConfig(ConfigModel):
+    min_timeout_seconds: ConfigFloat = Field(default=0.1, ge=0.0001, le=3600)
+    max_timeout_seconds: ConfigFloat = Field(default=30.0, ge=0.0001, le=3600)
+    cancel_send_timeout_seconds: ConfigFloat = Field(default=0.25, ge=0.0001, le=5)
+    max_ws_message_bytes: ConfigInt = Field(default=128 * 1024, ge=1024, le=1024 * 1024)
+
+
+class ServerConfig(ConfigModel):
+    host: str = "127.0.0.1"
+    port: ConfigInt = Field(default=8000, ge=1, le=65535)
+    mcp: ServerMcpConfig = Field(default_factory=ServerMcpConfig)
+    runtime: ServerRuntimeConfig = Field(default_factory=ServerRuntimeConfig)
+    env_fields = {
+        "RELAY_SERVER_HOST": "host",
+        "RELAY_SERVER_PORT": "port",
+        "RELAY_MCP_ALLOWED_HOSTS": "mcp.allowed_hosts",
+        "RELAY_MCP_ALLOWED_ORIGINS": "mcp.allowed_origins",
+        "RELAY_MIN_TIMEOUT_SECONDS": "runtime.min_timeout_seconds",
+        "RELAY_MAX_TIMEOUT_SECONDS": "runtime.max_timeout_seconds",
+        "RELAY_CANCEL_SEND_TIMEOUT_SECONDS": "runtime.cancel_send_timeout_seconds",
+        "RELAY_MAX_WS_MESSAGE_BYTES": "runtime.max_ws_message_bytes",
+    }
+    csv_env_fields = frozenset({"RELAY_MCP_ALLOWED_HOSTS", "RELAY_MCP_ALLOWED_ORIGINS"})
+
+    @field_validator("host")
+    @classmethod
+    def valid_host(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("host must not be empty")
+        return value
+
+    def runtime_settings(self, *, mcp_token: str, agent_token: str) -> dict[str, Any]:
+        return {
+            "agent_token": agent_token,
+            "mcp_token": mcp_token,
+            "bind_host": self.host,
+            "mcp_allowed_hosts": tuple(self.mcp.allowed_hosts),
+            "mcp_allowed_origins": tuple(self.mcp.allowed_origins),
+            **self.runtime.model_dump(),
         }
-    ),
-    "agent": frozenset(
-        {
-            "identity.id",
-            "relay_url",
-            "workspace",
-            "tools.allowlist",
-            "computer.allowed_app_name",
-            "computer.allowed_window_title",
-            "computer.startup_timeout_seconds",
-            "computer.action_timeout_seconds",
-            "computer.shutdown_timeout_seconds",
-            "computer.max_elements",
-            "runtime.heartbeat_interval_seconds",
-            "runtime.reconnect_min_seconds",
-            "runtime.reconnect_max_seconds",
-            "runtime.stable_session_seconds",
-            "runtime.max_ws_message_bytes",
-            "runtime.command_timeout_seconds",
-            "runtime.stdout_limit",
-            "runtime.stderr_limit",
+
+
+class AgentIdentityConfig(ConfigModel):
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+
+    @field_validator("id")
+    @classmethod
+    def valid_uuid(cls, value: str, info: ValidationInfo) -> str:
+        environment_paths = (info.context or {}).get("environment_paths", set())
+        if "identity.id" in environment_paths:
+            return value
+        try:
+            uuid.UUID(value)
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("identity must be a UUID") from exc
+        return value
+
+
+class AgentToolsConfig(ConfigModel):
+    allowlist: list[str] = Field(default_factory=list)
+
+    @field_validator("allowlist")
+    @classmethod
+    def valid_names(cls, value: list[str]) -> list[str]:
+        try:
+            validate_agent_allowlist(value, defer_unknown=True)
+        except CatalogError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
+
+
+class AgentComputerConfig(ConfigModel):
+    allowed_app_name: str | None = Field(default=None, min_length=1)
+    allowed_window_title: str | None = Field(default=None, min_length=1)
+    startup_timeout_seconds: ConfigFloat = Field(default=15.0, gt=0, le=30)
+    action_timeout_seconds: ConfigFloat = Field(default=10.0, gt=0, le=30)
+    shutdown_timeout_seconds: ConfigFloat = Field(default=3.0, gt=0, le=30)
+    max_elements: ConfigInt = Field(default=300, ge=1, le=1000)
+
+    @model_validator(mode="after")
+    def complete_policy(self) -> AgentComputerConfig:
+        if (self.allowed_app_name is None) != (self.allowed_window_title is None):
+            raise ValueError("computer policy fields must be provided together")
+        return self
+
+
+class AgentRuntimeConfig(ConfigModel):
+    heartbeat_interval_seconds: ConfigFloat = Field(default=15.0, ge=0.0001, le=3600)
+    reconnect_min_seconds: ConfigFloat = Field(default=0.1, ge=0.0001, le=60)
+    reconnect_max_seconds: ConfigFloat = Field(default=5.0, ge=0.0001, le=3600)
+    stable_session_seconds: ConfigFloat = Field(default=30.0, ge=1, le=3600)
+    max_ws_message_bytes: ConfigInt = Field(default=128 * 1024, ge=1024, le=1024 * 1024)
+    command_timeout_seconds: ConfigFloat = Field(default=30.0, ge=0.0001, le=3600)
+    stdout_limit: ConfigInt = Field(default=24 * 1024, ge=0, le=48 * 1024)
+    stderr_limit: ConfigInt = Field(default=24 * 1024, ge=0, le=48 * 1024)
+
+    @model_validator(mode="after")
+    def valid_reconnect_range(self) -> AgentRuntimeConfig:
+        if self.reconnect_min_seconds > self.reconnect_max_seconds:
+            raise ValueError("minimum reconnect delay exceeds maximum")
+        return self
+
+
+class AgentConfig(ConfigModel):
+    identity: AgentIdentityConfig = Field(default_factory=AgentIdentityConfig)
+    relay_url: str = "ws://127.0.0.1:8000/ws/agent"
+    workspace: str = "./workspace"
+    tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
+    computer: AgentComputerConfig = Field(default_factory=AgentComputerConfig)
+    runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
+    env_fields = {
+        "RELAY_URL": "relay_url",
+        "RELAY_AGENT_ID": "identity.id",
+        "RELAY_AGENT_WORKSPACE": "workspace",
+        "RELAY_AGENT_TOOLS": "tools.allowlist",
+        **{
+            f"RELAY_AGENT_{field.upper()}": f"runtime.{field}"
+            for field in AgentRuntimeConfig.model_fields
+        },
+        **{
+            f"RELAY_AGENT_COMPUTER_{field.upper()}": f"computer.{field}"
+            for field in AgentComputerConfig.model_fields
+        },
+    }
+    csv_env_fields = frozenset({"RELAY_AGENT_TOOLS"})
+
+    @field_validator("relay_url")
+    @classmethod
+    def valid_relay_url(cls, value: str) -> str:
+        try:
+            parsed = urlparse(value)
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid relay URL") from exc
+        if (
+            parsed.scheme not in {"ws", "wss"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("relay URL must use ws:// or wss://")
+        return value
+
+    @field_validator("workspace")
+    @classmethod
+    def nonempty_workspace(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("workspace must not be empty")
+        return value
+
+    def runtime_settings(self, *, token: str, config_path: Path) -> dict[str, Any]:
+        identity = self.identity.id
+        return {
+            "server_url": self.relay_url,
+            "device_id": identity,
+            "agent_id": identity,
+            "agent_token": token,
+            "workspace": _relative_path(self.workspace, config_path),
+            "tools_allowlist": tuple(self.tools.allowlist),
+            **self.runtime.model_dump(),
+            **{f"computer_{name}": value for name, value in self.computer.model_dump().items()},
         }
-    ),
+
+
+def configuration_keys(model: type[ConfigModel]) -> frozenset[str]:
+    """Derive dotted CLI keys from the canonical model tree."""
+    keys: set[str] = set()
+
+    def walk(current: type[ConfigModel], prefix: str = "") -> None:
+        for name, field in current.model_fields.items():
+            path = f"{prefix}.{name}" if prefix else name
+            if isinstance(field.annotation, type) and issubclass(field.annotation, ConfigModel):
+                walk(field.annotation, path)
+            else:
+                keys.add(path)
+
+    walk(model)
+    return frozenset(keys)
+
+
+_CONFIG_MODELS: dict[str, type[ConfigModel]] = {
+    "server": ServerConfig,
+    "agent": AgentConfig,
 }
+_CONFIG_KEYS = {scope: configuration_keys(model) for scope, model in _CONFIG_MODELS.items()}
 
 
 def _tool_specs() -> tuple[ToolSpec, ...]:
@@ -230,11 +411,7 @@ def _deep_merge(base: dict[str, Any], update: Mapping[str, Any]) -> dict[str, An
 
 
 def _default_document(scope: Literal["server", "agent"]) -> dict[str, Any]:
-    defaults = _SERVER_DEFAULTS if scope == "server" else _AGENT_DEFAULTS
-    result = copy.deepcopy(defaults)
-    if scope == "agent":
-        result["identity"]["id"] = str(uuid.uuid4())
-    return result
+    return _CONFIG_MODELS[scope]().model_dump(mode="json")
 
 
 def _ensure_private_directory(path: Path) -> None:
@@ -538,98 +715,28 @@ def _relative_path(value: object, config_path: Path) -> Path:
     return path.resolve(strict=False)
 
 
-def _parse_int(value: object, *, minimum: int, maximum: int) -> int:
-    if isinstance(value, bool):
-        raise ConfigError("configuration integer is invalid")
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError("configuration integer is invalid") from exc
-    if not minimum <= parsed <= maximum:
-        raise ConfigError("configuration integer is out of range")
-    return parsed
-
-
-def _parse_float(value: object, *, minimum: float, maximum: float) -> float:
-    if isinstance(value, bool):
-        raise ConfigError("configuration number is invalid")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError("configuration number is invalid") from exc
-    if not minimum <= parsed <= maximum:
-        raise ConfigError("configuration number is out of range")
-    return parsed
-
-
-def _env_value(env: Mapping[str, str], key: str) -> str | None:
-    return env.get(key)
-
-
 def _reject_token_file_environment(env: Mapping[str, str]) -> None:
     if "RELAY_MCP_TOKEN_FILE" in env or "RELAY_AGENT_TOKEN_FILE" in env:
         raise ConfigError("*_TOKEN_FILE is no longer supported; use .env")
 
-def _effective_server(document: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
-    section = _deep_merge(_default_document("server"), document.get("server", {}))
-    if (value := _env_value(env, "RELAY_SERVER_HOST")) is not None:
-        section["host"] = value
-    if (value := _env_value(env, "RELAY_SERVER_PORT")) is not None:
-        section["port"] = value
-    mcp = section.setdefault("mcp", {})
-    if (value := _env_value(env, "RELAY_MCP_ALLOWED_HOSTS")) is not None:
-        mcp["allowed_hosts"] = [item.strip() for item in value.split(",") if item.strip()]
-    if (value := _env_value(env, "RELAY_MCP_ALLOWED_ORIGINS")) is not None:
-        mcp["allowed_origins"] = [item.strip() for item in value.split(",") if item.strip()]
-    runtime = section.setdefault("runtime", {})
-    for env_key, field in (
-        ("RELAY_MIN_TIMEOUT_SECONDS", "min_timeout_seconds"),
-        ("RELAY_MAX_TIMEOUT_SECONDS", "max_timeout_seconds"),
-        ("RELAY_CANCEL_SEND_TIMEOUT_SECONDS", "cancel_send_timeout_seconds"),
-        ("RELAY_MAX_WS_MESSAGE_BYTES", "max_ws_message_bytes"),
-    ):
-        if (value := _env_value(env, env_key)) is not None:
-            runtime[field] = value
-    return section
+def _effective_server(document: Mapping[str, Any], env: Mapping[str, str]) -> ServerConfig:
+    raw = document.get("server", {})
+    if not isinstance(raw, Mapping):
+        raise ConfigError("server configuration must be a mapping")
+    try:
+        return ServerConfig.from_sources(raw, env)
+    except ValidationError as exc:
+        raise ConfigError("server configuration is invalid") from exc
 
 
-def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
-    section = _deep_merge(_default_document("agent"), document.get("agent", {}))
-    if (value := _env_value(env, "RELAY_URL")) is not None:
-        section["relay_url"] = value
-    if (value := _env_value(env, "RELAY_AGENT_ID")) is not None:
-        section.setdefault("identity", {})["id"] = value
-    if (value := _env_value(env, "RELAY_AGENT_WORKSPACE")) is not None:
-        section["workspace"] = value
-    if (value := _env_value(env, "RELAY_AGENT_TOOLS")) is not None:
-        section.setdefault("tools", {})["allowlist"] = [
-            item.strip() for item in value.split(",") if item.strip()
-        ]
-    runtime = section.setdefault("runtime", {})
-    for field in (
-        "heartbeat_interval_seconds",
-        "reconnect_min_seconds",
-        "reconnect_max_seconds",
-        "stable_session_seconds",
-        "max_ws_message_bytes",
-        "command_timeout_seconds",
-        "stdout_limit",
-        "stderr_limit",
-    ):
-        if (value := _env_value(env, "RELAY_AGENT_" + field.upper())) is not None:
-            runtime[field] = value
-    computer = section.setdefault("computer", {})
-    for env_key, field in (
-        ("RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME", "allowed_app_name"),
-        ("RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE", "allowed_window_title"),
-        ("RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS", "startup_timeout_seconds"),
-        ("RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS", "action_timeout_seconds"),
-        ("RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS", "shutdown_timeout_seconds"),
-        ("RELAY_AGENT_COMPUTER_MAX_ELEMENTS", "max_elements"),
-    ):
-        if (value := _env_value(env, env_key)) is not None:
-            computer[field] = value
-    return section
+def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> AgentConfig:
+    raw = document.get("agent", {})
+    if not isinstance(raw, Mapping):
+        raise ConfigError("agent configuration must be a mapping")
+    try:
+        return AgentConfig.from_sources(raw, env)
+    except ValidationError as exc:
+        raise ConfigError("agent configuration is invalid") from exc
 
 
 def discover_local_catalog(
@@ -646,33 +753,17 @@ def discover_local_catalog(
     agent = _effective_agent(document, effective_env)
     catalog_env = dict(effective_env)
 
-    computer = agent.get("computer", {})
-    if isinstance(computer, Mapping):
-        computer_env_fields = (
-            ("allowed_app_name", "RELAY_AGENT_COMPUTER_ALLOWED_APP_NAME"),
-            ("allowed_window_title", "RELAY_AGENT_COMPUTER_ALLOWED_WINDOW_TITLE"),
-            (
-                "startup_timeout_seconds",
-                "RELAY_AGENT_COMPUTER_STARTUP_TIMEOUT_SECONDS",
-            ),
-            (
-                "action_timeout_seconds",
-                "RELAY_AGENT_COMPUTER_ACTION_TIMEOUT_SECONDS",
-            ),
-            (
-                "shutdown_timeout_seconds",
-                "RELAY_AGENT_COMPUTER_SHUTDOWN_TIMEOUT_SECONDS",
-            ),
-        )
-        for field, env_key in computer_env_fields:
-            if computer.get(field) is not None:
-                catalog_env.setdefault(env_key, str(computer[field]))
-
-    tools = agent.get("tools", {})
-    allowlist = tools.get("allowlist", []) if isinstance(tools, Mapping) else []
-    if not isinstance(allowlist, list):
-        raise ConfigError("tools.allowlist must be a list")
-    return _discover_local_catalog(env=catalog_env, allowlist=allowlist)
+    for field in (
+        "allowed_app_name",
+        "allowed_window_title",
+        "startup_timeout_seconds",
+        "action_timeout_seconds",
+        "shutdown_timeout_seconds",
+    ):
+        value = getattr(agent.computer, field)
+        if value is not None:
+            catalog_env.setdefault(f"RELAY_AGENT_COMPUTER_{field.upper()}", str(value))
+    return _discover_local_catalog(env=catalog_env, allowlist=agent.tools.allowlist)
 
 
 def _secret_value(
@@ -727,37 +818,12 @@ def read_server_agent_token(
     return _secret_value(document, "server", "agent", config_path, effective_env)
 
 
-def _identity_is_valid(value: object) -> bool:
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        uuid.UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        return False
-    return True
-
-
-def _url_is_valid(value: object) -> bool:
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        parsed = urlparse(value)
-        parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme in {"ws", "wss"}
-        and bool(parsed.hostname)
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
-    )
-
-
 def validate_relay_url(value: str) -> None:
     """Validate a Relay WebSocket URL without exposing user input in errors."""
-    if not _url_is_valid(value):
-        raise ConfigError("agent relay_url must be a ws:// or wss:// URL")
+    try:
+        AgentConfig.model_validate({"relay_url": value})
+    except ValidationError as exc:
+        raise ConfigError("agent relay_url must be a ws:// or wss:// URL") from exc
 
 
 def validate_agent_transport(value: str) -> None:
@@ -772,33 +838,57 @@ def _validate_root(document: Mapping[str, Any], report: list[ValidationIssue]) -
         report.append(ValidationIssue("ERROR", f"unknown root key(s): {', '.join(unknown)}"))
 
 
-def _validate_known_keys(
-    raw: Mapping[str, Any], scope: Literal["server", "agent"], issues: list[ValidationIssue]
-) -> None:
-    allowed = _CONFIG_KEYS[scope]
-
-    def walk(value: Mapping[str, Any], prefix: str = "") -> None:
-        for key, child in value.items():
-            path = f"{prefix}.{key}" if prefix else str(key)
-            if path not in allowed and not any(item.startswith(path + ".") for item in allowed):
-                if path == "secrets" or path.startswith("secrets."):
-                    issues.append(
-                        ValidationIssue(
-                            "ERROR",
-                            "legacy secrets configuration is unsupported; create .env next to the YAML file",
-                        )
-                    )
-                else:
-                    issues.append(
-                        ValidationIssue(
-                            "ERROR", f"unknown {scope} configuration key: {path}"
-                        )
-                    )
-                continue
-            if isinstance(child, Mapping):
-                walk(child, path)
-
-    walk(raw)
+def _model_validation_issues(
+    error: ValidationError, scope: Literal["server", "agent"]
+) -> list[ValidationIssue]:
+    """Translate canonical model failures to stable, sanitized CLI messages."""
+    messages: list[str] = []
+    for detail in error.errors(include_url=False, include_input=False):
+        path = ".".join(str(part) for part in detail["loc"])
+        error_type = str(detail["type"])
+        if error_type == "extra_forbidden":
+            message = (
+                "legacy secrets configuration is unsupported; create .env next to the YAML file"
+                if path == "secrets" or path.startswith("secrets.")
+                else f"unknown {scope} configuration key: {path}"
+            )
+        elif scope == "server":
+            message = (
+                "server host is invalid"
+                if path == "host"
+                else "server port is invalid"
+                if path == "port"
+                else "server runtime limits are invalid"
+                if path.startswith("runtime")
+                else f"server configuration field is invalid: {path}"
+            )
+        elif path.startswith("identity"):
+            message = "agent identity.id must be a UUID"
+        elif path == "relay_url":
+            message = "agent relay_url must be a ws:// or wss:// URL"
+        elif path == "workspace":
+            message = "workspace is invalid (configuration path must be a non-empty string)"
+        elif path == "tools" or path.startswith("tools.allowlist"):
+            message = (
+                "tools.allowlist contains duplicates"
+                if "duplicates" in str(detail["msg"])
+                else "tools.allowlist must be a list of tool names"
+            )
+        elif path.startswith("computer"):
+            message = (
+                "computer section must be a mapping"
+                if path == "computer" and error_type == "model_type"
+                else "computer configuration must provide all policy fields"
+                if path == "computer" and error_type == "value_error"
+                else "computer configuration is invalid"
+            )
+        elif path.startswith("runtime"):
+            message = "agent runtime limits are invalid"
+        else:
+            message = f"agent configuration field is invalid: {path}"
+        if message not in messages:
+            messages.append(message)
+    return [ValidationIssue("ERROR", message) for message in messages]
 
 
 def _validate_server(
@@ -808,23 +898,24 @@ def _validate_server(
     _validate_root(document, issues)
     raw = document.get("server")
     if raw is None:
-        if require:
-            issues.append(ValidationIssue("ERROR", "server section is missing"))
-        else:
-            issues.append(ValidationIssue("INFO", "server section is not configured"))
+        issues.append(
+            ValidationIssue(
+                "ERROR" if require else "INFO",
+                "server section is missing" if require else "server section is not configured",
+            )
+        )
         return ValidationReport("server", tuple(issues))
     if not isinstance(raw, Mapping):
-        return ValidationReport("server", (ValidationIssue("ERROR", "server section must be a mapping"),))
-    _validate_known_keys(raw, "server", issues)
-    section = _effective_server(document, env)
-    host = section.get("host")
-    if not isinstance(host, str) or not host.strip():
-        issues.append(ValidationIssue("ERROR", "server host is invalid"))
+        return ValidationReport(
+            "server", (ValidationIssue("ERROR", "server section must be a mapping"),)
+        )
     try:
-        port = _parse_int(section.get("port"), minimum=1, maximum=65535)
-        issues.append(ValidationIssue("INFO", f"port={port}"))
-    except ConfigError:
-        issues.append(ValidationIssue("ERROR", "server port is invalid"))
+        section = ServerConfig.from_sources(raw, env)
+    except ValidationError as exc:
+        section = None
+        issues.extend(_model_validation_issues(exc, "server"))
+    if section is not None:
+        issues.append(ValidationIssue("INFO", f"port={section.port}"))
     token_values: dict[str, str] = {}
     dotenv_error: str | None = None
     try:
@@ -869,36 +960,7 @@ def _validate_server(
             )
     if len(token_values) == 2 and token_values["mcp"] == token_values["agent"]:
         issues.append(ValidationIssue("ERROR", "mcp and agent tokens must be distinct"))
-    try:
-        _validate_runtime(section.get("runtime"), server=True)
-    except ConfigError:
-        issues.append(ValidationIssue("ERROR", "server runtime limits are invalid"))
     return ValidationReport("server", tuple(issues))
-
-
-def _validate_runtime(raw: object, *, server: bool) -> None:
-    if not isinstance(raw, Mapping):
-        raise ConfigError("runtime must be a mapping")
-    fields = (
-        ("min_timeout_seconds", 0.0001, 3600.0),
-        ("max_timeout_seconds", 0.0001, 3600.0),
-        ("cancel_send_timeout_seconds", 0.0001, 5.0),
-        ("max_ws_message_bytes", 1024, 1024 * 1024),
-    ) if server else (
-        ("heartbeat_interval_seconds", 0.0001, 3600.0),
-        ("reconnect_min_seconds", 0.0001, 60.0),
-        ("reconnect_max_seconds", 0.0001, 3600.0),
-        ("stable_session_seconds", 1.0, 3600.0),
-        ("max_ws_message_bytes", 1024, 1024 * 1024),
-        ("command_timeout_seconds", 0.0001, 3600.0),
-        ("stdout_limit", 0, 48 * 1024),
-        ("stderr_limit", 0, 48 * 1024),
-    )
-    values: dict[str, float] = {}
-    for key, minimum, maximum in fields:
-        values[key] = _parse_float(raw.get(key), minimum=float(minimum), maximum=float(maximum))
-    if not server and values["reconnect_min_seconds"] > values["reconnect_max_seconds"]:
-        raise ConfigError("reconnect range is invalid")
 
 
 def _validate_agent(
@@ -914,41 +976,41 @@ def _validate_agent(
     _validate_root(document, issues)
     raw = document.get("agent")
     if raw is None:
-        if require:
-            issues.append(ValidationIssue("ERROR", "agent section is missing"))
-        else:
-            issues.append(ValidationIssue("INFO", "agent section is not configured"))
+        issues.append(
+            ValidationIssue(
+                "ERROR" if require else "INFO",
+                "agent section is missing" if require else "agent section is not configured",
+            )
+        )
         return ValidationReport("agent", tuple(issues))
     if not isinstance(raw, Mapping):
-        return ValidationReport("agent", (ValidationIssue("ERROR", "agent section must be a mapping"),))
-    _validate_known_keys(raw, "agent", issues)
-    section = _effective_agent(document, env)
-    identity = section.get("identity")
-    identity_value = identity.get("id") if isinstance(identity, Mapping) else None
-    if not _identity_is_valid(identity_value):
-        issues.append(ValidationIssue("ERROR", "agent identity.id must be a UUID"))
-    relay_url = section.get("relay_url")
-    if not _url_is_valid(relay_url):
-        issues.append(ValidationIssue("ERROR", "agent relay_url must be a ws:// or wss:// URL"))
-    else:
-        parsed = urlparse(str(relay_url))
-        if parsed.scheme == "ws":
-            issues.append(
-                ValidationIssue(
-                    "INFO",
-                    "transport=ws:// (unencrypted; intended for local or trusted LAN use)",
-                )
-            )
-        else:
-            issues.append(ValidationIssue("INFO", "transport=wss:// (TLS expected)"))
-    workspace_value = section.get("workspace")
+        return ValidationReport(
+            "agent", (ValidationIssue("ERROR", "agent section must be a mapping"),)
+        )
     try:
-        workspace = _relative_path(workspace_value, path)
-        if workspace.is_symlink() or not workspace.is_dir():
-            raise ConfigError("workspace must be an existing directory")
-        issues.append(ValidationIssue("INFO", f"workspace={workspace}"))
-    except ConfigError as exc:
-        issues.append(ValidationIssue("ERROR", f"workspace is invalid ({exc})"))
+        section = AgentConfig.from_sources(raw, env)
+    except ValidationError as exc:
+        section = None
+        issues.extend(_model_validation_issues(exc, "agent"))
+
+    if section is not None:
+        parsed = urlparse(section.relay_url)
+        issues.append(
+            ValidationIssue(
+                "INFO",
+                "transport=ws:// (unencrypted; intended for local or trusted LAN use)"
+                if parsed.scheme == "ws"
+                else "transport=wss:// (TLS expected)",
+            )
+        )
+        try:
+            workspace = _relative_path(section.workspace, path)
+            if workspace.is_symlink() or not workspace.is_dir():
+                raise ConfigError("workspace must be an existing directory")
+            issues.append(ValidationIssue("INFO", f"workspace={workspace}"))
+        except ConfigError as exc:
+            issues.append(ValidationIssue("ERROR", f"workspace is invalid ({exc})"))
+
     try:
         _reject_token_file_environment(env)
         _secret_value(document, "agent", "agent", path, env)
@@ -956,49 +1018,19 @@ def _validate_agent(
         issues.append(ValidationIssue("INFO", f"agent_token source={source}"))
     except ConfigError as exc:
         issues.append(ValidationIssue("ERROR", f"agent token is unavailable ({exc})"))
-    tools = section.get("tools")
-    allowlist = tools.get("allowlist") if isinstance(tools, Mapping) else None
-    if not isinstance(allowlist, list) or any(not isinstance(item, str) for item in allowlist):
-        issues.append(ValidationIssue("ERROR", "tools.allowlist must be a list of tool names"))
-    else:
-        if len(set(allowlist)) != len(allowlist):
-            issues.append(ValidationIssue("ERROR", "tools.allowlist contains duplicates"))
-        elif catalog is not None:
-            try:
-                catalog.validate_allowlist(allowlist)
-            except CatalogError as exc:
-                issues.append(ValidationIssue("ERROR", str(exc)))
-        elif not defer_tool_validation:
-            for name in allowlist:
-                if name == SERVER_LOCAL_TOOL:
-                    issues.append(ValidationIssue("ERROR", "relay_device_status is server-local and cannot be selected"))
-                elif not _is_public_agent_tool(name):
-                    issues.append(ValidationIssue("ERROR", f"unknown Agent tool: {name}"))
-                elif name in PUBLIC_TO_INTERNAL and not _tool_is_available(
-                    next(spec for spec in TOOL_SPECS if spec.name == name),
-                    {"agent": section},
-                    path,
-                ):
-                    issues.append(ValidationIssue("ERROR", f"Agent tool is unavailable: {name}"))
-        if not allowlist:
+
+    if section is not None:
+        try:
+            validate_agent_allowlist(
+                section.tools.allowlist,
+                catalog=catalog,
+                defer_unknown=defer_tool_validation,
+            )
+        except CatalogError as exc:
+            issues.append(ValidationIssue("ERROR", str(exc)))
+        if not section.tools.allowlist:
             issues.append(ValidationIssue("INFO", "no tools enabled"))
-    _validate_agent_computer(section.get("computer"), path, issues)
-    try:
-        _validate_runtime(section.get("runtime"), server=False)
-    except ConfigError:
-        issues.append(ValidationIssue("ERROR", "agent runtime limits are invalid"))
     return ValidationReport("agent", tuple(issues))
-
-
-def _validate_agent_computer(raw: object, path: Path, issues: list[ValidationIssue]) -> None:
-    del path
-    if not isinstance(raw, Mapping):
-        issues.append(ValidationIssue("ERROR", "computer section must be a mapping"))
-        return
-    values = [raw.get("allowed_app_name"), raw.get("allowed_window_title")]
-    if any(value is not None for value in values):
-        if not all(isinstance(value, str) and value for value in values):
-            issues.append(ValidationIssue("ERROR", "computer configuration must provide all policy fields"))
 
 
 def validate_document(
@@ -1061,11 +1093,12 @@ def _existing_allowlist(section: Mapping[str, Any]) -> list[str]:
     if not isinstance(tools, Mapping):
         raise ConfigError("agent tools must be a mapping")
     allowlist = tools.get("allowlist", [])
-    if not isinstance(allowlist, list) or any(not isinstance(item, str) for item in allowlist):
+    if not isinstance(allowlist, list):
         raise ConfigError("tools.allowlist must be a list of tool names")
-    if len(set(allowlist)) != len(allowlist):
-        raise ConfigError("tools.allowlist contains duplicates")
-    return allowlist
+    try:
+        return list(validate_agent_allowlist(allowlist, defer_unknown=True))
+    except CatalogError as exc:
+        raise ConfigError(str(exc)) from None
 
 
 def _validate_cua_profile_catalog(
@@ -1168,30 +1201,10 @@ def apply_cua_access(
         raise ConfigError("--yes is only valid with --cua-access full")
     non_cua = [name for name in allowlist if not _is_dynamic_cua_public_name(name)]
     result = non_cua + list(names)
-    if catalog is not None:
-        try:
-            catalog.validate_allowlist(result)
-        except CatalogError as exc:
-            raise ConfigError(str(exc)) from None
-    else:
-        invalid = [
-            name
-            for name in result
-            if (
-                name == SERVER_LOCAL_TOOL
-                or not _is_public_agent_tool(name)
-                or (
-                    name in PUBLIC_TO_INTERNAL
-                    and not _tool_is_available(
-                        next(spec for spec in TOOL_SPECS if spec.name == name),
-                        {},
-                        Path("."),
-                    )
-                )
-            )
-        ]
-        if invalid:
-            raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
+    try:
+        validate_agent_allowlist(result, catalog=catalog)
+    except CatalogError as exc:
+        raise ConfigError(str(exc)) from None
     return result
 
 
@@ -1220,31 +1233,6 @@ def update_cua_access(
     document["agent"] = agent_section
     _write_config(config_path, document)
     return True
-
-
-def _validate_existing_static_allowlist(
-    section: Mapping[str, Any],
-    path: Path,
-) -> None:
-    allowlist = _existing_allowlist(section)
-    invalid = [
-        name
-        for name in allowlist
-        if (
-            name == SERVER_LOCAL_TOOL
-            or not _is_public_agent_tool(name)
-            or (
-                name in PUBLIC_TO_INTERNAL
-                and not _tool_is_available(
-                next(spec for spec in TOOL_SPECS if spec.name == name),
-                section,
-                path,
-                )
-            )
-        )
-    ]
-    if invalid:
-        raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
 
 
 def init_config(
@@ -1344,30 +1332,10 @@ def init_config(
                 catalog,
                 assume_yes=assume_yes,
             )
-        if catalog is not None:
-            try:
-                catalog.validate_allowlist(requested_tools)
-            except CatalogError as exc:
-                raise ConfigError(str(exc)) from None
-        else:
-            invalid = [
-                name
-                for name in requested_tools
-                if (
-                    name == SERVER_LOCAL_TOOL
-                    or not _is_public_agent_tool(name)
-                    or (
-                        name in PUBLIC_TO_INTERNAL
-                        and not _tool_is_available(
-                            next(spec for spec in TOOL_SPECS if spec.name == name),
-                            section,
-                            config_path,
-                        )
-                    )
-                )
-            ]
-            if invalid:
-                raise ConfigError(f"unavailable or unknown Agent tool: {invalid[0]}")
+        try:
+            validate_agent_allowlist(requested_tools, catalog=catalog)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
         section.setdefault("tools", {})["allowlist"] = requested_tools
         workspace = _relative_path(section["workspace"], config_path)
         _ensure_private_directory(workspace)
@@ -1492,8 +1460,7 @@ def tool_statuses(
         document = {"agent": _default_document("agent")}
     _reject_legacy_secret_sections(document)
     agent = _effective_agent(document, effective_env)
-    tools = agent.get("tools", {})
-    allowlist = list(tools.get("allowlist", []) if isinstance(tools, Mapping) else [])
+    allowlist = list(agent.tools.allowlist)
     if catalog is not None:
         try:
             selected = catalog.select(allowlist)
@@ -1517,7 +1484,7 @@ def tool_statuses(
         ]
 
     effective_document = copy.deepcopy(document)
-    effective_document["agent"] = agent
+    effective_document["agent"] = agent.model_dump(mode="json")
     statuses: list[tuple[ToolSpec, str]] = []
     for spec in TOOL_SPECS:
         if spec.source == "server":
@@ -1540,18 +1507,16 @@ def update_tool(
 ) -> None:
     if name == SERVER_LOCAL_TOOL:
         raise ConfigError("relay_device_status is server-local and cannot be configured")
-    if catalog is not None:
+    if catalog is not None and not enabled:
         try:
             catalog.entry(name)
         except CatalogError as exc:
             raise ConfigError(str(exc)) from None
-        if enabled:
-            try:
-                catalog.validate_allowlist([name])
-            except CatalogError as exc:
-                raise ConfigError(str(exc)) from None
-    elif not _is_public_agent_tool(name):
-        raise ConfigError(f"unknown Agent tool: {name}")
+    else:
+        try:
+            validate_agent_allowlist([name], catalog=catalog)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
     config_path = _config_path(path)
     document = _load_yaml(config_path)
     _reject_legacy_secret_sections(document)
@@ -1653,30 +1618,10 @@ def set_value(
     if canonical == "tools.allowlist" and isinstance(parsed_value, str):
         parsed_value = [item.strip() for item in parsed_value.split(",") if item.strip()]
     if canonical == "tools.allowlist" and isinstance(parsed_value, list):
-        if catalog is not None:
-            try:
-                catalog.validate_allowlist(parsed_value)
-            except CatalogError as exc:
-                raise ConfigError(str(exc)) from None
-        else:
-            invalid = [
-                item
-                for item in parsed_value
-                if (
-                    item == SERVER_LOCAL_TOOL
-                    or not _is_public_agent_tool(item)
-                    or (
-                        item in PUBLIC_TO_INTERNAL
-                        and not _tool_is_available(
-                        next(spec for spec in TOOL_SPECS if spec.name == item),
-                        section,
-                        config_path,
-                        )
-                    )
-                )
-            ]
-            if invalid:
-                raise ConfigError(f"unknown or server-local Agent tool: {invalid[0]}")
+        try:
+            validate_agent_allowlist(parsed_value, catalog=catalog)
+        except CatalogError as exc:
+            raise ConfigError(str(exc)) from None
     _set_nested(section, canonical, parsed_value)
     document[scope] = section
     _write_config(config_path, document)
@@ -1763,35 +1708,10 @@ def load_agent_settings(
     if not report.valid:
         raise ConfigError(_invalid_configuration_message("agent", report))
     section = _effective_agent(document, effective_env)
-    identity = section["identity"]["id"]
-    computer = section["computer"]
-    runtime = section["runtime"]
     token = _secret_value(document, "agent", "agent", config_path, effective_env)
-    workspace = _relative_path(section["workspace"], config_path)
     from .agent import AgentSettings
 
-    return AgentSettings(
-        server_url=section["relay_url"],
-        device_id=identity,
-        agent_id=identity,
-        agent_token=token,
-        workspace=workspace,
-        tools_allowlist=tuple(section["tools"]["allowlist"]),
-        heartbeat_interval_seconds=float(runtime["heartbeat_interval_seconds"]),
-        reconnect_min_seconds=float(runtime["reconnect_min_seconds"]),
-        reconnect_max_seconds=float(runtime["reconnect_max_seconds"]),
-        stable_session_seconds=float(runtime["stable_session_seconds"]),
-        max_ws_message_bytes=int(runtime["max_ws_message_bytes"]),
-        command_timeout_seconds=float(runtime["command_timeout_seconds"]),
-        stdout_limit=int(runtime["stdout_limit"]),
-        stderr_limit=int(runtime["stderr_limit"]),
-        computer_allowed_app_name=computer["allowed_app_name"],
-        computer_allowed_window_title=computer["allowed_window_title"],
-        computer_startup_timeout_seconds=float(computer["startup_timeout_seconds"]),
-        computer_action_timeout_seconds=float(computer["action_timeout_seconds"]),
-        computer_shutdown_timeout_seconds=float(computer["shutdown_timeout_seconds"]),
-        computer_max_elements=int(computer["max_elements"]),
-    )
+    return AgentSettings(**section.runtime_settings(token=token, config_path=config_path))
 
 
 def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | None = None) -> ServerRuntime:
@@ -1813,26 +1733,12 @@ def load_server_runtime(path: str | Path | None, *, env: Mapping[str, str] | Non
     section = _effective_server(document, effective_env)
     mcp_token = _secret_value(document, "server", "mcp", config_path, effective_env)
     agent_token = _secret_value(document, "server", "agent", config_path, effective_env)
-    runtime = section["runtime"]
-    mcp = section["mcp"]
     from .server import RelaySettings
 
     settings = RelaySettings(
-        agent_token=agent_token,
-        mcp_token=mcp_token,
-        bind_host=str(section["host"]),
-        mcp_allowed_hosts=tuple(mcp["allowed_hosts"]),
-        mcp_allowed_origins=tuple(mcp["allowed_origins"]),
-        min_timeout_seconds=float(runtime["min_timeout_seconds"]),
-        max_timeout_seconds=float(runtime["max_timeout_seconds"]),
-        cancel_send_timeout_seconds=float(runtime["cancel_send_timeout_seconds"]),
-        max_ws_message_bytes=int(runtime["max_ws_message_bytes"]),
+        **section.runtime_settings(mcp_token=mcp_token, agent_token=agent_token)
     )
-    return ServerRuntime(
-        settings=settings,
-        host=str(section["host"]),
-        port=_parse_int(section["port"], minimum=1, maximum=65535),
-    )
+    return ServerRuntime(settings=settings, host=section.host, port=section.port)
 
 
 def cua_tool_summary(
@@ -1855,8 +1761,7 @@ def cua_tool_summary(
         document = {"agent": _default_document("agent")}
     _reject_legacy_secret_sections(document)
     agent = _effective_agent(document, effective_env)
-    tools = agent.get("tools", {})
-    allowlist = list(tools.get("allowlist", []) if isinstance(tools, Mapping) else [])
+    allowlist = list(agent.tools.allowlist)
     selected = catalog.select(allowlist)
     cua_entries = tuple(
         entry for entry in selected.entries if entry.provider_name == "cua"
