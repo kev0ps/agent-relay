@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from .capabilities.system import SYSTEM_PROVIDER_DESCRIPTORS
 from .capabilities.terminal import TERMINAL_PROVIDER_DESCRIPTORS
+from .cua_profiles import is_cua_public_name
 from .diagnostics import debug as _debug_log
 from .json_bounds import JsonValue
 from .output_models import ProviderToolResult
@@ -32,6 +33,7 @@ DEFAULT_RESERVED_PUBLIC_NAMES = frozenset(
         "relay_device_status",
     }
 )
+DEFAULT_AGENT_PUBLIC_NAMES = DEFAULT_RESERVED_PUBLIC_NAMES - {"relay_device_status"}
 CatalogStatus = Literal["disabled", "enabled", "unavailable", "blocked"]
 ProviderStatus = Literal["available", "unavailable"]
 
@@ -312,6 +314,34 @@ class CatalogSnapshot:
                 raise CatalogError(f"blocked Agent tool: {name}")
             if entry.status == "unavailable":
                 raise CatalogError(f"unavailable Agent tool: {name}")
+
+
+def validate_agent_allowlist(
+    allowlist: Sequence[str],
+    *,
+    catalog: CatalogSnapshot | None = None,
+    defer_unknown: bool = False,
+) -> tuple[str, ...]:
+    """Validate config-facing Agent tool consent in one catalog boundary.
+
+    Without a discovered catalog, only built-in tools and syntactically valid
+    dynamic CUA names are known. Runtime catalog discovery can be deferred for
+    other provider names, while shape and duplicate checks remain mandatory.
+    """
+    names = _validate_names(allowlist)
+    if catalog is not None:
+        catalog.validate_allowlist(names)
+        return names
+    if defer_unknown:
+        return names
+    for name in names:
+        if name == "relay_device_status":
+            raise CatalogError(
+                "relay_device_status is server-local and cannot be selected"
+            )
+        if name not in DEFAULT_AGENT_PUBLIC_NAMES and not is_cua_public_name(name):
+            raise CatalogError(f"unknown Agent tool: {name}")
+    return names
 
 
 class CatalogService:
@@ -617,6 +647,7 @@ ProviderCatalog = CatalogSnapshot
 
 
 __all__ = [
+    "DEFAULT_AGENT_PUBLIC_NAMES",
     "DEFAULT_RESERVED_PUBLIC_NAMES",
     "CatalogEntry",
     "CatalogError",
@@ -629,4 +660,5 @@ __all__ = [
     "ProviderToolCandidate",
     "ToolCandidate",
     "public_tool_name",
+    "validate_agent_allowlist",
 ]

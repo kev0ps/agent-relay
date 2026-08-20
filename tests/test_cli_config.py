@@ -278,6 +278,27 @@ def test_reinit_rejects_malformed_existing_allowlist(
         config.init_config(config_path, "agent", tools=None, env={})
 
 
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("tools", "tools.allowlist must be a list of tool names"),
+        ("computer", "computer section must be a mapping"),
+    ],
+)
+def test_validation_preserves_malformed_nested_section_errors(
+    tmp_path: Path, field: str, expected: str
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(config_path, "agent", token="agent-secret", tools=[], env={})
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    document["agent"][field] = "not-a-mapping"
+    config_path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    report = config.validate_document(config_path, "agent", env={})
+
+    assert any(issue.message == expected for issue in report.errors)
+
+
 def test_init_agent_supports_explicit_no_tools_and_stdin_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
