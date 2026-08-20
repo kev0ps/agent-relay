@@ -16,13 +16,15 @@ WINDOWS_UNINSTALL_TIMEOUT_SECONDS = 15
 WINDOWS_UNINSTALL_RETRY_INTERVAL_MILLISECONDS = 500
 
 
-def _candidate_uv_paths() -> tuple[Path, ...]:
-    """Return the per-user uv paths used by the supported installers."""
-    candidates: list[Path] = []
+def find_uv() -> Path | None:
+    """Find uv in PATH or in the supported installer locations."""
+    discovered = shutil.which("uv")
+    if discovered:
+        return Path(discovered)
+    home = Path.home()
     if os.name == "nt":
-        candidates.append(Path.home() / ".local" / "bin" / "uv.exe")
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
+        candidates = [home / ".local" / "bin" / "uv.exe"]
+        if local_app_data := os.environ.get("LOCALAPPDATA"):
             candidates.extend(
                 (
                     Path(local_app_data) / "uv" / "uv.exe",
@@ -30,42 +32,11 @@ def _candidate_uv_paths() -> tuple[Path, ...]:
                 )
             )
     else:
-        candidates.extend(
-            (
-                Path.home() / ".local" / "bin" / "uv",
-                Path.home() / ".cargo" / "bin" / "uv",
-            )
-        )
-    return tuple(candidates)
-
-
-def find_uv() -> Path | None:
-    """Find uv without relying on a shell or a mutable working directory."""
-    discovered = shutil.which("uv")
-    if discovered:
-        return Path(discovered)
-    for candidate in _candidate_uv_paths():
+        candidates = [home / ".local" / "bin" / "uv", home / ".cargo" / "bin" / "uv"]
+    for candidate in candidates:
         if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
             return candidate
     return None
-
-
-def _is_windows() -> bool:
-    return os.name == "nt"
-
-
-def _run_uv_uninstall(uv_path: Path) -> None:
-    try:
-        result = subprocess.run(
-            [str(uv_path), "tool", "uninstall", "agent-relay"],
-            check=False,
-        )
-    except OSError as exc:
-        raise config.ConfigError("could not start uv for uninstallation") from exc
-    if result.returncode != 0:
-        raise config.ConfigError(
-            f"uv tool uninstall agent-relay failed with exit code {result.returncode}"
-        )
 
 
 def _find_powershell() -> Path | None:
@@ -93,29 +64,24 @@ def _windows_uninstall_script(
     return (
         "$ErrorActionPreference = 'Continue'; "
         f"$deadline = [DateTime]::UtcNow.AddSeconds({timeout_seconds}); "
-        f"$retryInterval = {retry_interval_milliseconds}; "
-        "$attempt = 0; $succeeded = $false; "
-        "while ([DateTime]::UtcNow -le $deadline) { "
+        "$attempt = 0; "
+        "while ([DateTime]::UtcNow -lt $deadline) { "
         "$attempt += 1; "
         f"Add-Content -LiteralPath {log_literal} "
         "-Value ('Attempt {0}: uv tool uninstall agent-relay' -f $attempt); "
-        f"& {uv_literal} tool uninstall agent-relay "
-        f">> {log_literal} 2>&1; "
+        f"& {uv_literal} tool uninstall agent-relay >> {log_literal} 2>&1; "
         "$exitCode = [int]$LASTEXITCODE; "
         f"Add-Content -LiteralPath {log_literal} "
         "-Value ('Attempt {0} result: exit code {1}' -f $attempt, $exitCode); "
-        "if ($exitCode -eq 0) { $succeeded = $true; break } "
-        "$remainingMilliseconds = ($deadline - [DateTime]::UtcNow).TotalMilliseconds; "
-        "if ($remainingMilliseconds -le 0) { break } "
-        "$sleepMilliseconds = [int][Math]::Min($retryInterval, [Math]::Ceiling($remainingMilliseconds)); "
-        "Start-Sleep -Milliseconds $sleepMilliseconds; "
+        "if ($exitCode -eq 0) { "
+        f"Add-Content -LiteralPath {log_literal} -Value 'Final result: success'; "
+        "exit 0 }; "
+        f"$remainingMilliseconds = ($deadline - [DateTime]::UtcNow).TotalMilliseconds; "
+        "if ($remainingMilliseconds -le 0) { break }; "
+        f"Start-Sleep -Milliseconds ([int][Math]::Min({retry_interval_milliseconds}, "
+        "[Math]::Ceiling($remainingMilliseconds))); "
         "} "
-        "if ($succeeded) { "
-        f"Add-Content -LiteralPath {log_literal} "
-        "-Value ('Final result: success after {0} attempt(s).' -f $attempt); "
-        "exit 0 } "
-        f"Add-Content -LiteralPath {log_literal} -Value "
-        "('Final result: failure after {0} attempt(s).' -f $attempt); "
+        f"Add-Content -LiteralPath {log_literal} -Value 'Final result: failure'; "
         f"Add-Content -LiteralPath {log_literal} -Value "
         "'Stop other Agent Relay server or agent processes, then run: uv tool uninstall agent-relay'; "
         "exit 1"
@@ -146,8 +112,6 @@ def _schedule_windows_uninstall(uv_path: Path) -> Path:
                 str(powershell),
                 "-NoProfile",
                 "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
                 "-EncodedCommand",
                 encoded,
             ],
@@ -174,9 +138,19 @@ def uninstall_tool() -> Path | None:
             "uv was not found; uninstall the uv-managed Agent Relay installation "
             "with uv available on PATH"
         )
-    if _is_windows():
+    if os.name == "nt":
         return _schedule_windows_uninstall(uv_path)
-    _run_uv_uninstall(uv_path)
+    try:
+        result = subprocess.run(
+            [str(uv_path), "tool", "uninstall", "agent-relay"],
+            check=False,
+        )
+    except OSError as exc:
+        raise config.ConfigError("could not start uv for uninstallation") from exc
+    if result.returncode != 0:
+        raise config.ConfigError(
+            f"uv tool uninstall agent-relay failed with exit code {result.returncode}"
+        )
     return None
 
 
