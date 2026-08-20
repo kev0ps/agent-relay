@@ -48,7 +48,7 @@ def _default_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def test_help_lists_uninstall(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["--help"]) == 0
-    assert "uninstall [--purge] [--yes]" in capsys.readouterr().out
+    assert "uninstall" in capsys.readouterr().out
 
 
 def test_yes_requires_purge(capsys: pytest.CaptureFixture[str]) -> None:

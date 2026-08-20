@@ -12,37 +12,6 @@ from pathlib import Path
 from . import agent, config, onboarding, server, uninstall
 from .catalog import CatalogError, CatalogSnapshot
 
-_HELP = """usage: agent-relay [--config PATH] <command>\n\nAgent Relay\n\nCommands:\n  --help                         show this help and exit\n  --version                      show the program version and exit\n  config init server             create Server YAML and secret files\n  config init agent              create Agent YAML and secret file\n  config get server              print the Server YAML section\n  config get agent               print the Agent YAML section\n  config set server KEY VALUE    update a Server setting\n  config set agent KEY VALUE     update an Agent setting\n  config unset server KEY        restore a Server setting default\n  config unset agent KEY         restore an Agent setting default\n  config validate server         validate the Server configuration\n  config validate agent          validate the Agent configuration\n  tools list                     list the complete public tool inventory\n  tools enable TOOL              enable an Agent tool\n  tools disable TOOL              disable an Agent tool\n  doctor                         run the offline combined configuration audit\n  server                        start the Relay Server\n  agent                         start the outbound Agent\n\nGlobal options:\n  --config PATH                  use a specific YAML configuration file\n\nSecret values must be provided with --prompt, --stdin, or --file.\n"""
-
-
-_HELP = _HELP.replace(
-    "  config validate agent          validate the Agent configuration\n",
-    "  config validate agent          validate the Agent configuration\n"
-    "  onboard [--topology TOPOLOGY] guided Server/Agent first-run setup\n",
-)
-
-_HELP = _HELP.replace(
-    "create Server YAML and secret files", "create Server YAML and private .env"
-).replace("create Agent YAML and secret file", "create Agent YAML and private .env")
-
-_HELP = _HELP.replace(
-    "  tools list                     list the complete public tool inventory\n",
-    "  tools list [--all]             list the public tool inventory\n"
-    "  tools cua-access LEVEL [--yes] set CUA access: none, standard, or full\n",
-)
-
-_HELP = _HELP.replace(
-    "  agent                         start the outbound Agent\n",
-    "  agent                         start the outbound Agent\n"
-    "  uninstall [--purge] [--yes]   remove the uv-managed Agent Relay command\n",
-)
-
-
-class _Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
-        self.print_usage(sys.stderr)
-        self.exit(2, f"{self.prog}: error: {message}\n")
-
 
 def _extract_config(argv: list[str]) -> tuple[Path, list[str]]:
     path = config.DEFAULT_CONFIG_PATH
@@ -70,11 +39,26 @@ def _extract_config(argv: list[str]) -> tuple[Path, list[str]]:
     return path, remaining
 
 
-def _parser() -> _Parser:
-    parser = _Parser(prog="agent-relay", add_help=False, description="Agent Relay")
-    commands = parser.add_subparsers(dest="command", required=True)
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agent-relay", add_help=False, description="Agent Relay"
+    )
+    parser.add_argument(
+        "--config", metavar="PATH", help="use a specific YAML configuration file"
+    )
+    parser.add_argument("--help", action="help", help="show this help message and exit")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {config.PUBLIC_VERSION}",
+        help="show the program version and exit",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
-    config_parser = commands.add_parser("config", add_help=False)
+    config_parser = commands.add_parser(
+        "config", add_help=False, help="manage Agent Relay configuration"
+    )
+    config_parser.set_defaults(handler=_run_config)
     config_commands = config_parser.add_subparsers(dest="config_command", required=True)
     init_parser = config_commands.add_parser("init", add_help=False)
     init_parser.add_argument("scope", choices=("server", "agent"))
@@ -114,7 +98,10 @@ def _parser() -> _Parser:
     validate_parser = config_commands.add_parser("validate", add_help=False)
     validate_parser.add_argument("scope", choices=("server", "agent"))
 
-    tools_parser = commands.add_parser("tools", add_help=False)
+    tools_parser = commands.add_parser(
+        "tools", add_help=False, help="list and update Agent tool access"
+    )
+    tools_parser.set_defaults(handler=_run_tools)
     tool_commands = tools_parser.add_subparsers(dest="tool_command", required=True)
     list_parser = tool_commands.add_parser("list", add_help=False)
     list_parser.add_argument("--all", action="store_true")
@@ -125,8 +112,14 @@ def _parser() -> _Parser:
     cua_access_parser.add_argument("level", choices=("none", "standard", "full"))
     cua_access_parser.add_argument("--yes", action="store_true")
 
-    commands.add_parser("doctor", add_help=False)
-    onboard_parser = commands.add_parser("onboard", add_help=False)
+    doctor_parser = commands.add_parser(
+        "doctor", add_help=False, help="run the offline combined configuration audit"
+    )
+    doctor_parser.set_defaults(handler=_run_doctor)
+    onboard_parser = commands.add_parser(
+        "onboard", add_help=False, help="run guided Server/Agent first-run setup"
+    )
+    onboard_parser.set_defaults(handler=_run_onboard)
     onboard_parser.add_argument("--role", choices=("local", "server", "agent"))
     onboard_parser.add_argument("--non-interactive", action="store_true")
     onboard_parser.add_argument("--force", action="store_true")
@@ -153,9 +146,18 @@ def _parser() -> _Parser:
     onboard_check.add_argument("--check", dest="check", action="store_true")
     onboard_check.add_argument("--no-check", dest="check", action="store_false")
     onboard_parser.set_defaults(check=None)
-    commands.add_parser("server", add_help=False)
-    commands.add_parser("agent", add_help=False)
-    uninstall_parser = commands.add_parser("uninstall", add_help=False)
+    server_parser = commands.add_parser(
+        "server", add_help=False, help="start the Relay Server"
+    )
+    server_parser.set_defaults(handler=_run_server)
+    agent_parser = commands.add_parser(
+        "agent", add_help=False, help="start the outbound Agent"
+    )
+    agent_parser.set_defaults(handler=_run_agent)
+    uninstall_parser = commands.add_parser(
+        "uninstall", add_help=False, help="remove the uv-managed Agent Relay command"
+    )
+    uninstall_parser.set_defaults(handler=_run_uninstall)
     uninstall_parser.add_argument(
         "--purge",
         action="store_true",
@@ -301,6 +303,86 @@ def _run_config(
     return 0 if report.valid else 1
 
 
+def _run_tools(
+    args: argparse.Namespace,
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> int:
+    if args.tool_command == "list":
+        print(config.render_tools(path, catalog=catalog, show_all=args.all))
+        return 0
+    if args.tool_command == "cua-access":
+        config.update_cua_access(
+            path,
+            args.level,
+            catalog=catalog,
+            assume_yes=args.yes,
+        )
+        print(f"CUA access: {args.level}")
+        return 0
+    config.update_tool(
+        path,
+        args.tool,
+        enabled=args.tool_command == "enable",
+        catalog=catalog,
+    )
+    print(f"{'enabled' if args.tool_command == 'enable' else 'disabled'} {args.tool}")
+    return 0
+
+
+def _run_doctor(
+    _args: argparse.Namespace,
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> int:
+    output, valid = config.doctor(path, catalog=catalog)
+    print(output)
+    return 0 if valid else 1
+
+
+def _run_onboard(
+    args: argparse.Namespace,
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> int:
+    return onboarding.run(
+        path,
+        onboarding.OnboardingOptions.from_namespace(args),
+        catalog=catalog,
+    )
+
+
+def _run_server(
+    _args: argparse.Namespace,
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> int:
+    config.load_server_runtime(path)
+    server.main(["--config", str(path)])
+    return 0
+
+
+def _run_agent(
+    _args: argparse.Namespace,
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> int:
+    if _agent_environment_is_available(path):
+        agent.main([], catalog=catalog)
+        return 0
+    config.load_agent_settings(path, catalog=catalog)
+    if catalog is None:
+        agent.main(["--config", str(path)])
+    else:
+        agent.main(["--config", str(path)], catalog=catalog)
+    return 0
+
+
 def _catalog_required(args: argparse.Namespace) -> bool:
     if args.command in {"tools", "doctor", "agent"}:
         return True
@@ -331,7 +413,12 @@ def _confirm_uninstall_purge(data_dir: Path, *, assume_yes: bool) -> bool:
     return answer.strip().lower() in {"y", "yes"}
 
 
-def _run_uninstall(args: argparse.Namespace, path: Path) -> int:
+def _run_uninstall(
+    args: argparse.Namespace,
+    path: Path,
+    *,
+    catalog: CatalogSnapshot | None = None,
+) -> int:
     if args.yes and not args.purge:
         raise config.ConfigError("--yes is only valid with --purge")
 
@@ -387,85 +474,29 @@ def main(
 ) -> int:
     """Run the strict Agent Relay CLI and return a process-compatible status."""
     raw = list(sys.argv[1:] if argv is None else argv)
-    if not raw:
-        print(_HELP, end="")
-        return 0
-    try:
-        path, command_argv = _extract_config(raw)
-    except SystemExit:
-        raise
-    if command_argv == ["--help"]:
-        print(_HELP, end="")
-        return 0
-    if command_argv == ["--version"]:
-        print(f"agent-relay {config.PUBLIC_VERSION}")
-        return 0
-    if "--help" in command_argv:
-        parser = _parser()
-        parser.error("only the top-level --help option is supported")
-    if not command_argv:
-        print(_HELP, end="")
-        return 0
     parser = _parser()
-    args = parser.parse_args(command_argv)
+    if not raw:
+        parser.print_help()
+        return 0
+    path, command_argv = _extract_config(raw)
+    if not command_argv:
+        parser.print_help()
+        return 0
+    if "--help" in command_argv and command_argv != ["--help"]:
+        parser.error("only the top-level --help option is supported")
+    if "--version" in command_argv and command_argv != ["--version"]:
+        parser.error("only the top-level --version option is supported")
+    try:
+        args = parser.parse_args(command_argv)
+    except SystemExit as exc:
+        if command_argv in (["--help"], ["--version"]) and exc.code == 0:
+            return 0
+        raise
     try:
         effective_catalog = catalog
         if effective_catalog is None and _catalog_required(args):
             effective_catalog = config.discover_local_catalog(path)
-        if args.command == "config":
-            return _run_config(args, path, catalog=effective_catalog)
-        if args.command == "tools":
-            if args.tool_command == "list":
-                print(
-                    config.render_tools(
-                        path, catalog=effective_catalog, show_all=args.all
-                    )
-                )
-                return 0
-            if args.tool_command == "cua-access":
-                config.update_cua_access(
-                    path,
-                    args.level,
-                    catalog=effective_catalog,
-                    assume_yes=args.yes,
-                )
-                print(f"CUA access: {args.level}")
-                return 0
-            config.update_tool(
-                path,
-                args.tool,
-                enabled=args.tool_command == "enable",
-                catalog=effective_catalog,
-            )
-            print(f"{'enabled' if args.tool_command == 'enable' else 'disabled'} {args.tool}")
-            return 0
-        if args.command == "doctor":
-            output, valid = config.doctor(path, catalog=effective_catalog)
-            print(output)
-            return 0 if valid else 1
-        if args.command == "onboard":
-            return onboarding.run(
-                path,
-                onboarding.OnboardingOptions.from_namespace(args),
-                catalog=effective_catalog,
-            )
-        if args.command == "server":
-            config.load_server_runtime(path)
-            server.main(["--config", str(path)])
-            return 0
-        if args.command == "agent":
-            if _agent_environment_is_available(path):
-                agent.main([], catalog=effective_catalog)
-                return 0
-            config.load_agent_settings(path, catalog=effective_catalog)
-            if effective_catalog is None:
-                agent.main(["--config", str(path)])
-            else:
-                agent.main(["--config", str(path)], catalog=effective_catalog)
-            return 0
-        if args.command == "uninstall":
-            return _run_uninstall(args, path)
-        parser.error("unsupported command")
+        return args.handler(args, path, catalog=effective_catalog)
     except config.CuaAccessCancelled:
         print("CUA access update cancelled")
         return 0
