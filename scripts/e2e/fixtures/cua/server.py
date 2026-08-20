@@ -17,7 +17,7 @@ PORT = 8898
 MAX_BODY = 2048
 MAX_VALUE = 256
 RUN_ID = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
-PAGE = Path(__file__).with_name("desktop_page.html").read_bytes()
+PAGE = Path(__file__).with_name("index.html").read_bytes()
 HEALTH = b'{"status":"ready"}'
 INVALID = b'{"error":"invalid request"}'
 

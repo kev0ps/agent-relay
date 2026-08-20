@@ -256,8 +256,7 @@ GitHub Actions builds the production image for both `linux/amd64` and
 with the root `--help` and `--version` commands.
 
 These jobs validate packaging and startup only. They do not create a
-two-container desktop topology or upload runtime UI evidence. Linux Terminal
-and unified Xvfb/AT-SPI CUA jobs are the current repeatable Linux paths.
-Windows CUA has a hosted candidate job, but remains experimental until its
-complete fixture-backed UI Automation sequence is repeatable. See
-[`e2e.md`](e2e.md) for the full Linux and Windows validation matrix.
+containerized desktop topology or upload runtime UI evidence. Linux and Windows
+have native Terminal gates plus a shared Chrome CUA scenario over their
+platform graphical sessions. See [`e2e.md`](e2e.md) for the full validation
+matrix.

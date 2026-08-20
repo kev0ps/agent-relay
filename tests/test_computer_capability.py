@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import stat
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,9 +14,11 @@ from agent_relay.capabilities.computer import (
     ComputerCapability,
     _driver_stderr_category,
     _driver_stderr_line_category,
+    _process_creation_options,
     get_cua_driver_path,
     safe_driver_environment,
     validate_driver_executable,
+    validate_windows_health,
 )
 from agent_relay.json_bounds import JsonValue
 from agent_relay.output_models import ProviderTextContent, ProviderToolResult
@@ -384,4 +387,31 @@ def test_scoped_action_does_not_retry_unrelated_provider_error() -> None:
         ],
         structuredContent=None,
         isError=True,
+    )
+
+
+def test_windows_driver_health_requires_an_interactive_uia_session() -> None:
+    validate_windows_health(
+        {
+            "schema_version": "1",
+            "platform": "win32",
+            "overall": "ok",
+            "checks": [
+                {"name": "binary_version", "status": "pass", "message": "ok"},
+                {"name": "platform_supported", "status": "pass", "message": "ok"},
+                {"name": "session_active", "status": "pass", "message": "ok"},
+                {"name": "ax_capability", "status": "pass", "message": "ok"},
+            ],
+        }
+    )
+
+
+def test_windows_process_options_do_not_use_posix_process_groups() -> None:
+    options = _process_creation_options(windows=True)
+
+    assert "start_new_session" not in options
+    assert options["creationflags"] == getattr(
+        subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0,
     )

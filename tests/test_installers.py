@@ -312,7 +312,7 @@ def test_windows_install_guide_matches_the_hosted_script_flow() -> None:
         "scripts/install.ps1",
         "AGENT_RELAY_REF",
         "allowlist",
-        "Windows CUA remains experimental",
+        "native Windows CI gate uses preinstalled Google Chrome",
     ):
         assert phrase in guide
 

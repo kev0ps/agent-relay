@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[1]
-APP = ROOT / "tests" / "fixtures" / "desktop_app.py"
-PAGE = ROOT / "tests" / "fixtures" / "desktop_page.html"
+APP = ROOT / "scripts" / "e2e" / "fixtures" / "cua" / "server.py"
+PAGE = ROOT / "scripts" / "e2e" / "fixtures" / "cua" / "index.html"
 PORT = 8898
 
 

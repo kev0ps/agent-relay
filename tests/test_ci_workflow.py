@@ -32,9 +32,11 @@ def test_ci_has_only_general_cua_native_jobs() -> None:
     assert forbidden_browser_runtime not in workflow.casefold()
     assert forbidden_manual_path not in workflow
     assert "import cua_driver; print(cua_driver.get_binary_path())" in workflow
-    assert "Verify Linux CUA browser prerequisite" in workflow
+    assert "Verify Linux CUA Chrome prerequisite" in workflow
+    assert "Verify Windows CUA Chrome prerequisite" in workflow
     assert "command -v google-chrome" in workflow
     assert "google-chrome --version" in workflow
+    assert "from scripts.e2e.chrome import find_chrome" in workflow
     assert "google-chrome-stable" not in workflow
     assert ("CUA_DRIVER_" + "RS_INSTALL_DIR") not in workflow
 
@@ -69,7 +71,7 @@ def test_linux_cua_job_uses_preinstalled_chrome_and_bounded_budget() -> None:
     )[0]
     desktop_prerequisites = linux_cua.split(
         "      - name: Install Linux desktop prerequisites", 1
-    )[1].split("      - name: Verify Linux CUA browser prerequisite", 1)[0]
+    )[1].split("      - name: Verify Linux CUA Chrome prerequisite", 1)[0]
     assert "timeout-minutes: 10" in linux_cua
     assert desktop_prerequisites.count("sudo apt-get update") == 1
     assert "chromium" not in desktop_prerequisites.casefold()
@@ -80,20 +82,50 @@ def test_linux_cua_job_uses_preinstalled_chrome_and_bounded_budget() -> None:
     assert "uv run --frozen python scripts/linux_computer_e2e.py" in linux_cua
 
 
+def test_windows_cua_job_uses_preinstalled_chrome_without_provisioning() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    windows_cua = workflow.split("  e2e-windows-cua:", 1)[1]
+
+    assert "timeout-minutes: 10" in windows_cua
+    assert "Verify Windows CUA Chrome prerequisite" in windows_cua
+    assert "from scripts.e2e.chrome import find_chrome" in windows_cua
+    assert "--version" in windows_cua
+    assert "winget" not in windows_cua.casefold()
+    assert "choco install" not in windows_cua.casefold()
+    assert "https://dl.google.com" not in windows_cua
+    assert "uv run --frozen python scripts/windows_computer_e2e.py" in windows_cua
+
+
+def test_terminal_jobs_run_shared_and_os_specific_contract_tests() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    linux = workflow.split("  e2e-linux:", 1)[1].split("\n  e2e-linux-cua:", 1)[0]
+    windows = workflow.split("  e2e-windows-terminal:", 1)[1].split(
+        "\n  e2e-windows-cua:", 1
+    )[0]
+
+    assert "tests/test_e2e_harness.py" in linux
+    assert "tests/test_linux_e2e_adapter.py" in linux
+    assert "tests/test_e2e_harness.py" in windows
+    assert "tests/test_windows_e2e_adapter.py" in windows
+
+
 def test_cua_jobs_do_not_repeat_portable_contract_suite() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     common_tests = (
+        "tests/test_chrome_e2e.py",
         "tests/test_cua_catalog.py",
+        "tests/test_cua_entrypoints.py",
+        "tests/test_cua_harness.py",
         "tests/test_cua_profiles.py",
         "tests/test_computer_capability.py",
         "tests/test_desktop_fixture.py",
+        "tests/test_e2e_harness.py",
         "tests/test_e2e_kernel.py",
         "tests/test_e2e_mcp_client.py",
         "tests/test_e2e_oracles.py",
-        "tests/test_linux_computer_e2e.py",
-        "tests/test_windows_computer_e2e.py",
-        "tests/test_linux_e2e.py",
-        "tests/test_windows_e2e.py",
+        "tests/test_graphical_sessions.py",
+        "tests/test_linux_e2e_adapter.py",
+        "tests/test_windows_e2e_adapter.py",
         "tests/test_runner.py",
     )
     for job_name in ("e2e-linux-cua", "e2e-windows-cua"):

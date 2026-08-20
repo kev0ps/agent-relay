@@ -326,9 +326,8 @@ Still outside the validated product boundary:
 - public internet exposure without a trusted private TLS/WSS layer.
 
 The next work is driven by concrete gaps rather than a published roadmap:
-repeatable Windows CUA evidence, release-quality versioned installation and
-operations, explicit credential lifecycle, and a first coherent release and
-compatibility policy.
+release-quality versioned installation and operations, explicit credential
+lifecycle, and a first coherent release and compatibility policy.
 
 ## Documentation
 

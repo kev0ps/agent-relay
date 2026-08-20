@@ -20,11 +20,11 @@ import pytest
 
 from agent_relay import json_bounds
 
-E2E_DIR = Path(__file__).resolve().parent / "e2e"
+E2E_DIR = Path(__file__).resolve().parents[1] / "scripts" / "e2e"
 
 
 def _load_mcp_client() -> ModuleType:
-    dotted = "tests.e2e.mcp_client"
+    dotted = "scripts.e2e.mcp_client"
     cached = sys.modules.get(dotted)
     if cached is not None:
         return cached
@@ -32,11 +32,11 @@ def _load_mcp_client() -> ModuleType:
     # ensure that sibling module is loaded first under its dotted name
     # so the relative-style import resolves.
     scenarios_spec = importlib.util.spec_from_file_location(
-        "tests.e2e.scenarios", E2E_DIR / "scenarios.py"
+        "scripts.e2e.scenarios", E2E_DIR / "scenarios.py"
     )
     if scenarios_spec and scenarios_spec.loader:
         scenarios_mod = importlib.util.module_from_spec(scenarios_spec)
-        sys.modules["tests.e2e.scenarios"] = scenarios_mod
+        sys.modules["scripts.e2e.scenarios"] = scenarios_mod
         scenarios_spec.loader.exec_module(scenarios_mod)
     spec = importlib.util.spec_from_file_location(dotted, E2E_DIR / "mcp_client.py")
     if spec is None or spec.loader is None:
@@ -276,7 +276,7 @@ def test_browser_cua_scenario_requests_driver_compatible_http_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _load_mcp_client()
-    scenarios = importlib.import_module("tests.e2e.scenarios")
+    scenarios = importlib.import_module("scripts.e2e.scenarios")
     captured: dict[str, object] = {}
 
     class StopSession:
@@ -300,12 +300,9 @@ def test_browser_cua_scenario_requests_driver_compatible_http_timeout(
     )
     with pytest.raises(AssertionError, match="session construction captured"):
         asyncio.run(
-            scenarios._run_cua_scenario_async(
+            scenarios._run_browser_scenario_async(
                 runtime,
                 "value",
-                expected_cua_app="app",
-                expected_cua_window_title="title",
-                include_browser=True,
             )
         )
 
