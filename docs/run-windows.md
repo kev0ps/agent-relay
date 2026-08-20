@@ -136,9 +136,12 @@ The one-line installation includes `cua-driver`, resolves its executable
 automatically, and discovers the provider catalogue when the Agent starts.
 Every descriptor is exposed as `relay_cua_<name>` and remains disabled until
 explicitly enabled or included in the selected `standard`/`full` profile.
-Windows CUA remains experimental because its full hosted UI Automation evidence
-is still a CI candidate. Browser descriptors use the same CUA path; there is no
-separate wrapper; CUA owns those descriptors directly.
+The native Windows CI gate uses preinstalled Google Chrome, the same synthetic
+HTML fixture, shared browser scenario, and shared functional oracles as Linux.
+It runs in the hosted runner's interactive session and fails closed in Session
+0. This is evidence for the bounded synthetic browser path, not a claim that
+arbitrary desktop applications or personal browser profiles are supported.
+Browser descriptors use the same CUA path; there is no separate wrapper.
 The Server defaults to the Local topology (`127.0.0.1:8000`) and the Agent uses
 `ws://127.0.0.1:8000/ws/agent` on the same machine. For a trusted LAN, bind the
 Server explicitly to a LAN address or `0.0.0.0` and use `ws://<LAN-IP>:8000`;

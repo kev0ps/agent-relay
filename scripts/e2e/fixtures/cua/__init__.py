@@ -1,0 +1,1 @@
+"""Shared browser CUA fixture."""

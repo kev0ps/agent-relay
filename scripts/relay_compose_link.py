@@ -13,31 +13,18 @@ import time
 from pathlib import Path
 from typing import Any
 
-try:
-    from tests.e2e import mcp_client as portable_mcp
-    from tests.e2e import oracles as portable_oracles
-except ModuleNotFoundError as error:
-    if error.name not in {"tests", "tests.e2e"}:
-        raise
-
-    import importlib.util
-
-    def _load_portable(name: str) -> Any:
-        dotted = f"_agent_relay_compose_smoke_{name}"
-        cached = sys.modules.get(dotted)
-        if cached is not None:
-            return cached
-        target = Path(__file__).parents[1] / "tests" / "e2e" / f"{name}.py"
-        spec = importlib.util.spec_from_file_location(dotted, target)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load portable MCP module {name}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[dotted] = module
-        spec.loader.exec_module(module)
-        return module
-
-    portable_mcp = _load_portable("mcp_client")
-    portable_oracles = _load_portable("oracles")
+if __package__:
+    from .e2e import mcp_client as portable_mcp
+    from .e2e import oracles as portable_oracles
+else:
+    try:
+        from scripts.e2e import mcp_client as portable_mcp
+        from scripts.e2e import oracles as portable_oracles
+    except ModuleNotFoundError as error:
+        if error.name != "scripts":
+            raise
+        from e2e import mcp_client as portable_mcp
+        from e2e import oracles as portable_oracles
 
 
 DEVICE_ID = "compose-status-smoke-agent"
@@ -176,6 +163,7 @@ def main() -> int:
         return 1
     args = _parse_args()
     process: subprocess.Popen[Any] | None = None
+    failed = False
     try:
         control_token = _read_private_token(args.mcp_token_file)
         agent_token = _read_private_token(args.agent_token_file)
@@ -185,7 +173,7 @@ def main() -> int:
         _wait_for_connected_status(control_token)
     except (ComposeSmokeError, OSError, ValueError) as error:
         print(f"Compose status smoke failed: {error}", file=sys.stderr)
-        return 1
+        failed = True
     finally:
         if process is not None:
             try:
@@ -193,7 +181,9 @@ def main() -> int:
             except ComposeSmokeError as error:
                 print(f"Compose status smoke cleanup failed: {error}", file=sys.stderr)
                 if process.returncode is None:
-                    return 1
+                    failed = True
+    if failed:
+        return 1
     print("Relay Compose Link passed: relay_device_status connected.")
     return 0
 

@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-E2E_DIR = Path(__file__).resolve().parent / "e2e"
+E2E_DIR = Path(__file__).resolve().parents[1] / "scripts" / "e2e"
 
 
 def _load(rel_filename: str, dotted: str) -> ModuleType:
@@ -37,7 +37,7 @@ def _load(rel_filename: str, dotted: str) -> ModuleType:
 
 
 def _oracles() -> ModuleType:
-    return _load("oracles.py", "tests.e2e.oracles")
+    return _load("oracles.py", "scripts.e2e.oracles")
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -107,10 +107,10 @@ def test_oracle_accepts_mcp2_call_tool_result_attributes() -> None:
 
 
 def test_oracles_module_exposes_validate_status() -> None:
-    """``tests/e2e/oracles.py`` exposes ``validate_status``."""
+    """``scripts/e2e/oracles.py`` exposes ``validate_status``."""
     oracles = _oracles()
     assert hasattr(oracles, "validate_status"), (
-        "tests/e2e/oracles.py must define validate_status(result, device_id, connected)"
+        "scripts/e2e/oracles.py must define validate_status(result, device_id, connected)"
     )
 
 

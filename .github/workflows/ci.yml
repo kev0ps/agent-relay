@@ -190,8 +190,11 @@ jobs:
         with:
           installer: "true"
 
-      - name: Run Linux contract tests
-        run: uv run --frozen python -m pytest -q tests/test_linux_e2e.py
+      - name: Run shared lifecycle and Linux adapter contract tests
+        run: >-
+          uv run --frozen python -m pytest -q
+          tests/test_e2e_harness.py
+          tests/test_linux_e2e_adapter.py
 
       - name: Run Linux Terminal MCP end-to-end scenario
         shell: bash
@@ -247,9 +250,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             at-spi2-core dbus-x11 gir1.2-atspi-2.0 libatk-bridge2.0-0 \
-            libglib2.0-bin openbox x11-utils xdotool xterm xvfb
+            libglib2.0-bin openbox x11-utils xvfb
 
-      - name: Verify Linux CUA browser prerequisite
+      - name: Verify Linux CUA Chrome prerequisite
         run: |
           set -euo pipefail
           command -v google-chrome
@@ -290,10 +293,6 @@ jobs:
 
       - name: Run Linux CUA end-to-end scenario
         shell: bash
-        env:
-          # The scenario owns only a synthetic temporary Chromium profile. Keep
-          # the existing-profile grant opt-in and scoped to this graphical gate.
-          AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE: "1"
         run: |
           set -euo pipefail
           evidence_dir="$GITHUB_WORKSPACE/linux-cua-evidence"
@@ -347,10 +346,12 @@ jobs:
         with:
           installer: "true"
 
-      - name: Run Windows test suite
+      - name: Run shared lifecycle and Windows adapter test suite
         shell: pwsh
         run: >-
-          uv run --frozen python -m pytest -q tests/test_windows_e2e.py
+          uv run --frozen python -m pytest -q
+          tests/test_e2e_harness.py
+          tests/test_windows_e2e_adapter.py
           tests/test_installers.py::test_windows_path_refresh_preserves_session_entries
           tests/test_installers.py::test_windows_agent_configuration_probe_fails_closed
           tests/test_cli_uninstall.py::test_windows_uninstall_retries_real_locked_executable
@@ -387,7 +388,7 @@ jobs:
     name: Windows CUA end-to-end
     needs: python
     runs-on: windows-2025
-    timeout-minutes: 3
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -419,6 +420,19 @@ jobs:
         uses: ./.github/actions/setup-python
         with:
           cua: "true"
+
+      - name: Verify Windows CUA Chrome prerequisite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $chrome = (uv run --frozen python -c "from scripts.e2e.chrome import find_chrome; print(find_chrome())").Trim()
+          if (-not (Test-Path -LiteralPath $chrome -PathType Leaf)) {
+            throw "Google Chrome is unavailable on the Windows CUA runner"
+          }
+          & $chrome --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Google Chrome version probe failed"
+          }
 
       - name: Verify automatic CUA driver resolution
         shell: pwsh

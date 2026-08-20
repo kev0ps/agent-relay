@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import sys
 import tempfile
 import time
@@ -19,29 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-try:
-    from tests.e2e import mcp_client as _mcp
-    from tests.e2e import oracles as _oracles
-except ModuleNotFoundError as error:
-    if error.name not in {"tests", "tests.e2e"}:
-        raise
-
-    def _load_sibling(name: str):
-        dotted = f"_agent_relay_e2e_{name}"
-        cached = sys.modules.get(dotted)
-        if cached is not None:
-            return cached
-        target = Path(__file__).with_name(f"{name}.py")
-        spec = importlib.util.spec_from_file_location(dotted, target)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load portable kernel module {name}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[dotted] = module
-        spec.loader.exec_module(module)
-        return module
-
-    _mcp = _load_sibling("mcp_client")
-    _oracles = _load_sibling("oracles")
+from . import mcp_client as _mcp
+from . import oracles as _oracles
+from .chrome import chrome_command
 
 EXPECTED_MCP_TOOLS: Final[tuple[str, ...]] = _mcp.EXPECTED_MCP_TOOLS
 MCP_OPERATION_TIMEOUT: Final[float] = 10.0
@@ -67,12 +46,6 @@ CUA_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
     "relay_cua_browser_type",
     "relay_cua_start_session",
     "relay_cua_end_session",
-)
-CUA_DESKTOP_MCP_TOOLS: Final[tuple[str, ...]] = CORE_MCP_TOOLS + (
-    "relay_cua_list_windows",
-    "relay_cua_get_window_state",
-    "relay_cua_click",
-    "relay_cua_type_text",
 )
 CUA_BROWSER_SESSION_PREFIX: Final[str] = "relay-cua-browser-"
 CUA_BROWSER_WINDOW_READY_TIMEOUT: Final[float] = 20.0
@@ -122,35 +95,6 @@ def _require_tools(discovered: tuple[str, ...], required: tuple[str, ...]) -> No
     """Ensure the scenario received exactly its announced tool contract."""
     if discovered != required:
         raise ValueError("unexpected MCP tools")
-
-
-def _portable_phase(
-    phase: list[str] | None,
-    markers: list[str],
-    fallback: str,
-) -> None:
-    """Map detailed oracle markers to the closed harness phase vocabulary."""
-    if phase is None:
-        return
-    marker = markers[-1] if markers else fallback
-    if marker.startswith("snapshot-element-"):
-        marker = "snapshot-element-schema"
-    elif marker.startswith("capture-element-"):
-        marker = "capture-element-shape"
-    elif marker in {"capture-duplicate-id", "capture-decoy-detected"}:
-        marker = "capture-duplicate" if marker == "capture-duplicate-id" else "capture-decoy"
-    elif marker in {"capture-count-out-of-range", "capture-identity-mismatch"}:
-        marker = "capture-count" if marker == "capture-count-out-of-range" else "capture-identity"
-    elif marker == "capture-top-level-mismatch":
-        marker = "capture-top-level"
-    elif marker in {
-        "capture-controls-field-mismatch",
-        "capture-controls-button-mismatch",
-    }:
-        marker = "capture-controls"
-    elif marker == "snapshot-success":
-        marker = "snapshot-controls"
-    _mark(phase, marker)
 
 
 def _diagnose_pwd_mismatch(result: object, expected: str) -> None:
@@ -569,28 +513,37 @@ async def _run_cua_browser_subscenario(
                 prefix="agent-relay-cua-browser-"
             )
             launch_profile = Path(launch_profile_dir.name)
-            launch_arguments = [
-                            f"--user-data-dir={launch_profile}",
-                            "--no-first-run",
-                            "--no-default-browser-check",
-                            "--disable-background-networking",
-                            "--disable-component-update",
-                            "--disable-extensions",
-                            "--disable-default-apps",
-                            "--new-window",
-                            "--window-position=0,0",
-                            "--window-size=1280,720",
-                            "--no-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-gpu",
-                            "--force-renderer-accessibility",
-                            runtime.fixture_url,
-            ]
-            launch_request: dict[str, object] = {"additional_arguments": launch_arguments}
             if runtime.browser_launch_path:
-                launch_request["launch_path"] = runtime.browser_launch_path
+                launch_command = chrome_command(
+                    executable=Path(runtime.browser_launch_path),
+                    profile=launch_profile,
+                    fixture_url=runtime.fixture_url,
+                )
+                launch_request: dict[str, object] = {
+                    "launch_path": launch_command[0],
+                    "additional_arguments": launch_command[1:],
+                }
             else:
-                launch_request["name"] = "chromium"
+                launch_request = {
+                    "name": "chromium",
+                    "additional_arguments": [
+                        f"--user-data-dir={launch_profile}",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-background-networking",
+                        "--disable-component-update",
+                        "--disable-extensions",
+                        "--disable-default-apps",
+                        "--new-window",
+                        "--window-position=0,0",
+                        "--window-size=1280,720",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--force-renderer-accessibility",
+                        runtime.fixture_url,
+                    ],
+                }
             initial_pid = _oracles.validate_cua_browser_launch(
                 await client.call("relay_cua_launch_app", launch_request),
             )
@@ -783,6 +736,13 @@ async def _run_cua_browser_subscenario(
                 file=sys.stderr,
             )
             raise cleanup_error
+        if primary_error is not None and cleanup_error is not None:
+            diagnostic = (
+                "E2E browser cleanup diagnostic: "
+                f"error={type(cleanup_error).__name__}."
+            )
+            print(diagnostic, file=sys.stderr)
+            primary_error.add_note(diagnostic)
     if primary_error is not None:
         print(
             "E2E browser primary diagnostic: "
@@ -828,29 +788,20 @@ def run_core_scenario(
     )
 
 
-async def _run_cua_scenario_async(
+async def _run_browser_scenario_async(
     runtime: RuntimeConfig,
     value: str,
     phase: list[str] | None = None,
     expected_capabilities: tuple[str, ...] | None = None,
-    *,
-    expected_cua_app: str,
-    expected_cua_window_title: str,
-    include_browser: bool = False,
 ) -> None:
-    """Exercise generic CUA inventory, snapshot tokens, and safe actions."""
-    artifact = _fixture_path(runtime, CUA_EVENT_FILE)
-    client_options = {"http_timeout": MCP_BROWSER_HTTP_TIMEOUT} if include_browser else {}
+    """Run the canonical browser-only CUA contract on any graphical platform."""
     async with _mcp.MCPClientSession(
         runtime.mcp_url,
         runtime.control_token,
-        **client_options,
+        http_timeout=MCP_BROWSER_HTTP_TIMEOUT,
     ) as client:
         _mark(phase, "tools-list")
-        _require_tools(
-            await client.list_tools(),
-            CUA_MCP_TOOLS if include_browser else CUA_DESKTOP_MCP_TOOLS,
-        )
+        _require_tools(await client.list_tools(), CUA_MCP_TOOLS)
         _mark(phase, "device-status")
         _oracles.validate_status(
             await client.call("relay_device_status", {}),
@@ -858,151 +809,30 @@ async def _run_cua_scenario_async(
             connected=True,
             expected_capabilities=expected_capabilities,
         )
-        _mark(phase, "list-windows")
-        pid, window_id = _oracles.validate_cua_list_windows(
-            await client.call("relay_cua_list_windows", {}),
-            expected_app=expected_cua_app,
-            expected_window_title=expected_cua_window_title,
+        await _run_cua_browser_subscenario(
+            client,
+            runtime,
+            phase,
+            browser_value=value,
         )
-        _mark(phase, "snapshot")
-        markers: list[str] = []
-        try:
-            first = await client.call(
-                "relay_cua_get_window_state",
-                {
-                    "pid": pid,
-                    "window_id": window_id,
-                    "include_screenshot": False,
-                    "max_elements": 128,
-                },
-            )
-            first_snapshot, field_token, button_token = _oracles.validate_cua_window_state(
-                first,
-                expected_pid=pid,
-                window_id=window_id,
-                diagnostic_phase=markers,
-            )
-        except ValueError:
-            _portable_phase(phase, markers, "cua-snapshot")
-            raise
-        _mark(phase, "click-field")
-        _oracles.validate_cua_action(
-            await client.call(
-                "relay_cua_click",
-                {"pid": pid, "window_id": window_id, "element_token": field_token},
-            ),
-            tool_name="relay_cua_click",
-        )
-        _mark(phase, "type-field")
-        _oracles.validate_cua_action(
-            await client.call(
-                "relay_cua_type_text",
-                {
-                    "pid": pid,
-                    "window_id": window_id,
-                    "element_token": field_token,
-                    "text": value,
-                },
-            ),
-            tool_name="relay_cua_type_text",
-        )
-        _mark(phase, "recapture")
-        second = await client.call(
-            "relay_cua_get_window_state",
-            {
-                "pid": pid,
-                "window_id": window_id,
-                "include_screenshot": False,
-                "max_elements": 128,
-            },
-        )
-        second_snapshot, _, fresh_button_token = _oracles.validate_cua_window_state(
-            second,
-            expected_pid=pid,
-            window_id=window_id,
-        )
-        if second_snapshot == first_snapshot or fresh_button_token == button_token:
-            raise ValueError("CUA snapshot token was not refreshed")
-        _mark(phase, "stale-click")
-        stale = await client.call(
-            "relay_cua_click",
-            {"pid": pid, "window_id": window_id, "element_token": button_token},
-        )
-        if _result_field(stale, "is_error", "isError") is not True or button_token in str(stale):
-            raise ValueError("stale CUA element was not safely rejected")
-        _mark(phase, "stale-click-oracle")
-        _oracles.assert_no_cua_event(artifact)
-        _mark(phase, "click-button")
-        _oracles.validate_cua_action(
-            await client.call(
-                "relay_cua_click",
-                {"pid": pid, "window_id": window_id, "element_token": fresh_button_token},
-            ),
-            tool_name="relay_cua_click",
-        )
-        if include_browser:
-            _mark(phase, "desktop-event")
-            _oracles.poll_cua_event(
-                artifact,
-                run_id=runtime.run_id,
-                value=value,
-                timeout=EVENT_POLL_TIMEOUT,
-            )
-            try:
-                artifact.unlink()
-            except FileNotFoundError:
-                pass
-            if artifact.exists():
-                raise ValueError("desktop CUA event artifact was not reset")
-            await _run_cua_browser_subscenario(client, runtime, phase, browser_value=value)
-    _mark(phase, "artifact-event")
-    expected_event_value = value
-    deadline = time.monotonic() + EVENT_POLL_TIMEOUT
-    previous: bytes | None = None
-    while time.monotonic() < deadline:
-        try:
-            current = _oracles.validate_cua_event(
-                artifact,
-                run_id=runtime.run_id,
-                value=expected_event_value,
-            )
-        except ValueError:
-            time.sleep(0.05)
-            continue
-        if current == previous:
-            _mark(phase, "stable-event")
-            return
-        previous = current
-        time.sleep(0.1)
-    _oracles.validate_cua_event(
-        artifact,
-        run_id=runtime.run_id,
-        value=expected_event_value,
-    )
 
 
-def run_cua_scenario(
+def run_browser_scenario(
     runtime: RuntimeConfig,
     value: str,
     phase: list[str] | None = None,
     *,
     expected_capabilities: tuple[str, ...] | None = None,
-    expected_cua_app: str,
-    expected_cua_window_title: str,
-    include_browser: bool = False,
 ) -> None:
-    """Run the shared generic CUA scenario with bounded cleanup."""
+    """Run the same shared browser fixture, actions, and oracles on every OS."""
     asyncio.run(
         asyncio.wait_for(
-            _run_cua_scenario_async(
+            _run_browser_scenario_async(
                 runtime,
                 value,
                 phase,
                 expected_capabilities,
-                expected_cua_app=expected_cua_app,
-                expected_cua_window_title=expected_cua_window_title,
-                include_browser=include_browser,
             ),
-            timeout=MCP_OPERATION_TIMEOUT * 8,
+            timeout=MCP_BROWSER_HTTP_TIMEOUT * 4,
         )
     )

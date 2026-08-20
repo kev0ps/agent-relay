@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,12 @@ def _load_harness() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_compose_harness_compiles_without_syntax_warnings() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        compile(SCRIPT.read_text(encoding="utf-8"), str(SCRIPT), "exec")
 
 
 def test_compose_agent_uses_installed_relay_command(

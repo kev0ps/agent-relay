@@ -363,11 +363,11 @@ async def call_tool_async(
     control_token:
         Bearer token the harness generated for this run.
     tool_name:
-        Must be in :data:`tests.e2e.scenarios.EXPECTED_MCP_TOOLS`.
+        Must be in :data:`scripts.e2e.scenarios.EXPECTED_MCP_TOOLS`.
     arguments:
         JSON-serializable arguments. The portable client does NOT
         validate argument shape — the server-side facade does that and
-        the oracles in ``tests.e2e.oracles`` verify the result.
+        the oracles in ``scripts.e2e.oracles`` verify the result.
 
     Returns
     -------

@@ -10,156 +10,125 @@ external websites.
 Every product-level scenario follows the same path:
 
 ```text
-official MCP client -> Relay Server -> WebSocket -> Relay Agent -> CUA
+official MCP client -> Relay Server -> WebSocket -> Relay Agent -> capability
 ```
 
-The harness must not invoke CUA directly or inject internal WebSocket frames as
-a substitute. A mutating scenario passes only when it returns a valid
-structured MCP result and the independent fixture records exactly one
+The harness must not invoke a capability directly or inject internal WebSocket
+frames as a substitute. A mutating CUA scenario passes only when it returns a
+valid structured MCP result and the independent fixture records exactly one
 correlated event.
 
-Each Agent-executed call receives a fresh opaque Relay request ID. A call
-rejected before dispatch sends no WebSocket `invoke`. Every call accepted for
-dispatch has exactly one terminal result or error unless it is cancelled.
-
-Fixtures use an unpredictable run ID. A valid mutation requires one matching
-fixture event produced after its MCP call begins and before the bounded
-scenario deadline. Missing, duplicate, stale, wrong-run, wrong-event, and
-wrong-value records fail the scenario. Tests use temporary workspaces,
-credentials, displays, and fixture state; they never reuse a personal desktop
-or browser session.
+Fixtures use an unpredictable run ID. Tests use temporary workspaces,
+credentials, displays, Chrome profiles, and fixture state; they never reuse a
+personal desktop or browser session. Missing, duplicate, stale, wrong-run,
+wrong-event, and wrong-value records fail the scenario.
 
 ## Current matrix
 
-| Platform | Terminal | CUA operations | Interpretation |
+| Platform | Terminal | CUA | Interpretation |
 |---|---|---|---|
-| Linux | E2E | X11/Xvfb/AT-SPI desktop + local browser subpath | CI-gated native path; local contract tests are not product E2E proof |
-| Windows | E2E | Hosted UI Automation desktop candidate | CUA remains experimental until the full fixture gate is repeatable |
-| Docker image | CLI smoke only | Not a product CUA path | Packaging evidence, not capability E2E |
+| Linux | Shared lifecycle and core scenario | Shared browser scenario in an isolated X11/AT-SPI session | Native CI gate |
+| Windows | Shared lifecycle and core scenario | Shared browser scenario in the interactive runner session | Native CI gate |
+| Docker image | CLI smoke only | Not a product CUA path | Packaging evidence only |
 
 The workflow definitions in `.github/workflows/ci.yml` are authoritative for
 runner versions, installation commands, exact test selections, and artifacts.
 
-## Linux Terminal
+## Shared Terminal lifecycle
 
-The `e2e-linux` job runs the official MCP client, Relay Server, and Relay Agent
-as native processes. It verifies status, ping, fixed terminal commands,
-offline detection, reconnect, Server restart, re-registration, and bounded
-cleanup.
+Linux and Windows use the same lifecycle runner and the same
+`run_core_scenario()` implementation. The shared runner owns:
 
-Relevant local checks:
+```text
+prepare -> Server start/readiness -> Agent start/readiness -> scenario
+        -> Agent stop/reconnect -> scenario
+        -> Server stop/restart -> Agent readiness -> scenario
+        -> evidence collection -> cleanup
+```
+
+The scenario verifies `tools/list`, `relay_device_status`, `system.ping`,
+`terminal_exec("pwd")`, and `terminal_exec("git_branch")` with the same
+functional oracles on both platforms. POSIX process groups and Windows Job
+Objects remain isolated process primitives rather than lifecycle forks.
+
+Relevant contract checks:
 
 ```sh
 uv run --frozen python -m pytest -q \
-  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
-uv run --frozen python -m pytest -q -m integration
+  tests/test_e2e_harness.py \
+  tests/test_linux_e2e_adapter.py \
+  tests/test_windows_e2e_adapter.py
 ```
 
-## Linux CUA
-
-The `e2e-linux-cua` job runs Xvfb, a private D-Bus/AT-SPI session, a small
-window manager, Chromium, the optional `cua` extra (`cua-driver`), and the
-real Relay processes. The CUA catalogue is discovered at runtime and the
-representative surface includes native desktop operations:
+The native entrypoints are:
 
 ```text
-relay_cua_list_windows
-relay_cua_get_window_state
-relay_cua_click
-relay_cua_type_text
+scripts/linux_e2e.py
+scripts/windows_e2e.py
 ```
 
-The same CUA scenario then runs one bounded browser subpath against the local
-page served by that harness. CUA owns the browser process from launch through
-cleanup; `browser_prepare` attaches to the launched process with an existing
-profile rather than starting a second browser. The graphical CI step explicitly
-sets `AGENT_RELAY_CUA_GRANT_EXISTING_PROFILE=1`; Relay maps that opt-in to the
-driver's `--grant existing-profile` startup authorization. It is absent by
-default and is scoped here to the synthetic temporary profile:
+## Shared browser CUA scenario
+
+Linux and Windows run the same shared browser scenario, fixture, actions, and
+oracles. The deterministic fixture is:
+
+```text
+scripts/e2e/fixtures/cua/index.html
+scripts/e2e/fixtures/cua/server.py
+```
+
+Both jobs use preinstalled Google Chrome directly. They perform an explicit
+Chrome sanity check and fail with a clear message when it is unavailable. The
+jobs do not download, install, or provision a browser.
+
+The canonical scenario owns a fresh temporary Chrome profile and follows this
+bounded path:
 
 ```text
 relay_cua_launch_app -> relay_cua_start_session
-  -> relay_cua_list_windows (launch PID/window anchor)
-  -> relay_cua_browser_prepare (existing profile, same PID)
-  -> relay_cua_list_windows (prepared PID)
-  -> relay_cua_get_browser_state (target/tab binding)
-  -> relay_cua_browser_navigate -> relay_cua_get_browser_state
-  -> relay_cua_browser_type -> relay_cua_browser_click
+  -> relay_cua_list_windows
+  -> relay_cua_browser_prepare
+  -> relay_cua_get_browser_state
+  -> relay_cua_browser_navigate
+  -> relay_cua_browser_type
+  -> relay_cua_browser_click
   -> relay_cua_get_browser_state / correlated fixture event
   -> relay_cua_end_session -> relay_cua_kill_app
 ```
 
-The scenario verifies automatic driver resolution, provider startup, complete
-catalogue discovery, explicit activation, policy blocking, representative
-desktop operations, browser URL/state, browser typing and clicking, correlated
-fixture evidence, and cleanup. This is an integrated browser subpath of the
-general Linux CUA job, not a separate scenario or job. Chromium is an explicit
-prerequisite of that job. Windows keeps the desktop candidate path until a
-hosted browser prerequisite is guaranteed. A green contract/probe run or a
-local mock does not replace a successful graphical Linux CUA run at the same
-SHA; the latter remains the product-level proof.
+Linux prepares an isolated `LinuxGraphicalSession` with Xvfb, private D-Bus,
+Openbox, and AT-SPI. Windows validates an interactive
+`WindowsGraphicalSession`; the process tree remains owned by a Windows Job
+Object. These session adapters prepare only graphical primitives. Server and
+Agent lifecycle, Chrome discovery, fixture serving, scenario execution,
+evidence, and cleanup stay in the shared CUA harness.
 
-Relevant local checks:
+Relevant contract checks:
 
 ```sh
 uv run --frozen python -m pytest -q \
-  tests/test_cua_catalog.py tests/test_cua_profiles.py \
-  tests/test_computer_capability.py tests/test_desktop_fixture.py \
-  tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py \
-  tests/test_e2e_oracles.py \
-  tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py \
-  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
+  tests/test_chrome_e2e.py \
+  tests/test_cua_entrypoints.py \
+  tests/test_cua_harness.py \
+  tests/test_graphical_sessions.py \
+  tests/test_desktop_fixture.py \
+  tests/test_e2e_kernel.py \
+  tests/test_e2e_oracles.py
 ```
 
-## Windows Terminal
-
-The `e2e-windows-terminal` job runs the Server and Agent directly on the hosted
-Windows runner. A Windows Job Object owns the process tree. The scenario
-covers the same core MCP status, ping, terminal, stop, reconnect, restart,
-and cleanup behavior as the Linux Terminal gate.
-
-Relevant local checks:
-
-```sh
-uv run --frozen python -m pytest -q \
-  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
-```
-
-The runtime harness refuses non-Windows hosts.
-
-## Windows CUA candidate
-
-The `e2e-windows-cua` job is an experimental candidate, not a support claim.
-It attempts the complete path:
+The native entrypoints are:
 
 ```text
-automatic driver resolution -> tools/list -> native inventory
-                           -> native descriptor calls -> fixture event -> cleanup
+scripts/linux_computer_e2e.py
+scripts/windows_computer_e2e.py
 ```
 
-The candidate uses the standard CUA provider, Windows UI Automation, and a
-synthetic fixture. It requires exact application/window identity only for
-operations that need a target, fresh descriptor validation, bounded evidence,
-and owned-process cleanup. Starting the provider or receiving a direct reply
-does not close the gate.
-
-Portable checks:
-
-```sh
-uv run --frozen python -m pytest -q \
-  tests/test_cua_catalog.py tests/test_cua_profiles.py \
-  tests/test_computer_capability.py tests/test_desktop_fixture.py \
-  tests/test_e2e_kernel.py tests/test_e2e_mcp_client.py \
-  tests/test_e2e_oracles.py \
-  tests/test_linux_computer_e2e.py tests/test_windows_computer_e2e.py \
-  tests/test_linux_e2e.py tests/test_windows_e2e.py tests/test_runner.py
-```
+A green contract test or provider probe does not replace a successful native
+CUA run at the same SHA.
 
 ## Docker image smoke
 
 The Docker matrix builds the production image for `linux/amd64` and
 `linux/arm64`, checks its non-root user and entrypoint contract, then runs CLI
 help/version smoke commands. It is packaging evidence and does not claim a
-desktop operation path. A local Linux CUA contract/probe can use a separate
-ephemeral test container with Xvfb/Openbox/D-Bus/AT-SPI and Chromium; those
-desktop prerequisites must never enter the product image.
+desktop operation path. Graphical prerequisites never enter the product image.
