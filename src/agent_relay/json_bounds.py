@@ -105,6 +105,11 @@ def _normalize_query_key(key: str) -> str:
     return re.sub(r"[^a-z0-9]", "", key.casefold())
 
 
+def is_sensitive_query_key(key: str) -> bool:
+    """Report whether a query key denotes credential-like data."""
+    return _normalize_query_key(key) in _SENSITIVE_QUERY_KEY
+
+
 def _normalize_metadata_key(key: str) -> str:
     """Normalize separators and camel-case for executable-key checks."""
     camel_case = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)

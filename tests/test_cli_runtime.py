@@ -48,11 +48,7 @@ def test_agent_can_use_runtime_environment_without_default_config(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(cli.config, "DEFAULT_CONFIG_PATH", tmp_path / "config.yaml")
-    monkeypatch.setattr(
-        cli.config,
-        "discover_local_catalog",
-        lambda *_args, **_kwargs: object(),
-    )
+    monkeypatch.setattr(cli, "_discover_local_catalog", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         cli.agent,
         "main",

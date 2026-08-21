@@ -89,17 +89,17 @@ def test_cli_uses_provider_catalog_and_shows_risk_status(
     assert "relay_cua_get_browser_state" in output
 
 
-def test_agent_config_init_discovers_local_catalog_without_injection(
+def test_agent_config_init_uses_cli_catalog_discovery_without_injection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = tmp_path / "config.yaml"
     observed: list[Path] = []
 
-    def discover(path: Path, *, env: dict[str, str] | None = None) -> CatalogSnapshot:
+    def discover(path: Path) -> CatalogSnapshot:
         observed.append(path)
         return CatalogSnapshot(entries=(), providers=())
 
-    monkeypatch.setattr(config, "discover_local_catalog", discover)
+    monkeypatch.setattr(cli, "_discover_local_catalog", discover)
     monkeypatch.setattr("getpass.getpass", lambda *_: "agent-secret")
 
     assert (

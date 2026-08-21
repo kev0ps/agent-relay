@@ -28,8 +28,7 @@ def _setup_fake_uv(
     returncode: int = 0,
 ) -> list[list[str]]:
     commands: list[list[str]] = []
-    monkeypatch.setattr(cli.uninstall, "_is_windows", lambda: False)
-    monkeypatch.setattr(cli.uninstall, "find_uv", lambda: Path("uv"))
+    monkeypatch.setattr(cli.uninstall.shutil, "which", lambda name: "uv" if name == "uv" else None)
 
     def run(command: list[str], *, check: bool) -> SimpleNamespace:
         assert check is False
@@ -95,7 +94,7 @@ def test_missing_uv_is_reported(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli.uninstall, "find_uv", lambda: None)
+    monkeypatch.setattr(cli.uninstall.shutil, "which", lambda _name: None)
 
     assert cli.main(["uninstall"]) == 1
     assert "uv was not found" in capsys.readouterr().err
@@ -201,8 +200,7 @@ def test_uv_subprocess_errors_are_converted_to_cli_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli.uninstall, "_is_windows", lambda: False)
-    monkeypatch.setattr(cli.uninstall, "find_uv", lambda: Path("uv"))
+    monkeypatch.setattr(cli.uninstall.shutil, "which", lambda name: "uv" if name == "uv" else None)
 
     def run(_command: list[str], *, check: bool) -> SimpleNamespace:
         assert check is False
@@ -224,8 +222,12 @@ def test_windows_uninstall_delegates_until_the_cli_exits(
     log_path = tmp_path / "uninstall.log"
     fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
     launches: list[tuple[list[str], dict[str, object]]] = []
-    monkeypatch.setattr(cli.uninstall, "find_uv", lambda: Path("C:/uv/uv.exe"))
-    monkeypatch.setattr(cli.uninstall, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        cli.uninstall.shutil,
+        "which",
+        lambda name: "C:/uv/uv.exe" if name == "uv" else None,
+    )
+    monkeypatch.setattr(cli.uninstall.os, "name", "nt")
     monkeypatch.setattr(
         cli.uninstall, "_find_powershell", lambda: Path("C:/Windows/powershell.exe")
     )
@@ -258,10 +260,10 @@ def test_windows_uninstall_script_has_bounded_retry_and_final_status(
         tmp_path / "uninstall.log",
     )
     assert "AddSeconds(15)" in script
-    assert "$retryInterval = 500" in script
-    assert "Attempt {0}: uv tool uninstall agent-relay" in script
-    assert "Final result: success after" in script
-    assert "Final result: failure after" in script
+    assert "$remainingMilliseconds" in script
+    assert "Start-Sleep -Milliseconds ([int][Math]::Min(500" in script
+    assert "Final result: success" in script
+    assert "Final result: failure" in script
     assert "Stop other Agent Relay" in script
 
 
@@ -361,12 +363,6 @@ def test_windows_uninstall_retries_real_locked_executable(
         assert completed.returncode == (0 if expected == "success" else 1)
         log = log_path.read_text(encoding="utf-8")
         assert f"Final result: {expected}" in log
-        assert "Attempt 1" in log
-        if expected == "success":
-            # A runner may allow deletion on the first call even while the
-            # copied executable is running; the timeout case below is the
-            # deterministic proof that the retry loop is exercised.
-            assert "Attempt 2" in log or "Attempt 1 result: exit code 0" in log
         if expected == "failure":
             assert "Stop other Agent Relay" in log
             assert running_executable.exists()

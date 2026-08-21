@@ -490,6 +490,50 @@ def test_doctor_prints_combined_human_report(
     assert "Summary" in output
 
 
+@pytest.mark.parametrize(
+    "query_key",
+    (
+        "token",
+        "signature",
+        "Authorization",
+        "bearer",
+        "jwt",
+        "private%5Fkey",
+        "credential",
+        "auth",
+        "auth-token",
+        "sig",
+        "access-token",
+        "api.key",
+        "key",
+        "client_secret",
+        "oauth-token",
+        "password",
+        "secret",
+        "refresh_token",
+    ),
+)
+def test_config_get_redacts_secret_query_values_in_relay_urls(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], query_key: str
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    url_secret = "URL_TOKEN_SENTINEL"
+    config.init_config(config_path, "agent", token="agent-secret", tools=[], env={})
+    config.set_value(
+        config_path,
+        "agent",
+        "relay_url",
+        f"wss://relay.example.test/ws/agent?{query_key}={url_secret}&mode=live",
+    )
+    capsys.readouterr()
+
+    assert cli.main(["--config", str(config_path), "config", "get", "agent"]) == 0
+
+    output = capsys.readouterr().out
+    assert url_secret not in output
+    assert "[REDACTED]" in output
+
+
 def test_transport_validation_reports_scheme_without_sensitive_url_data(
     tmp_path: Path,
 ) -> None:
@@ -502,7 +546,7 @@ def test_transport_validation_reports_scheme_without_sensitive_url_data(
         "relay_url",
         "ws://192.168.1.20:8000/ws/agent?token=must-not-be-rendered",
     )
-    ws_report = config.render_validation(
+    ws_report = cli._render_validation(
         config.validate_document(config_path, "agent", env={})
     )
     assert "transport=ws://" in ws_report
@@ -515,7 +559,7 @@ def test_transport_validation_reports_scheme_without_sensitive_url_data(
         "relay_url",
         "wss://relay.example.test/ws/agent?token=must-not-be-rendered",
     )
-    wss_report = config.render_validation(
+    wss_report = cli._render_validation(
         config.validate_document(config_path, "agent", env={})
     )
     assert "transport=wss://" in wss_report
@@ -640,6 +684,30 @@ def test_repeated_agent_init_preserves_identity_tools_and_secret(
     assert (
         "RELAY_AGENT_TOKEN=agent-secret\n"
         in (config_path.parent / ".env").read_text(encoding="utf-8")
+    )
+
+
+def test_repeated_agent_init_prompts_when_dotenv_token_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config.init_config(
+        config_path,
+        "agent",
+        token="old-agent-token",
+        tools=[],
+        env={},
+    )
+    dotenv = config_path.parent / ".env"
+    dotenv.write_text("", encoding="utf-8")
+    if os.name != "nt":
+        dotenv.chmod(0o600)
+    monkeypatch.setattr("getpass.getpass", lambda *_: "replacement-agent-token")
+
+    assert cli.main(["--config", str(config_path), "config", "init", "agent"]) == 0
+
+    assert "RELAY_AGENT_TOKEN=replacement-agent-token\n" in dotenv.read_text(
+        encoding="utf-8"
     )
 
 

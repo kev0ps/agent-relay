@@ -1,19 +1,17 @@
-"""Canonical YAML configuration, private dotenv credentials, and CLI helpers."""
+"""Canonical YAML configuration and private dotenv credential primitives."""
 
 from __future__ import annotations
 
 import copy
-import getpass
 import os
 import secrets
 import stat
-import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlparse
 
 import yaml
 from pydantic import (
@@ -33,7 +31,6 @@ from .catalog import (
     CatalogSnapshot,
     validate_agent_allowlist,
 )
-from .catalog import discover_local_catalog as _discover_local_catalog
 from .cua_profiles import (
     ALL_PROFILE_PUBLIC_NAMES,
     CuaAccessLevel,
@@ -42,6 +39,7 @@ from .cua_profiles import (
     is_cua_public_name,
     profile_public_names,
 )
+from .json_bounds import is_sensitive_query_key
 from .protocol import TOOL_ORDER
 
 CONFIG_DIR_NAME = ".agent-relay"
@@ -66,10 +64,6 @@ def _is_dynamic_cua_public_name(value: object) -> bool:
 
 class ConfigError(ValueError):
     """A safe, user-facing configuration error with no secret interpolation."""
-
-
-class CuaAccessCancelled(ConfigError):
-    """The operator declined a requested Full CUA access change."""
 
 
 @dataclass(frozen=True)
@@ -739,12 +733,12 @@ def _effective_agent(document: Mapping[str, Any], env: Mapping[str, str]) -> Age
         raise ConfigError("agent configuration is invalid") from exc
 
 
-def discover_local_catalog(
+def catalog_environment(
     path: str | Path | None,
     *,
     env: Mapping[str, str] | None = None,
-) -> CatalogSnapshot:
-    """Discover local providers using the canonical Agent config overlay."""
+) -> tuple[dict[str, str], list[str]]:
+    """Return deterministic catalog inputs from the effective Agent settings."""
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
     _reject_token_file_environment(effective_env)
@@ -763,7 +757,7 @@ def discover_local_catalog(
         value = getattr(agent.computer, field)
         if value is not None:
             catalog_env.setdefault(f"RELAY_AGENT_COMPUTER_{field.upper()}", str(value))
-    return _discover_local_catalog(env=catalog_env, allowlist=agent.tools.allowlist)
+    return catalog_env, list(agent.tools.allowlist)
 
 
 def _secret_value(
@@ -1066,21 +1060,6 @@ def validate_document(
     )
 
 
-def _render_report(report: ValidationReport) -> str:
-    lines = [report.scope.capitalize()]
-    for issue in report.issues:
-        lines.append(f"[{issue.level}] {issue.message}")
-    if report.valid:
-        lines.append("result=valid")
-    else:
-        lines.append("result=invalid")
-    return "\n".join(lines)
-
-
-def render_validation(report: ValidationReport) -> str:
-    return _render_report(report)
-
-
 def _invalid_configuration_message(scope: str, report: ValidationReport) -> str:
     """Render only sanitized validation errors for runtime startup failures."""
     details = "; ".join(issue.message for issue in report.errors)
@@ -1150,55 +1129,13 @@ def validate_cua_profile(
     return _validate_cua_profile_catalog(level, catalog)  # type: ignore[arg-type]
 
 
-def confirm_cua_access(
-    level: str,
-    catalog: CatalogSnapshot | None,
-    *,
-    assume_yes: bool = False,
-) -> None:
-    """Validate and, for Full, obtain the one required operator confirmation."""
-    names = validate_cua_profile(level, catalog)
-    if level != "full":
-        if assume_yes:
-            raise ConfigError("--yes is only valid with --cua-access full")
-        return
-    if assume_yes:
-        return
-    if not sys.stdin.isatty():
-        raise ConfigError("full CUA access requires --yes when stdin is non-interactive")
-    entries = {entry.public_name: entry for entry in (catalog.entries if catalog else ())}
-    sensitive = sorted(
-        {
-            entry.risk
-            for name in names
-            if (entry := entries.get(name)) is not None
-            and entry.risk in {"destructive", "admin"}
-        }
-    )
-    print("Full CUA access enables all non-blocked desktop and browser tools.")
-    if sensitive:
-        print(f"Sensitive categories: {', '.join(sensitive)}.")
-    try:
-        answer = input("Enable Full CUA access? [y/N] ")
-    except (EOFError, OSError) as exc:
-        raise ConfigError("could not read the Full CUA confirmation") from exc
-    if answer.strip().lower() not in {"y", "yes"}:
-        raise CuaAccessCancelled("CUA access update cancelled")
-
-
 def apply_cua_access(
     allowlist: list[str] | tuple[str, ...],
     level: str,
     catalog: CatalogSnapshot | None,
-    *,
-    assume_yes: bool = False,
 ) -> list[str]:
     """Return a stable allowlist after atomically replacing only its CUA part."""
     names = validate_cua_profile(level, catalog)
-    if level == "full":
-        confirm_cua_access(level, catalog, assume_yes=assume_yes)
-    elif assume_yes:
-        raise ConfigError("--yes is only valid with --cua-access full")
     non_cua = [name for name in allowlist if not _is_dynamic_cua_public_name(name)]
     result = non_cua + list(names)
     try:
@@ -1213,7 +1150,6 @@ def update_cua_access(
     level: str,
     *,
     catalog: CatalogSnapshot | None = None,
-    assume_yes: bool = False,
 ) -> bool:
     """Apply a CUA profile in one YAML write; return False only on no-op."""
     config_path = _config_path(path)
@@ -1223,7 +1159,7 @@ def update_cua_access(
     if not isinstance(section, Mapping):
         raise ConfigError("agent configuration is not initialized")
     current = _existing_allowlist(section)
-    updated = apply_cua_access(current, level, catalog, assume_yes=assume_yes)
+    updated = apply_cua_access(current, level, catalog)
     if updated == current:
         return True
     agent_section = copy.deepcopy(dict(section))
@@ -1242,19 +1178,17 @@ def init_config(
     force: bool = False,
     token: str | None = None,
     tools: list[str] | None = None,
-    use_stdin: bool = False,
     env: Mapping[str, str] | None = None,
     catalog: CatalogSnapshot | None = None,
     relay_url: str | None = None,
     workspace: str | Path | None = None,
     cua_access: str | None = None,
-    assume_yes: bool = False,
 ) -> Path:
     config_path = _config_path(path)
     effective_env = os.environ if env is None else env
     _reject_token_file_environment(effective_env)
-    if scope == "server" and (cua_access is not None or assume_yes):
-        raise ConfigError("CUA access options are only valid for Agent configuration")
+    if scope == "server" and cua_access is not None:
+        raise ConfigError("CUA access is only valid for Agent configuration")
     document = _load_yaml(config_path, required=False)
     _reject_legacy_secret_sections(document)
     dotenv_file = config_path.parent / DOTENV_FILENAME
@@ -1330,7 +1264,6 @@ def init_config(
                 requested_tools,
                 cua_access,
                 catalog,
-                assume_yes=assume_yes,
             )
         try:
             validate_agent_allowlist(requested_tools, catalog=catalog)
@@ -1342,19 +1275,17 @@ def init_config(
         section["workspace"] = _relative_config_value(section["workspace"], config_path)
         document["agent"] = section
         _write_config(config_path, document)
-        if token is None and use_stdin:
-            token = sys.stdin.readline().strip()
         if (
             token is None
             and existing is not None
             and "RELAY_AGENT_TOKEN" not in effective_env
         ):
             token = dotenv_values.get("RELAY_AGENT_TOKEN")
-        if token is None:
-            token = getpass.getpass("Agent token: ").strip()
-        if not token:
+        if token is None and "RELAY_AGENT_TOKEN" not in effective_env:
+            raise ConfigError("agent token is required")
+        if token is not None and not token:
             raise ConfigError("agent token cannot be empty")
-        if "RELAY_AGENT_TOKEN" not in effective_env:
+        if token is not None and "RELAY_AGENT_TOKEN" not in effective_env:
             _update_dotenv(dotenv_file, "RELAY_AGENT_TOKEN", token)
     return config_path
 
@@ -1363,68 +1294,6 @@ def _relative_config_value(value: object, path: Path) -> str:
     if isinstance(value, str) and not Path(value).expanduser().is_absolute():
         return value
     return str(_relative_path(value, path))
-
-
-def select_tools_interactively(
-    document: Mapping[str, Any],
-    path: Path,
-    *,
-    catalog: CatalogSnapshot | None = None,
-) -> list[str]:
-    if not document:
-        try:
-            document = _load_yaml(path, required=False)
-        except ConfigError:
-            document = {}
-    print("Select Agent tools (comma-separated numbers; empty enables none):")
-    if catalog is not None:
-        entries = [
-            entry
-            for entry in catalog.entries
-            if not _is_dynamic_cua_public_name(entry.public_name)
-        ]
-        for index, entry in enumerate(entries, start=1):
-            print(
-                f"  {index}. {entry.public_name} [{entry.risk}] "
-                f"{entry.status} - {entry.description}"
-            )
-        if not entries or not sys.stdin.isatty():
-            return []
-        answer = input("Tools: ").strip()
-        if not answer:
-            return []
-        try:
-            selected = {int(item.strip()) for item in answer.split(",") if item.strip()}
-        except ValueError as exc:
-            raise ConfigError("tool selection must be a comma-separated list of numbers") from exc
-        if any(index < 1 or index > len(entries) for index in selected):
-            raise ConfigError("tool selection contains an invalid number")
-        selected_names = [entries[index - 1].public_name for index in sorted(selected)]
-        try:
-            catalog.validate_allowlist(selected_names)
-        except CatalogError as exc:
-            raise ConfigError(str(exc)) from None
-        return selected_names
-
-    specs = [
-        spec
-        for spec in TOOL_SPECS
-        if spec.source != "server" and _tool_is_available(spec, document, path)
-    ]
-    for index, spec in enumerate(specs, start=1):
-        print(f"  {index}. {spec.name} - {spec.description}")
-    if not specs or not sys.stdin.isatty():
-        return []
-    answer = input("Tools: ").strip()
-    if not answer:
-        return []
-    try:
-        selected = {int(item.strip()) for item in answer.split(",") if item.strip()}
-    except ValueError as exc:
-        raise ConfigError("tool selection must be a comma-separated list of numbers") from exc
-    if any(index < 1 or index > len(specs) for index in selected):
-        raise ConfigError("tool selection contains an invalid number")
-    return [specs[index - 1].name for index in sorted(selected)]
 
 
 def _tool_is_available(spec: ToolSpec, document: Mapping[str, Any], path: Path) -> bool:
@@ -1801,86 +1670,44 @@ def cua_tool_summary(
     )
 
 
-def render_tools(
-    path: str | Path | None,
-    *,
-    env: Mapping[str, str] | None = None,
-    catalog: CatalogSnapshot | None = None,
-    show_all: bool = False,
-) -> str:
-    statuses = tool_statuses(path, env=env, catalog=catalog)
-    rows = ["Tool\tSource\tStatus\tRisk\tDescription"]
-    if catalog is not None and not show_all:
-        statuses = [
-            (spec, status)
-            for spec, status in statuses
-            if not _is_dynamic_cua_public_name(spec.name)
-        ]
-    for spec, status in statuses:
-        rows.append(
-            f"{spec.name}\t{spec.source}\t{status}\t{spec.risk}\t{spec.description}"
-        )
-    if catalog is not None and not show_all:
-        summary = cua_tool_summary(path, env=env, catalog=catalog)
-        rows.append(
-            "CUA\tcua\t"
-            f"{summary.access}\tinteraction\t"
-            f"{summary.enabled} enabled, {summary.available} available, "
-            f"{summary.blocked} blocked, {len(summary.new_names)} new tools not selected"
-        )
-        if summary.new_names:
-            rows.append(
-                "CUA new\tcua\tdisabled\tinteraction\t"
-                + ", ".join(summary.new_names)
-            )
-    return "\n".join(rows)
-
-
-def render_section(path: str | Path | None, scope: Literal["server", "agent"]) -> str:
-    return yaml.safe_dump(
-        _redact_for_output(get_section(path, scope)),
-        sort_keys=False,
-        allow_unicode=True,
-    )
-
-
-def _redact_for_output(value: Any, key: str = "") -> Any:
+def _is_secret_output_key(key: str) -> bool:
     normalized = key.lower()
-    is_secret_key = (
-        normalized != "secrets"
-        and (
-            normalized in {"token", "mcp_token", "agent_token", "api_key", "password", "secret"}
-            or any(marker in normalized for marker in ("token", "secret", "password", "api_key"))
+    return normalized != "secrets" and (
+        is_sensitive_query_key(key)
+        or normalized == "key"
+        or (
+            any(
+                marker in normalized
+                for marker in ("token", "secret", "password", "api_key", "api-key", "apikey")
+            )
             and not normalized.endswith("_file")
         )
     )
-    if is_secret_key:
+
+
+def _redact_url_query(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.query:
+        return value
+    query = "&".join(
+        f"{name}=[REDACTED]" if separator and _is_secret_output_key(unquote_plus(name)) else part
+        for part in parsed.query.split("&")
+        for name, separator, _value in (part.partition("="),)
+    )
+    return parsed._replace(query=query).geturl()
+
+
+def redact_for_output(value: Any, key: str = "") -> Any:
+    """Return a recursively redacted copy suitable for safe presentation."""
+    if _is_secret_output_key(key):
         return "[REDACTED]"
     if isinstance(value, Mapping):
-        return {str(child_key): _redact_for_output(child_value, str(child_key)) for child_key, child_value in value.items()}
+        return {
+            str(child_key): redact_for_output(child_value, str(child_key))
+            for child_key, child_value in value.items()
+        }
     if isinstance(value, list):
-        return [_redact_for_output(item, key) for item in value]
+        return [redact_for_output(item, key) for item in value]
+    if isinstance(value, str):
+        return _redact_url_query(value)
     return value
-
-
-def doctor(
-    path: str | Path | None,
-    *,
-    env: Mapping[str, str] | None = None,
-    catalog: CatalogSnapshot | None = None,
-) -> tuple[str, bool]:
-    reports = [
-        validate_document(path, "server", env=env, require=False),
-        validate_document(path, "agent", env=env, require=False, catalog=catalog),
-    ]
-    lines = ["Agent Relay doctor"]
-    for report in reports:
-        lines.append("")
-        lines.append(report.scope.capitalize())
-        lines.extend(f"[{issue.level}] {issue.message}" for issue in report.issues)
-    lines.append("")
-    lines.append(
-        f"Summary: {sum(len(report.errors) for report in reports)} error(s), "
-        f"{sum(len(report.warnings) for report in reports)} warning(s)"
-    )
-    return "\n".join(lines), all(report.valid for report in reports)
