@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cua = ["cua-driver==0.19.3"]
+cua = ["cua-driver==0.20.0"]
 
 [project.scripts]
 agent-relay = "agent_relay.cli:main"
